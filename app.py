@@ -1,6 +1,6 @@
 import re
 from io import BytesIO
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -10,7 +10,7 @@ from asana_client import AsanaClient, AsanaError
 
 st.set_page_config(page_title="Trafficking to Asana", page_icon="✅", layout="wide")
 
-BILLING_CAMPAIGN_RE = re.compile(r"^[^:]+:\s*(.*?)\s*\(job\s*(\d+)\)\s*$", re.IGNORECASE)
+GID_RE = re.compile(r"^\d+$")
 
 
 def _get_secret(name: str, default: str = "") -> str:
@@ -24,15 +24,41 @@ def _split_csv_secret(value: str) -> List[str]:
     return [v.strip() for v in value.split(",") if v.strip()]
 
 
+def _as_int_secret(name: str, default: int) -> int:
+    raw = _get_secret(name, str(default)).strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return default
+
+
+def _clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    clean = df.copy()
+    clean.columns = [str(c).strip() for c in clean.columns]
+    unnamed_cols = [c for c in clean.columns if c.lower().startswith("unnamed:")]
+    if unnamed_cols:
+        clean = clean.drop(columns=unnamed_cols, errors="ignore")
+    return clean.fillna("")
+
+
 def _read_uploaded_table(uploaded_file: Any, skip_top_rows: int) -> pd.DataFrame:
     filename = str(getattr(uploaded_file, "name", "")).lower()
     raw = uploaded_file.getvalue()
+
+    if filename.endswith(".tsv"):
+        for enc in ("utf-8", "cp1252", "latin-1"):
+            try:
+                return pd.read_csv(
+                    BytesIO(raw), sep="\t", skiprows=skip_top_rows, engine="python", encoding=enc
+                )
+            except Exception:
+                continue
+        raise ValueError("Could not parse TSV file with supported encodings.")
 
     if filename.endswith(".csv"):
         return pd.read_csv(BytesIO(raw), skiprows=skip_top_rows)
 
     if filename.endswith(".xls") or filename.endswith(".xlsx"):
-        # Some vendor ".xls" exports are actually tab-delimited text files.
         try:
             return pd.read_excel(BytesIO(raw), skiprows=skip_top_rows)
         except Exception:
@@ -49,7 +75,7 @@ def _read_uploaded_table(uploaded_file: Any, skip_top_rows: int) -> pd.DataFrame
                     continue
             raise
 
-    raise ValueError("Unsupported file type. Upload .csv, .xls, or .xlsx.")
+    raise ValueError("Unsupported file type. Upload .tsv, .csv, .xls, or .xlsx.")
 
 
 def _normalize_campaign_name(value: Any) -> str:
@@ -60,112 +86,104 @@ def _normalize_campaign_name(value: Any) -> str:
     return text
 
 
-def _parse_billing_campaign(raw_campaign: Any) -> Optional[Tuple[str, str]]:
-    text = "" if raw_campaign is None else str(raw_campaign).strip()
-    match = BILLING_CAMPAIGN_RE.match(text)
-    if not match:
-        return None
-
-    campaign_name = _normalize_campaign_name(match.group(1))
-    job_number = match.group(2).strip()
-    if not campaign_name or not job_number:
-        return None
-
-    return campaign_name, job_number
-
-
-def _build_candidate_rows(
-    trafficking_df: pd.DataFrame, billing_df: pd.DataFrame
-) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
-    trafficking_campaigns = sorted(
-        {
-            _normalize_campaign_name(v)
-            for v in trafficking_df.get("Campaign", pd.Series(dtype=str)).tolist()
-            if _normalize_campaign_name(v)
-        }
-    )
-
-    billing_map: Dict[str, Dict[str, str]] = {}
-    unmatched_billing_count = 0
-    for raw in billing_df.get("Campaign", pd.Series(dtype=str)).tolist():
-        parsed = _parse_billing_campaign(raw)
-        if not parsed:
-            unmatched_billing_count += 1
-            continue
-
-        campaign_name, job_number = parsed
-        billing_map.setdefault(campaign_name, {})[job_number] = str(raw)
-
-    candidates: List[Dict[str, str]] = []
-    unmatched_trafficking: List[Dict[str, str]] = []
-
-    for traf_campaign in trafficking_campaigns:
-        jobs = billing_map.get(traf_campaign, {})
-        if not jobs:
-            unmatched_trafficking.append(
-                {
-                    "trafficking_campaign": traf_campaign,
-                    "reason": "No matching billing campaign/job found",
-                }
-            )
-            continue
-
-        for job_number in sorted(jobs.keys()):
-            candidates.append(
-                {
-                    "trafficking_campaign": traf_campaign,
-                    "billing_campaign": jobs[job_number],
-                    "job_number": job_number,
-                    "task_name": f"{traf_campaign} ({job_number})",
-                    "billing_parse_status": "ok",
-                }
-            )
-
-    if unmatched_billing_count > 0:
-        unmatched_trafficking.append(
-            {
-                "trafficking_campaign": "(billing rows)",
-                "reason": f"{unmatched_billing_count} billing rows did not match 'Advertiser: Campaign (job 1234)' format",
-            }
-        )
-
-    return candidates, unmatched_trafficking
+def _normalize_job_number(value: Any) -> str:
+    text = "" if value is None else str(value).strip()
+    if text.endswith(".0") and text.replace(".", "", 1).isdigit():
+        text = text[:-2]
+    return text
 
 
 def _as_due_on(date_value: Any) -> str:
-    parsed = pd.to_datetime(str(date_value).strip(), dayfirst=True, errors="coerce")
+    raw = str(date_value).strip()
+    if re.match(r"^\\d{4}-\\d{2}-\\d{2}$", raw):
+        parsed = pd.to_datetime(raw, format="%Y-%m-%d", errors="coerce")
+    else:
+        parsed = pd.to_datetime(raw, dayfirst=True, errors="coerce")
     if pd.isna(parsed):
         return ""
     return parsed.strftime("%Y-%m-%d")
 
 
-def _build_subtask_rows(
-    trafficking_df: pd.DataFrame, candidates: List[Dict[str, str]], parent_status_by_job: Dict[str, str]
-) -> List[Dict[str, str]]:
-    campaign_to_subtasks: Dict[str, List[Dict[str, str]]] = {}
-    seen_refs: set[tuple[str, str]] = set()
+def _build_candidate_rows(trafficking_df: pd.DataFrame) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+    candidates: List[Dict[str, str]] = []
+    unmatched: List[Dict[str, str]] = []
+
+    seen_keys = set()
+    missing_campaign = 0
+    missing_job = 0
 
     for _, row in trafficking_df.iterrows():
-        campaign_name = _normalize_campaign_name(row.get("Campaign", ""))
+        campaign_name = _normalize_campaign_name(row.get("CampaignName", ""))
+        job_number = _normalize_job_number(row.get("JobNumber", ""))
+
         if not campaign_name:
+            missing_campaign += 1
+            continue
+        if not job_number:
+            missing_job += 1
             continue
 
-        our_ref = str(row.get("Our Ref", "")).strip()
+        key = (campaign_name, job_number)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        candidates.append(
+            {
+                "campaign_name": campaign_name,
+                "job_number": job_number,
+                "task_name": f"{campaign_name} ({job_number})",
+            }
+        )
+
+    if missing_campaign:
+        unmatched.append(
+            {
+                "item": "Trafficking rows",
+                "reason": f"{missing_campaign} rows missing CampaignName",
+            }
+        )
+    if missing_job:
+        unmatched.append(
+            {
+                "item": "Trafficking rows",
+                "reason": f"{missing_job} rows missing JobNumber",
+            }
+        )
+
+    return sorted(candidates, key=lambda x: (x["campaign_name"], x["job_number"])), unmatched
+
+
+def _build_subtask_rows(
+    trafficking_df: pd.DataFrame,
+    candidates: List[Dict[str, str]],
+    parent_status_by_job: Dict[str, str],
+) -> List[Dict[str, str]]:
+    by_campaign_job: Dict[Tuple[str, str], List[Dict[str, str]]] = {}
+    seen_refs = set()
+
+    for _, row in trafficking_df.iterrows():
+        campaign_name = _normalize_campaign_name(row.get("CampaignName", ""))
+        job_number = _normalize_job_number(row.get("JobNumber", ""))
+        if not campaign_name or not job_number:
+            continue
+
+        our_ref = str(row.get("OurRef", "")).strip()
         if not our_ref:
             continue
 
-        key = (campaign_name, our_ref)
-        if key in seen_refs:
+        dedupe_key = (campaign_name, job_number, our_ref)
+        if dedupe_key in seen_refs:
             continue
-        seen_refs.add(key)
+        seen_refs.add(dedupe_key)
 
-        property_value = str(row.get("Property", "")).strip()
-        location_value = str(row.get("Location", "")).strip()
-        ad_unit_value = str(row.get("Ad Unit", "")).strip()
-        start_date_raw = str(row.get("Start Date", "")).strip()
+        property_value = str(row.get("PropertyName", "")).strip()
+        location_value = str(row.get("LocationText", "")).strip()
+        ad_unit_value = str(row.get("SpecificationText", "")).strip()
+        start_date_raw = str(row.get("StartDate", "")).strip()
 
         subtask_name = f"({our_ref}) {property_value} - {location_value}: {ad_unit_value}".strip()
-        campaign_to_subtasks.setdefault(campaign_name, []).append(
+        by_campaign_job.setdefault((campaign_name, job_number), []).append(
             {
                 "our_ref": our_ref,
                 "subtask_name": subtask_name,
@@ -177,7 +195,8 @@ def _build_subtask_rows(
     out: List[Dict[str, str]] = []
     for parent in candidates:
         parent_status = parent_status_by_job.get(parent["job_number"], "would_create")
-        for sub in campaign_to_subtasks.get(parent["trafficking_campaign"], []):
+        key = (parent["campaign_name"], parent["job_number"])
+        for sub in by_campaign_job.get(key, []):
             out.append(
                 {
                     "parent_task_name": parent["task_name"],
@@ -211,15 +230,17 @@ def _check_existing_job_numbers(
 
 
 def main() -> None:
-    st.title("Trafficking + Billing to Asana")
+    st.title("Trafficking to Asana")
     st.caption(
-        "Creates one parent task per matched campaign/job and one subtask per unique Our Ref in that campaign."
+        "Uses Trafficking report only: one parent task per unique CampaignName+JobNumber and one subtask per unique OurRef."
     )
 
     access_token = _get_secret("ASANA_ACCESS_TOKEN")
     workspace_gid = _get_secret("ASANA_WORKSPACE_GID")
     target_project_gid = _get_secret("ASANA_PROJECT_GID")
     dedupe_project_gids = _split_csv_secret(_get_secret("ASANA_DEDUPE_PROJECT_GIDS"))
+    max_preview_rows = _as_int_secret("APP_MAX_PREVIEW_ROWS", 30)
+    max_candidate_rows = _as_int_secret("APP_MAX_CANDIDATE_ROWS", 25000)
     if not dedupe_project_gids and target_project_gid.strip():
         dedupe_project_gids = [target_project_gid.strip()]
 
@@ -234,94 +255,72 @@ def main() -> None:
     if missing_secrets:
         st.error(f"Missing required secrets: {', '.join(missing_secrets)}")
         return
-
-    st.subheader("Upload Reports")
-    left_col, right_col = st.columns(2)
-    with left_col:
-        trafficking_file = st.file_uploader(
-            "Trafficking Report", type=["csv", "xls", "xlsx"], key="trafficking_report_file"
-        )
-    with right_col:
-        billing_file = st.file_uploader(
-            "Billing Report", type=["csv", "xls", "xlsx"], key="billing_report_file"
-        )
-
-    if not trafficking_file or not billing_file:
-        st.info("Upload both Trafficking and Billing reports to continue.")
+    if not GID_RE.match(target_project_gid.strip()):
+        st.error("ASANA_PROJECT_GID must contain only digits.")
+        return
+    invalid_dedupe_gids = [gid for gid in dedupe_project_gids if not GID_RE.match(gid)]
+    if invalid_dedupe_gids:
+        st.error("Invalid GID(s) in ASANA_DEDUPE_PROJECT_GIDS: " + ", ".join(invalid_dedupe_gids))
         return
 
-    skip_col1, skip_col2 = st.columns(2)
-    with skip_col1:
-        trafficking_skip_top_rows = st.number_input(
-            "Trafficking: skip top rows",
-            min_value=0,
-            step=1,
-            value=3,
-            help="Rows to skip before the Trafficking header row.",
-        )
-    with skip_col2:
-        billing_skip_top_rows = st.number_input(
-            "Billing: skip top rows",
-            min_value=0,
-            step=1,
-            value=2,
-            help="Rows to skip before the Billing header row.",
-        )
+    st.subheader("Upload Trafficking Report")
+    trafficking_file = st.file_uploader(
+        "Trafficking Report", type=["tsv", "csv", "xls", "xlsx"], key="trafficking_report_file"
+    )
+
+    if not trafficking_file:
+        st.info("Upload a Trafficking report to continue.")
+        return
+
+    skip_top_rows = st.number_input(
+        "Trafficking: skip top rows",
+        min_value=0,
+        step=1,
+        value=0,
+        help="Rows to skip before the header row.",
+    )
 
     try:
-        trafficking_df = _read_uploaded_table(trafficking_file, int(trafficking_skip_top_rows)).fillna("")
+        trafficking_df = _clean_dataframe(_read_uploaded_table(trafficking_file, int(skip_top_rows)))
     except Exception as exc:
         st.error(f"Could not read Trafficking Report file: {exc}")
-        return
-
-    try:
-        billing_df = _read_uploaded_table(billing_file, int(billing_skip_top_rows)).fillna("")
-    except Exception as exc:
-        st.error(f"Could not read Billing Report file: {exc}")
         return
 
     if trafficking_df.empty:
         st.warning("Trafficking Report file has no rows.")
         return
-    if billing_df.empty:
-        st.warning("Billing Report file has no rows.")
-        return
-
     if len(trafficking_df.columns) <= 1:
-        st.warning("Trafficking parse looks wrong (single column). Adjust Trafficking skip rows.")
+        st.warning("Trafficking parse looks wrong (single column). Adjust skip rows.")
         st.dataframe(trafficking_df.head(20), use_container_width=True)
         return
-    if len(billing_df.columns) <= 1:
-        st.warning("Billing parse looks wrong (single column). Adjust Billing skip rows.")
-        st.dataframe(billing_df.head(20), use_container_width=True)
-        return
 
-    if "Campaign" not in trafficking_df.columns:
-        st.error("Trafficking Report is missing required 'Campaign' column.")
-        return
-    if "Campaign" not in billing_df.columns:
-        st.error("Billing Report is missing required 'Campaign' column.")
-        return
-    required_trafficking_cols = ["Our Ref", "Property", "Location", "Ad Unit", "Start Date"]
-    missing_trafficking_cols = [c for c in required_trafficking_cols if c not in trafficking_df.columns]
-    if missing_trafficking_cols:
-        st.error(
-            "Trafficking Report is missing required columns for subtasks: "
-            + ", ".join(missing_trafficking_cols)
-        )
+    required_cols = [
+        "CampaignName",
+        "JobNumber",
+        "OurRef",
+        "PropertyName",
+        "LocationText",
+        "SpecificationText",
+        "StartDate",
+    ]
+    missing_cols = [c for c in required_cols if c not in trafficking_df.columns]
+    if missing_cols:
+        st.error("Trafficking Report is missing required columns: " + ", ".join(missing_cols))
         return
 
     st.subheader("Trafficking Report Preview")
-    st.dataframe(trafficking_df.head(30), use_container_width=True)
+    st.dataframe(trafficking_df.head(max_preview_rows), use_container_width=True)
 
-    st.subheader("Billing Report Preview")
-    st.dataframe(billing_df.head(30), use_container_width=True)
-
-    candidates, unmatched = _build_candidate_rows(trafficking_df, billing_df)
+    candidates, unmatched = _build_candidate_rows(trafficking_df)
+    if len(candidates) > max_candidate_rows:
+        st.error(
+            f"Candidate task count ({len(candidates)}) exceeds APP_MAX_CANDIDATE_ROWS={max_candidate_rows}."
+        )
+        return
 
     st.subheader("Preflight Summary")
     c1, c2, c3 = st.columns(3)
-    c1.metric("Unique Trafficking Campaigns", len({_normalize_campaign_name(v) for v in trafficking_df["Campaign"].tolist() if _normalize_campaign_name(v)}))
+    c1.metric("Unique Campaign + Job", len(candidates))
     c2.metric("Candidate Tasks", len(candidates))
     c3.metric("Unmatched Items", len(unmatched))
 
@@ -330,18 +329,19 @@ def main() -> None:
         st.dataframe(pd.DataFrame(unmatched), use_container_width=True)
 
     if not candidates:
-        st.warning("No candidate tasks found from current Trafficking/Billing match rules.")
+        st.warning("No candidate tasks found from current Trafficking report.")
         return
 
     st.write("Candidate tasks")
     st.dataframe(pd.DataFrame(candidates), use_container_width=True)
+    st.caption(f"Dedupe projects checked: {', '.join(dedupe_project_gids)}")
 
     if not dedupe_project_gids:
         st.error("No dedupe projects configured. Add ASANA_DEDUPE_PROJECT_GIDS in secrets.")
         return
 
-    create_clicked = st.button("Check Existing + Build Task + Subtask List", type="primary")
-    if not create_clicked:
+    check_clicked = st.button("Check Existing + Build Task + Subtask List", type="primary")
+    if not check_clicked:
         st.caption(
             "On click: checks dedupe projects for existing job number in task names, then shows parent tasks and subtasks that would be created."
         )
@@ -357,7 +357,6 @@ def main() -> None:
         return
 
     results: List[Dict[str, str]] = []
-
     progress = st.progress(0)
     total = max(len(candidates), 1)
     for idx, row in enumerate(candidates):
@@ -365,6 +364,7 @@ def main() -> None:
         results.append(
             {
                 "task_name": row["task_name"],
+                "campaign_name": row["campaign_name"],
                 "job_number": row["job_number"],
                 "status": "skip_exists" if exists else "would_create",
                 "reason": (
@@ -380,11 +380,24 @@ def main() -> None:
     st.subheader("Task Output (Dry Run)")
     result_df = pd.DataFrame(results)
     st.dataframe(result_df, use_container_width=True)
+    st.download_button(
+        "Download Parent Dry Run CSV",
+        data=result_df.to_csv(index=False).encode("utf-8"),
+        file_name="parent_task_dry_run.csv",
+        mime="text/csv",
+    )
 
     parent_status_by_job = {row["job_number"]: row["status"] for row in results}
     subtask_rows = _build_subtask_rows(trafficking_df, candidates, parent_status_by_job)
     st.subheader("Subtask Output (Dry Run)")
-    st.dataframe(pd.DataFrame(subtask_rows), use_container_width=True)
+    subtask_df = pd.DataFrame(subtask_rows)
+    st.dataframe(subtask_df, use_container_width=True)
+    st.download_button(
+        "Download Subtask Dry Run CSV",
+        data=subtask_df.to_csv(index=False).encode("utf-8"),
+        file_name="subtask_dry_run.csv",
+        mime="text/csv",
+    )
 
     would_create_count = int((result_df["status"] == "would_create").sum()) if not result_df.empty else 0
     skipped_count = int((result_df["status"] == "skip_exists").sum()) if not result_df.empty else 0

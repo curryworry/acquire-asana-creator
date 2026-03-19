@@ -1,10 +1,11 @@
-# Trafficking + Billing to Asana (Streamlit)
+# Trafficking to Asana (Streamlit)
 
 Simple internal tool to:
-- Upload Trafficking Report and Billing Report (`.csv`, `.xls`, `.xlsx`)
-- Match Trafficking campaigns to Billing campaigns/jobs
-- Skip creation when an existing task already contains the job number
-- Build dry-run outputs for parent tasks and subtasks
+- Upload Trafficking report only (`.tsv`, `.csv`, `.xls`, `.xlsx`)
+- Build one parent task per unique `CampaignName + JobNumber`
+- Build one subtask per unique `OurRef` within each `CampaignName + JobNumber`
+- Skip parent task creation when an existing task name already contains that job number
+- Output dry-run parent/subtask lists (with CSV download)
 
 ## 1) Setup
 
@@ -29,20 +30,28 @@ ASANA_ACCESS_TOKEN = "your_token"
 ASANA_WORKSPACE_GID = "123456789"
 ASANA_PROJECT_GID = "987654321"
 ASANA_DEDUPE_PROJECT_GIDS = "987654321,111111111,222222222"
+APP_MAX_PREVIEW_ROWS = "30"
+APP_MAX_CANDIDATE_ROWS = "25000"
 ```
 
-Matching rules:
-- Trafficking campaign name comes from `Trafficking Report -> Campaign` (trailing comma removed).
-- Billing campaign must match: `Advertiser: Campaign Name (job 1234)`.
-- Match key is `Campaign Name` (text after first `:` and before `(job ...)`).
-- One parent task is generated per matched job number.
-- For each parent task, subtasks are generated from Trafficking rows in the same campaign:
-  - Name: `(Our Ref) Property - Location: Ad Unit`
-  - Due date: `Start Date` from Trafficking (converted to `YYYY-MM-DD`)
-- Before create, tool scans all `ASANA_DEDUPE_PROJECT_GIDS`; if any task name contains the job number, creation is skipped.
+## Required Trafficking columns
+
+- `CampaignName`
+- `JobNumber`
+- `OurRef`
+- `PropertyName`
+- `LocationText`
+- `SpecificationText`
+- `StartDate`
+
+## Rules
+
+- Parent task name: `CampaignName (JobNumber)`
+- Subtask name: `(OurRef) PropertyName - LocationText: SpecificationText`
+- Subtask due date: `StartDate` converted to `YYYY-MM-DD`
+- Dedupe check: if any task name in `ASANA_DEDUPE_PROJECT_GIDS` contains `JobNumber`, parent status is `skip_exists`
 
 ## Notes
 
-- Use skip controls if files contain title/blank rows before headers.
-- Default skip values for provided reports: Trafficking `3`, Billing `2`.
-- Results are shown per task: `created`, `skipped_exists`, or `error`.
+- Use `Trafficking: skip top rows` only if your file has pre-header rows.
+- For the provided `.tsv` export, default skip is `0`.

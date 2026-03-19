@@ -1,6 +1,8 @@
 from typing import Any, Dict, List
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 ASANA_API_BASE = "https://app.asana.com/api/1.0"
@@ -24,6 +26,16 @@ class AsanaClient:
                 "Accept": "application/json",
             }
         )
+        # Retry transient failures and API throttling without changing business logic.
+        retry = Retry(
+            total=4,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=20)
+        self.session.mount("https://", adapter)
 
     def create_task(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         response = self.session.post(
