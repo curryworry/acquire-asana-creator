@@ -1,13 +1,10 @@
-# Trafficking to Asana (Streamlit)
+# Trafficking to Asana (Streamlit + Daily Automation)
 
-Simple internal tool to:
-- Upload Trafficking report only (`.tsv`, `.csv`, `.xls`, `.xlsx`)
-- Build one parent task per unique `CampaignName + JobNumber`
-- Build one subtask per unique `OurRef` within each `CampaignName + JobNumber`
-- Skip parent task creation when an existing task name already contains that job number
-- Output dry-run parent/subtask lists (with CSV download)
+This project now supports two modes:
+- Streamlit app for interactive dry-run checks
+- GitHub Actions daily background dry-run (recommended for automation)
 
-## 1) Setup
+## 1) Setup (local)
 
 ```bash
 python3 -m venv .venv
@@ -15,26 +12,59 @@ source .venv/bin/activate
 python3 -m pip install -r requirements.txt
 ```
 
-## 2) Run locally
+## 2) Run Streamlit locally (optional)
 
 ```bash
 streamlit run app.py
 ```
 
-## 3) Configure Asana
+## 3) Daily automation (GitHub Actions)
 
-Create `.streamlit/secrets.toml`:
+Workflow file:
+- `.github/workflows/daily_trafficking_dry_run.yml`
 
-```toml
-ASANA_ACCESS_TOKEN = "your_token"
-ASANA_WORKSPACE_GID = "123456789"
-ASANA_PROJECT_GID = "987654321"
-ASANA_DEDUPE_PROJECT_GIDS = "987654321,111111111,222222222"
-APP_MAX_PREVIEW_ROWS = "30"
-APP_MAX_CANDIDATE_ROWS = "25000"
-```
+Schedule:
+- Daily at `13:00 UTC` (can be changed in workflow cron)
+- Can also be run manually via `workflow_dispatch`
 
-## Required Trafficking columns
+### Required GitHub repository secrets
+
+Asana:
+- `ASANA_ACCESS_TOKEN`
+- `ASANA_WORKSPACE_GID`
+- `ASANA_PROJECT_GID`
+- `ASANA_DEDUPE_PROJECT_GIDS`
+
+Gmail OAuth (for `hi@ash.gdn`):
+- `GMAIL_CLIENT_ID`
+- `GMAIL_CLIENT_SECRET`
+- `GMAIL_REFRESH_TOKEN`
+
+Reporting / behavior:
+- `REPORT_EMAIL_TO` (set to `data@acquirenz.com`)
+- `GMAIL_SUBJECT_CONTAINS` (set to `Trafficking Report - acquirenz`)
+
+### Optional GitHub repository secrets
+
+- `GMAIL_USER` (default `me`)
+- `GMAIL_SEARCH_QUERY` (override query; default includes `-label:processed`)
+- `GMAIL_PROCESSED_LABEL` (default `processed`)
+- `TRAFFICKING_SKIP_TOP_ROWS` (default `0`)
+
+## 4) Automation behavior
+
+Daily script:
+- `scripts/daily_trafficking_dry_run.py`
+
+Flow:
+1. Pull latest matching inbox email attachment
+2. Parse trafficking file (`.tsv`, `.csv`, `.xls`, `.xlsx`)
+3. Build parent/subtask dry-run outputs
+4. Check dedupe in Asana projects using `JobNumber`
+5. Email summary + CSV attachments to `REPORT_EMAIL_TO`
+6. Mark source email as read and add Gmail label `processed`
+
+## 5) Required Trafficking columns
 
 - `CampaignName`
 - `JobNumber`
@@ -44,14 +74,9 @@ APP_MAX_CANDIDATE_ROWS = "25000"
 - `SpecificationText`
 - `StartDate`
 
-## Rules
+## 6) Rules
 
 - Parent task name: `CampaignName (JobNumber)`
 - Subtask name: `(OurRef) PropertyName - LocationText: SpecificationText`
 - Subtask due date: `StartDate` converted to `YYYY-MM-DD`
 - Dedupe check: if any task name in `ASANA_DEDUPE_PROJECT_GIDS` contains `JobNumber`, parent status is `skip_exists`
-
-## Notes
-
-- Use `Trafficking: skip top rows` only if your file has pre-header rows.
-- For the provided `.tsv` export, default skip is `0`.

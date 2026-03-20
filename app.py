@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from asana_client import AsanaClient, AsanaError
+from gmail_client import GmailAttachment, GmailError, GmailInboxClient
 
 
 st.set_page_config(page_title="Trafficking to Asana", page_icon="✅", layout="wide")
@@ -76,6 +77,15 @@ def _read_uploaded_table(uploaded_file: Any, skip_top_rows: int) -> pd.DataFrame
             raise
 
     raise ValueError("Unsupported file type. Upload .tsv, .csv, .xls, or .xlsx.")
+
+
+class _InMemoryUpload:
+    def __init__(self, name: str, content: bytes):
+        self.name = name
+        self._content = content
+
+    def getvalue(self) -> bytes:
+        return self._content
 
 
 def _normalize_campaign_name(value: Any) -> str:
@@ -239,6 +249,12 @@ def main() -> None:
     workspace_gid = _get_secret("ASANA_WORKSPACE_GID")
     target_project_gid = _get_secret("ASANA_PROJECT_GID")
     dedupe_project_gids = _split_csv_secret(_get_secret("ASANA_DEDUPE_PROJECT_GIDS"))
+    gmail_client_id = _get_secret("GMAIL_CLIENT_ID")
+    gmail_client_secret = _get_secret("GMAIL_CLIENT_SECRET")
+    gmail_refresh_token = _get_secret("GMAIL_REFRESH_TOKEN")
+    gmail_user = _get_secret("GMAIL_USER", "me")
+    gmail_subject_contains = _get_secret("GMAIL_SUBJECT_CONTAINS", "Trafficking Report - acquirenz")
+    gmail_search_query = _get_secret("GMAIL_SEARCH_QUERY", "")
     max_preview_rows = _as_int_secret("APP_MAX_PREVIEW_ROWS", 30)
     max_candidate_rows = _as_int_secret("APP_MAX_CANDIDATE_ROWS", 25000)
     if not dedupe_project_gids and target_project_gid.strip():
@@ -264,16 +280,55 @@ def main() -> None:
         return
 
     st.subheader("Upload Trafficking Report")
-    trafficking_file = st.file_uploader(
-        "Trafficking Report", type=["tsv", "csv", "xls", "xlsx"], key="trafficking_report_file"
-    )
-
-    if not trafficking_file:
-        st.info("Upload a Trafficking report to continue.")
+    missing_gmail = []
+    if not gmail_client_id.strip():
+        missing_gmail.append("GMAIL_CLIENT_ID")
+    if not gmail_client_secret.strip():
+        missing_gmail.append("GMAIL_CLIENT_SECRET")
+    if not gmail_refresh_token.strip():
+        missing_gmail.append("GMAIL_REFRESH_TOKEN")
+    if missing_gmail:
+        st.error("Missing required Gmail secrets: " + ", ".join(missing_gmail))
         return
 
+    fetch_clicked = st.button("Fetch Latest Trafficking Report from Inbox", type="primary")
+    if fetch_clicked:
+        try:
+            inbox_client = GmailInboxClient(
+                client_id=gmail_client_id.strip(),
+                client_secret=gmail_client_secret.strip(),
+                refresh_token=gmail_refresh_token.strip(),
+                user_id=gmail_user.strip() or "me",
+            )
+            attachment = inbox_client.fetch_latest_attachment(
+                subject_contains=gmail_subject_contains.strip(),
+                allowed_extensions=(".tsv", ".csv", ".xls", ".xlsx"),
+                query=gmail_search_query.strip() or None,
+            )
+            st.session_state["inbox_attachment"] = attachment
+            st.success(
+                f"Loaded: {attachment.filename} from email '{attachment.subject}' (message {attachment.message_id})."
+            )
+        except (GmailError, ValueError) as exc:
+            st.error(f"Gmail fetch failed: {exc}")
+            return
+        except Exception as exc:
+            st.error(f"Unexpected Gmail error: {exc}")
+            return
+
+    attachment: GmailAttachment | None = st.session_state.get("inbox_attachment")
+    if not attachment:
+        st.info(
+            f"Click fetch to pull latest inbox attachment with subject containing '{gmail_subject_contains}'."
+        )
+        return
+
+    st.caption(
+        f"Using inbox file: {attachment.filename} | Subject: {attachment.subject} | Received (UTC): {attachment.received_at}"
+    )
+
     skip_top_rows = st.number_input(
-        "Trafficking: skip top rows",
+        "Trafficking: skip top rows after inbox fetch",
         min_value=0,
         step=1,
         value=0,
@@ -281,7 +336,8 @@ def main() -> None:
     )
 
     try:
-        trafficking_df = _clean_dataframe(_read_uploaded_table(trafficking_file, int(skip_top_rows)))
+        upload_obj = _InMemoryUpload(attachment.filename, attachment.content)
+        trafficking_df = _clean_dataframe(_read_uploaded_table(upload_obj, int(skip_top_rows)))
     except Exception as exc:
         st.error(f"Could not read Trafficking Report file: {exc}")
         return
