@@ -41,4 +41,5 @@ jobs:
 
           TRAFFICKING_SKIP_TOP_ROWS: ${{ secrets.TRAFFICKING_SKIP_TOP_ROWS }}
           REPORT_EMAIL_TO: ${{ secrets.REPORT_EMAIL_TO }}
+          DRY_RUN_MODE: ${{ secrets.DRY_RUN_MODE }}
         run: python scripts/daily_trafficking_dry_run.py

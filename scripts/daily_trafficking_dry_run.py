@@ -26,6 +26,13 @@ def split_csv(value: str) -> List[str]:
     return [x.strip() for x in value.split(",") if x.strip()]
 
 
+def as_bool(value: str, default: bool = True) -> bool:
+    raw = (value or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "y", "on"}
+
+
 def normalize_campaign_name(value: Any) -> str:
     text = "" if value is None else str(value)
     text = text.strip()
@@ -199,6 +206,43 @@ def build_subtask_rows(
     return out
 
 
+def build_subtask_blueprints(trafficking_df: pd.DataFrame) -> Dict[Tuple[str, str], List[Dict[str, str]]]:
+    by_campaign_job: Dict[Tuple[str, str], List[Dict[str, str]]] = {}
+    seen_refs = set()
+
+    for _, row in trafficking_df.iterrows():
+        campaign_name = normalize_campaign_name(row.get("CampaignName", ""))
+        job_number = normalize_job_number(row.get("JobNumber", ""))
+        if not campaign_name or not job_number:
+            continue
+
+        our_ref = str(row.get("OurRef", "")).strip()
+        if not our_ref:
+            continue
+
+        dedupe_key = (campaign_name, job_number, our_ref)
+        if dedupe_key in seen_refs:
+            continue
+        seen_refs.add(dedupe_key)
+
+        property_value = str(row.get("PropertyName", "")).strip()
+        location_value = str(row.get("LocationText", "")).strip()
+        ad_unit_value = str(row.get("SpecificationText", "")).strip()
+        start_date_raw = str(row.get("StartDate", "")).strip()
+
+        subtask_name = f"({our_ref}) {property_value} - {location_value}: {ad_unit_value}".strip()
+        by_campaign_job.setdefault((campaign_name, job_number), []).append(
+            {
+                "our_ref": our_ref,
+                "subtask_name": subtask_name,
+                "start_date_raw": start_date_raw,
+                "subtask_due_on": as_due_on(start_date_raw),
+            }
+        )
+
+    return by_campaign_job
+
+
 def check_existing_job_numbers(
     client: AsanaClient, dedupe_project_gids: List[str], jobs_to_check: List[str]
 ) -> Dict[str, bool]:
@@ -242,6 +286,7 @@ def main() -> int:
     processed_label_name = env("GMAIL_PROCESSED_LABEL", "processed")
     report_email_to = require_env("REPORT_EMAIL_TO")
     skip_top_rows = int(env("TRAFFICKING_SKIP_TOP_ROWS", "0") or "0")
+    dry_run_mode = as_bool(env("DRY_RUN_MODE", "true"), default=True)
 
     inbox = GmailInboxClient(
         client_id=gmail_client_id,
@@ -293,11 +338,106 @@ def main() -> int:
                     if exists
                     else "No existing task found in dedupe projects"
                 ),
+                "parent_task_gid": "",
             }
         )
 
+    if not dry_run_mode:
+        for parent in parent_results:
+            if parent["status"] != "would_create":
+                continue
+            try:
+                created = asana_client.create_task(
+                    {
+                        "workspace": require_env("ASANA_WORKSPACE_GID"),
+                        "name": parent["task_name"],
+                        "projects": [require_env("ASANA_PROJECT_GID")],
+                    }
+                )
+                parent["status"] = "created"
+                parent["reason"] = "Created parent task"
+                parent["parent_task_gid"] = str(created.get("gid", ""))
+            except AsanaError as exc:
+                parent["status"] = "error_parent_create"
+                parent["reason"] = str(exc)
+
     parent_status_by_job = {row["job_number"]: row["status"] for row in parent_results}
-    subtask_results = build_subtask_rows(df, candidates, parent_status_by_job)
+    if dry_run_mode:
+        subtask_results = build_subtask_rows(df, candidates, parent_status_by_job)
+    else:
+        subtask_results: List[Dict[str, str]] = []
+        blueprint_map = build_subtask_blueprints(df)
+        for parent in parent_results:
+            key = (parent["campaign_name"], parent["job_number"])
+            for sub in blueprint_map.get(key, []):
+                if parent["status"] == "skip_exists":
+                    subtask_results.append(
+                        {
+                            "parent_task_name": parent["task_name"],
+                            "parent_job_number": parent["job_number"],
+                            "parent_status": parent["status"],
+                            "our_ref": sub["our_ref"],
+                            "subtask_name": sub["subtask_name"],
+                            "subtask_due_on": sub["subtask_due_on"],
+                            "start_date_raw": sub["start_date_raw"],
+                            "subtask_status": "parent_skip_exists",
+                            "subtask_gid": "",
+                            "message": "Skipped because parent already exists",
+                        }
+                    )
+                    continue
+                if parent["status"] != "created" or not parent["parent_task_gid"]:
+                    subtask_results.append(
+                        {
+                            "parent_task_name": parent["task_name"],
+                            "parent_job_number": parent["job_number"],
+                            "parent_status": parent["status"],
+                            "our_ref": sub["our_ref"],
+                            "subtask_name": sub["subtask_name"],
+                            "subtask_due_on": sub["subtask_due_on"],
+                            "start_date_raw": sub["start_date_raw"],
+                            "subtask_status": "error_parent_not_created",
+                            "subtask_gid": "",
+                            "message": "Parent not created successfully",
+                        }
+                    )
+                    continue
+
+                payload = {"name": sub["subtask_name"]}
+                if sub["subtask_due_on"]:
+                    payload["due_on"] = sub["subtask_due_on"]
+
+                try:
+                    created_sub = asana_client.create_subtask(parent["parent_task_gid"], payload)
+                    subtask_results.append(
+                        {
+                            "parent_task_name": parent["task_name"],
+                            "parent_job_number": parent["job_number"],
+                            "parent_status": parent["status"],
+                            "our_ref": sub["our_ref"],
+                            "subtask_name": sub["subtask_name"],
+                            "subtask_due_on": sub["subtask_due_on"],
+                            "start_date_raw": sub["start_date_raw"],
+                            "subtask_status": "created",
+                            "subtask_gid": str(created_sub.get("gid", "")),
+                            "message": "Created subtask",
+                        }
+                    )
+                except AsanaError as exc:
+                    subtask_results.append(
+                        {
+                            "parent_task_name": parent["task_name"],
+                            "parent_job_number": parent["job_number"],
+                            "parent_status": parent["status"],
+                            "our_ref": sub["our_ref"],
+                            "subtask_name": sub["subtask_name"],
+                            "subtask_due_on": sub["subtask_due_on"],
+                            "start_date_raw": sub["start_date_raw"],
+                            "subtask_status": "error_subtask_create",
+                            "subtask_gid": "",
+                            "message": str(exc),
+                        }
+                    )
 
     parent_df = pd.DataFrame(parent_results)
     subtask_df = pd.DataFrame(subtask_results)
@@ -309,31 +449,58 @@ def main() -> int:
 
     parent_would_create = int((parent_df["status"] == "would_create").sum()) if not parent_df.empty else 0
     parent_skipped = int((parent_df["status"] == "skip_exists").sum()) if not parent_df.empty else 0
+    parent_created = int((parent_df["status"] == "created").sum()) if not parent_df.empty else 0
+    parent_errors = int((parent_df["status"] == "error_parent_create").sum()) if not parent_df.empty else 0
     subtask_would_create = (
         int(sum(1 for row in subtask_results if row["subtask_status"] == "would_create"))
         if subtask_results
         else 0
     )
+    subtask_created = (
+        int(sum(1 for row in subtask_results if row.get("subtask_status") == "created"))
+        if subtask_results
+        else 0
+    )
+    subtask_errors = (
+        int(
+            sum(
+                1
+                for row in subtask_results
+                if row.get("subtask_status") in {"error_parent_not_created", "error_subtask_create"}
+            )
+        )
+        if subtask_results
+        else 0
+    )
 
     summary = (
-        "Daily Trafficking Dry Run Summary\n\n"
+        f"Daily Trafficking {'Dry Run' if dry_run_mode else 'Live Create'} Summary\n\n"
         f"Source email subject: {attachment.subject}\n"
         f"Source email message id: {attachment.message_id}\n"
         f"Source email received (UTC): {attachment.received_at}\n"
         f"Source attachment: {attachment.filename}\n"
+        f"Mode: {'DRY_RUN' if dry_run_mode else 'LIVE_CREATE'}\n"
         f"Rows parsed: {len(df)}\n"
         f"Parent candidates: {len(parent_df)}\n"
         f"Parent would create: {parent_would_create}\n"
         f"Parent skipped existing: {parent_skipped}\n"
+        f"Parent created: {parent_created}\n"
+        f"Parent creation errors: {parent_errors}\n"
         f"Subtask rows: {len(subtask_df)}\n"
         f"Subtask would create: {subtask_would_create}\n"
+        f"Subtask created: {subtask_created}\n"
+        f"Subtask errors: {subtask_errors}\n"
         f"Unmatched items: {len(unmatched_df)}\n"
         f"Dedupe projects checked: {', '.join(dedupe_gids)}\n"
     )
 
     inbox.send_email(
         to_email=report_email_to,
-        subject="[Dry Run] Trafficking -> Asana Summary",
+        subject=(
+            "[Dry Run] Trafficking -> Asana Summary"
+            if dry_run_mode
+            else "[Live Create] Trafficking -> Asana Summary"
+        ),
         body_text=summary,
         attachments={
             "parent_task_dry_run.csv": parent_csv,

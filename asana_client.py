@@ -51,6 +51,20 @@ class AsanaClient:
         body = response.json()
         return body.get("data", body)
 
+    def create_subtask(self, parent_task_gid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        response = self.session.post(
+            f"{ASANA_API_BASE}/tasks/{parent_task_gid}/subtasks",
+            json={"data": payload},
+            timeout=self.timeout,
+        )
+
+        if response.status_code >= 400:
+            msg = self._extract_error_message(response)
+            raise AsanaError(msg)
+
+        body = response.json()
+        return body.get("data", body)
+
     def list_project_task_names(self, project_gid: str) -> List[str]:
         names: List[str] = []
         offset = None

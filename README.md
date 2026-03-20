@@ -43,6 +43,7 @@ Gmail OAuth (for `hi@ash.gdn`):
 Reporting / behavior:
 - `REPORT_EMAIL_TO` (set to `data@acquirenz.com`)
 - `GMAIL_SUBJECT_CONTAINS` (set to `Trafficking Report - acquirenz`)
+- `DRY_RUN_MODE` (`true` or `false`; recommended start with `true`)
 
 ### Optional GitHub repository secrets
 
@@ -63,6 +64,11 @@ Flow:
 4. Check dedupe in Asana projects using `JobNumber`
 5. Email summary + CSV attachments to `REPORT_EMAIL_TO`
 6. Mark source email as read and add Gmail label `processed`
+
+`DRY_RUN_MODE` behavior:
+- `true`: no Asana writes, report only
+- `false`: creates parent tasks (for `would_create`) and subtasks under created parents
+- Scheduled runs always use the current secret value, so if left `false`, future daily runs are live
 
 ## 5) Required Trafficking columns
 
