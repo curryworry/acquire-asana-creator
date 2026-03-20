@@ -2,9 +2,15 @@ import os
 import re
 import sys
 from io import BytesIO
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import pandas as pd
+
+# Ensure repo root is importable when executed as a script in CI.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from asana_client import AsanaClient, AsanaError
 from gmail_client import GmailAttachment, GmailError, GmailInboxClient
