@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+from datetime import date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -57,6 +58,25 @@ def as_due_on(date_value: Any) -> str:
     if pd.isna(parsed):
         return ""
     return parsed.strftime("%Y-%m-%d")
+
+
+def due_on_to_date(due_on: str) -> date | None:
+    if not due_on:
+        return None
+    try:
+        return datetime.strptime(due_on, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def subtract_weekdays(from_date: date, weekdays: int) -> date:
+    d = from_date
+    remaining = weekdays
+    while remaining > 0:
+        d = d - timedelta(days=1)
+        if d.weekday() < 5:
+            remaining -= 1
+    return d
 
 
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -145,67 +165,6 @@ def build_candidate_rows(trafficking_df: pd.DataFrame) -> Tuple[List[Dict[str, s
     return sorted(candidates, key=lambda x: (x["campaign_name"], x["job_number"])), unmatched
 
 
-def build_subtask_rows(
-    trafficking_df: pd.DataFrame,
-    candidates: List[Dict[str, str]],
-    parent_status_by_job: Dict[str, str],
-) -> List[Dict[str, str]]:
-    by_campaign_job: Dict[Tuple[str, str], List[Dict[str, str]]] = {}
-    seen_refs = set()
-
-    for _, row in trafficking_df.iterrows():
-        campaign_name = normalize_campaign_name(row.get("CampaignName", ""))
-        job_number = normalize_job_number(row.get("JobNumber", ""))
-        if not campaign_name or not job_number:
-            continue
-
-        our_ref = str(row.get("OurRef", "")).strip()
-        if not our_ref:
-            continue
-
-        dedupe_key = (campaign_name, job_number, our_ref)
-        if dedupe_key in seen_refs:
-            continue
-        seen_refs.add(dedupe_key)
-
-        property_value = str(row.get("PropertyName", "")).strip()
-        location_value = str(row.get("LocationText", "")).strip()
-        ad_unit_value = str(row.get("SpecificationText", "")).strip()
-        start_date_raw = str(row.get("StartDate", "")).strip()
-
-        subtask_name = f"({our_ref}) {property_value} - {location_value}: {ad_unit_value}".strip()
-        by_campaign_job.setdefault((campaign_name, job_number), []).append(
-            {
-                "our_ref": our_ref,
-                "subtask_name": subtask_name,
-                "start_date_raw": start_date_raw,
-                "subtask_due_on": as_due_on(start_date_raw),
-            }
-        )
-
-    out: List[Dict[str, str]] = []
-    for parent in candidates:
-        parent_status = parent_status_by_job.get(parent["job_number"], "would_create")
-        key = (parent["campaign_name"], parent["job_number"])
-        for sub in by_campaign_job.get(key, []):
-            out.append(
-                {
-                    "parent_task_name": parent["task_name"],
-                    "parent_job_number": parent["job_number"],
-                    "parent_status": parent_status,
-                    "our_ref": sub["our_ref"],
-                    "subtask_name": sub["subtask_name"],
-                    "subtask_due_on": sub["subtask_due_on"],
-                    "start_date_raw": sub["start_date_raw"],
-                    "subtask_status": (
-                        "parent_skip_exists" if parent_status == "skip_exists" else "would_create"
-                    ),
-                }
-            )
-
-    return out
-
-
 def build_subtask_blueprints(trafficking_df: pd.DataFrame) -> Dict[Tuple[str, str], List[Dict[str, str]]]:
     by_campaign_job: Dict[Tuple[str, str], List[Dict[str, str]]] = {}
     seen_refs = set()
@@ -237,10 +196,53 @@ def build_subtask_blueprints(trafficking_df: pd.DataFrame) -> Dict[Tuple[str, st
                 "subtask_name": subtask_name,
                 "start_date_raw": start_date_raw,
                 "subtask_due_on": as_due_on(start_date_raw),
+                "subtask_kind": "source",
+            }
+        )
+
+    # Add control subtasks based on earliest source subtask due date per parent.
+    for key, rows in by_campaign_job.items():
+        valid_dates = [due_on_to_date(r.get("subtask_due_on", "")) for r in rows]
+        valid_dates = [d for d in valid_dates if d is not None]
+        if not valid_dates:
+            continue
+
+        earliest = min(valid_dates)
+        chase_due = subtract_weekdays(earliest, 4)
+        check_live_due = earliest + timedelta(days=2)
+
+        rows.append(
+            {
+                "our_ref": "",
+                "subtask_name": "chase creative",
+                "start_date_raw": earliest.isoformat(),
+                "subtask_due_on": chase_due.isoformat(),
+                "subtask_kind": "control",
+            }
+        )
+        rows.append(
+            {
+                "our_ref": "",
+                "subtask_name": "Check live status",
+                "start_date_raw": earliest.isoformat(),
+                "subtask_due_on": check_live_due.isoformat(),
+                "subtask_kind": "control",
             }
         )
 
     return by_campaign_job
+
+
+def earliest_source_due_from_blueprints(rows: List[Dict[str, str]]) -> str:
+    valid_dates = [
+        due_on_to_date(r.get("subtask_due_on", ""))
+        for r in rows
+        if r.get("subtask_kind") == "source"
+    ]
+    valid_dates = [d for d in valid_dates if d is not None]
+    if not valid_dates:
+        return ""
+    return min(valid_dates).isoformat()
 
 
 def check_existing_job_numbers(
@@ -272,8 +274,8 @@ def validate_gid_list(name: str, values: List[str]) -> None:
 
 def main() -> int:
     asana_access_token = require_env("ASANA_ACCESS_TOKEN")
-    _ = require_env("ASANA_WORKSPACE_GID")
-    _ = require_env("ASANA_PROJECT_GID")
+    asana_workspace_gid = require_env("ASANA_WORKSPACE_GID")
+    asana_project_gid = require_env("ASANA_PROJECT_GID")
     dedupe_gids = split_csv(require_env("ASANA_DEDUPE_PROJECT_GIDS"))
     validate_gid_list("ASANA_DEDUPE_PROJECT_GIDS", dedupe_gids)
 
@@ -318,6 +320,7 @@ def main() -> int:
         raise RuntimeError("Trafficking file missing required columns: " + ", ".join(missing_cols))
 
     candidates, unmatched = build_candidate_rows(df)
+    blueprint_map = build_subtask_blueprints(df)
 
     asana_client = AsanaClient(access_token=asana_access_token)
     existing_by_job = check_existing_job_numbers(
@@ -326,12 +329,15 @@ def main() -> int:
 
     parent_results: List[Dict[str, str]] = []
     for row in candidates:
+        key = (row["campaign_name"], row["job_number"])
+        earliest_due_on = earliest_source_due_from_blueprints(blueprint_map.get(key, []))
         exists = existing_by_job.get(row["job_number"], False)
         parent_results.append(
             {
                 "task_name": row["task_name"],
                 "campaign_name": row["campaign_name"],
                 "job_number": row["job_number"],
+                "parent_due_on": earliest_due_on,
                 "status": "skip_exists" if exists else "would_create",
                 "reason": (
                     "Found existing task containing job number in dedupe projects"
@@ -346,14 +352,16 @@ def main() -> int:
         for parent in parent_results:
             if parent["status"] != "would_create":
                 continue
+            payload: Dict[str, Any] = {
+                "workspace": asana_workspace_gid,
+                "name": parent["task_name"],
+                "projects": [asana_project_gid],
+            }
+            if parent["parent_due_on"]:
+                payload["due_on"] = parent["parent_due_on"]
+
             try:
-                created = asana_client.create_task(
-                    {
-                        "workspace": require_env("ASANA_WORKSPACE_GID"),
-                        "name": parent["task_name"],
-                        "projects": [require_env("ASANA_PROJECT_GID")],
-                    }
-                )
+                created = asana_client.create_task(payload)
                 parent["status"] = "created"
                 parent["reason"] = "Created parent task"
                 parent["parent_task_gid"] = str(created.get("gid", ""))
@@ -361,83 +369,79 @@ def main() -> int:
                 parent["status"] = "error_parent_create"
                 parent["reason"] = str(exc)
 
-    parent_status_by_job = {row["job_number"]: row["status"] for row in parent_results}
-    if dry_run_mode:
-        subtask_results = build_subtask_rows(df, candidates, parent_status_by_job)
-    else:
-        subtask_results: List[Dict[str, str]] = []
-        blueprint_map = build_subtask_blueprints(df)
-        for parent in parent_results:
-            key = (parent["campaign_name"], parent["job_number"])
-            for sub in blueprint_map.get(key, []):
-                if parent["status"] == "skip_exists":
-                    subtask_results.append(
-                        {
-                            "parent_task_name": parent["task_name"],
-                            "parent_job_number": parent["job_number"],
-                            "parent_status": parent["status"],
-                            "our_ref": sub["our_ref"],
-                            "subtask_name": sub["subtask_name"],
-                            "subtask_due_on": sub["subtask_due_on"],
-                            "start_date_raw": sub["start_date_raw"],
-                            "subtask_status": "parent_skip_exists",
-                            "subtask_gid": "",
-                            "message": "Skipped because parent already exists",
-                        }
-                    )
-                    continue
-                if parent["status"] != "created" or not parent["parent_task_gid"]:
-                    subtask_results.append(
-                        {
-                            "parent_task_name": parent["task_name"],
-                            "parent_job_number": parent["job_number"],
-                            "parent_status": parent["status"],
-                            "our_ref": sub["our_ref"],
-                            "subtask_name": sub["subtask_name"],
-                            "subtask_due_on": sub["subtask_due_on"],
-                            "start_date_raw": sub["start_date_raw"],
-                            "subtask_status": "error_parent_not_created",
-                            "subtask_gid": "",
-                            "message": "Parent not created successfully",
-                        }
-                    )
-                    continue
+    subtask_results: List[Dict[str, str]] = []
+    for parent in parent_results:
+        key = (parent["campaign_name"], parent["job_number"])
+        for sub in blueprint_map.get(key, []):
+            base_row = {
+                "parent_task_name": parent["task_name"],
+                "parent_job_number": parent["job_number"],
+                "parent_status": parent["status"],
+                "our_ref": sub["our_ref"],
+                "subtask_name": sub["subtask_name"],
+                "subtask_due_on": sub["subtask_due_on"],
+                "start_date_raw": sub["start_date_raw"],
+                "subtask_kind": sub.get("subtask_kind", "source"),
+            }
 
-                payload = {"name": sub["subtask_name"]}
-                if sub["subtask_due_on"]:
-                    payload["due_on"] = sub["subtask_due_on"]
+            if dry_run_mode:
+                subtask_results.append(
+                    {
+                        **base_row,
+                        "subtask_status": (
+                            "parent_skip_exists" if parent["status"] == "skip_exists" else "would_create"
+                        ),
+                        "subtask_gid": "",
+                        "message": "Dry run",
+                    }
+                )
+                continue
 
-                try:
-                    created_sub = asana_client.create_subtask(parent["parent_task_gid"], payload)
-                    subtask_results.append(
-                        {
-                            "parent_task_name": parent["task_name"],
-                            "parent_job_number": parent["job_number"],
-                            "parent_status": parent["status"],
-                            "our_ref": sub["our_ref"],
-                            "subtask_name": sub["subtask_name"],
-                            "subtask_due_on": sub["subtask_due_on"],
-                            "start_date_raw": sub["start_date_raw"],
-                            "subtask_status": "created",
-                            "subtask_gid": str(created_sub.get("gid", "")),
-                            "message": "Created subtask",
-                        }
-                    )
-                except AsanaError as exc:
-                    subtask_results.append(
-                        {
-                            "parent_task_name": parent["task_name"],
-                            "parent_job_number": parent["job_number"],
-                            "parent_status": parent["status"],
-                            "our_ref": sub["our_ref"],
-                            "subtask_name": sub["subtask_name"],
-                            "subtask_due_on": sub["subtask_due_on"],
-                            "start_date_raw": sub["start_date_raw"],
-                            "subtask_status": "error_subtask_create",
-                            "subtask_gid": "",
-                            "message": str(exc),
-                        }
-                    )
+            if parent["status"] == "skip_exists":
+                subtask_results.append(
+                    {
+                        **base_row,
+                        "subtask_status": "parent_skip_exists",
+                        "subtask_gid": "",
+                        "message": "Skipped because parent already exists",
+                    }
+                )
+                continue
+
+            if parent["status"] != "created" or not parent["parent_task_gid"]:
+                subtask_results.append(
+                    {
+                        **base_row,
+                        "subtask_status": "error_parent_not_created",
+                        "subtask_gid": "",
+                        "message": "Parent not created successfully",
+                    }
+                )
+                continue
+
+            payload = {"name": sub["subtask_name"]}
+            if sub["subtask_due_on"]:
+                payload["due_on"] = sub["subtask_due_on"]
+
+            try:
+                created_sub = asana_client.create_subtask(parent["parent_task_gid"], payload)
+                subtask_results.append(
+                    {
+                        **base_row,
+                        "subtask_status": "created",
+                        "subtask_gid": str(created_sub.get("gid", "")),
+                        "message": "Created subtask",
+                    }
+                )
+            except AsanaError as exc:
+                subtask_results.append(
+                    {
+                        **base_row,
+                        "subtask_status": "error_subtask_create",
+                        "subtask_gid": "",
+                        "message": str(exc),
+                    }
+                )
 
     parent_df = pd.DataFrame(parent_results)
     subtask_df = pd.DataFrame(subtask_results)
@@ -451,6 +455,7 @@ def main() -> int:
     parent_skipped = int((parent_df["status"] == "skip_exists").sum()) if not parent_df.empty else 0
     parent_created = int((parent_df["status"] == "created").sum()) if not parent_df.empty else 0
     parent_errors = int((parent_df["status"] == "error_parent_create").sum()) if not parent_df.empty else 0
+
     subtask_would_create = (
         int(sum(1 for row in subtask_results if row["subtask_status"] == "would_create"))
         if subtask_results
@@ -503,8 +508,8 @@ def main() -> int:
         ),
         body_text=summary,
         attachments={
-            "parent_task_dry_run.csv": parent_csv,
-            "subtask_dry_run.csv": subtask_csv,
+            "parent_task_results.csv": parent_csv,
+            "subtask_results.csv": subtask_csv,
             "unmatched_items.csv": unmatched_csv,
         },
     )

@@ -1,0 +1,104 @@
+Trafficking Automation Process (Plain-English)
+
+Purpose
+- Run once per day in GitHub Actions.
+- Pull the latest trafficking report email attachment.
+- Convert rows into parent tasks + subtasks in Asana.
+- Send a summary email with CSV outputs.
+
+Step-by-step process
+
+1) Trigger
+- GitHub Actions runs on schedule (currently 17:00 UTC) or manual trigger.
+- Workflow calls: scripts/daily_trafficking_dry_run.py
+
+2) Load configuration
+- Script reads secrets from workflow env.
+- Important behavior flag: DRY_RUN_MODE
+  - true = report only
+  - false = create tasks/subtasks in Asana
+
+3) Connect to Gmail
+- Uses Gmail OAuth credentials and refresh token.
+- Searches inbox by subject contains rule and has attachment.
+- Default query excludes already-processed messages: -label:processed
+
+4) Download source file
+- Takes the latest matching message.
+- Downloads the attachment (.tsv/.csv/.xls/.xlsx).
+
+5) Parse source data
+- Reads the file into a table.
+- Normalizes headers and drops blank unnamed columns.
+- Validates required columns exist:
+  CampaignName, JobNumber, OurRef, PropertyName, LocationText, SpecificationText, StartDate
+
+6) Build parent candidates
+- Unique key per parent: CampaignName + JobNumber
+- Parent task title format:
+  CampaignName (JobNumber)
+
+7) Build source subtasks (from report rows)
+- Unique key per source subtask:
+  CampaignName + JobNumber + OurRef
+- Source subtask title format:
+  (OurRef) PropertyName - LocationText: SpecificationText
+- Source subtask due date:
+  StartDate (converted to YYYY-MM-DD)
+
+8) Build control subtasks (new business rules)
+- For each parent, find earliest source subtask due date.
+- Add subtask: chase creative
+  - Due date = earliest source due date minus 4 weekdays (Mon-Fri)
+- Add subtask: Check live status
+  - Due date = earliest source due date plus 2 calendar days
+
+9) Parent due date rule
+- Parent due date is set to earliest source subtask due date.
+
+10) Dedupe check (unchanged)
+- Script checks configured Asana projects for existing task names containing JobNumber.
+- If found, parent marked skip_exists.
+- If not found, parent is would_create (or created in live mode).
+
+11) Asana write behavior
+- DRY_RUN_MODE=true:
+  - No Asana writes.
+  - Output only: would_create / skip_exists for parent and subtasks.
+- DRY_RUN_MODE=false:
+  - Create parent task for each would_create candidate.
+  - Parent includes due date from step 9.
+  - Create all subtasks under created parent:
+    - source subtasks
+    - chase creative
+    - Check live status
+
+12) Reporting
+- Script compiles CSV outputs for:
+  - parent results
+  - subtask results
+  - unmatched items
+- Sends summary email (with attachments) to REPORT_EMAIL_TO.
+
+13) Mark processed
+- Ensures Gmail label "processed" exists.
+- Marks source message as read.
+- Applies "processed" label to source message.
+
+How to change rules safely
+
+A) Change naming rules
+- Edit subtask or parent naming logic in scripts/daily_trafficking_dry_run.py.
+
+B) Change date rules
+- Edit control subtask due-date calculations in build_subtask_blueprints().
+- Edit parent due-date selection in earliest_source_due_from_blueprints().
+
+C) Add extra subtasks/conditions
+- Add entries in build_subtask_blueprints() after earliest date is calculated.
+- Keep subtask_kind clear (source vs control) for due-date logic.
+
+D) Test before going live
+- Set DRY_RUN_MODE=true and run workflow manually.
+- Validate summary email + CSV outputs.
+- Then set DRY_RUN_MODE=false.

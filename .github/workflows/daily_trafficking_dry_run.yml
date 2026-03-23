@@ -2,7 +2,7 @@ name: Daily Trafficking Dry Run
 
 on:
   schedule:
-    # 17:00 UTC daily (adjust as needed)
+    # 17:00 UTC daily
     - cron: "0 17 * * *"
   workflow_dispatch:
 
