@@ -24,7 +24,7 @@ Workflow file:
 - `.github/workflows/daily_trafficking_dry_run.yml`
 
 Schedule:
-- Daily at `13:00 UTC` (can be changed in workflow cron)
+- Daily at `17:00 UTC` (can be changed in workflow cron)
 - Can also be run manually via `workflow_dispatch`
 
 ### Required GitHub repository secrets
