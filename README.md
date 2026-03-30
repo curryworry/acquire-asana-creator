@@ -44,6 +44,7 @@ Reporting / behavior:
 - `REPORT_EMAIL_TO` (set to `data@acquirenz.com`)
 - `GMAIL_SUBJECT_CONTAINS` (set to `Trafficking Report - acquirenz`)
 - `DRY_RUN_MODE` (`true` or `false`; recommended start with `true`)
+- `DEFAULT_ASSIGNEE_GID` (optional; e.g. Jasper: `1213009182588007`)
 
 ### Optional GitHub repository secrets
 

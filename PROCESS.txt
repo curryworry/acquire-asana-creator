@@ -68,6 +68,7 @@ Step-by-step process
 - DRY_RUN_MODE=false:
   - Create parent task for each would_create candidate.
   - Parent includes due date from step 9.
+  - If DEFAULT_ASSIGNEE_GID is set, assign parent task to that user.
   - Create all subtasks under created parent:
     - source subtasks
     - chase creative

@@ -297,6 +297,9 @@ def main() -> int:
     report_email_to = require_env("REPORT_EMAIL_TO")
     skip_top_rows = int(env("TRAFFICKING_SKIP_TOP_ROWS", "0") or "0")
     dry_run_mode = as_bool(env("DRY_RUN_MODE", "true"), default=True)
+    default_assignee_gid = env("DEFAULT_ASSIGNEE_GID", "")
+    if default_assignee_gid:
+        validate_gid_list("DEFAULT_ASSIGNEE_GID", [default_assignee_gid])
 
     inbox = GmailInboxClient(
         client_id=gmail_client_id,
@@ -365,6 +368,8 @@ def main() -> int:
                 "name": parent["task_name"],
                 "projects": [asana_project_gid],
             }
+            if default_assignee_gid:
+                payload["assignee"] = default_assignee_gid
             if parent["parent_due_on"]:
                 payload["due_on"] = parent["parent_due_on"]
 
