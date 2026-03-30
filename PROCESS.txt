@@ -54,7 +54,7 @@ Step-by-step process
   - Due date = earliest source due date plus 2 calendar days
 
 9) Parent due date rule
-- Parent due date is set to earliest source subtask due date.
+- Parent due date is set to the `chase creative` subtask due date.
 
 10) Dedupe check (unchanged)
 - Script checks configured Asana projects for existing task names containing JobNumber.

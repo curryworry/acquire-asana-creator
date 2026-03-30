@@ -233,7 +233,15 @@ def build_subtask_blueprints(trafficking_df: pd.DataFrame) -> Dict[Tuple[str, st
     return by_campaign_job
 
 
-def earliest_source_due_from_blueprints(rows: List[Dict[str, str]]) -> str:
+def parent_due_from_blueprints(rows: List[Dict[str, str]]) -> str:
+    # Parent due date follows the "chase creative" control subtask date.
+    for row in rows:
+        if str(row.get("subtask_name", "")).strip().lower() == "chase creative":
+            due = due_on_to_date(row.get("subtask_due_on", ""))
+            if due is not None:
+                return due.isoformat()
+
+    # Safety fallback if control subtask was not generated.
     valid_dates = [
         due_on_to_date(r.get("subtask_due_on", ""))
         for r in rows
@@ -330,7 +338,7 @@ def main() -> int:
     parent_results: List[Dict[str, str]] = []
     for row in candidates:
         key = (row["campaign_name"], row["job_number"])
-        earliest_due_on = earliest_source_due_from_blueprints(blueprint_map.get(key, []))
+        earliest_due_on = parent_due_from_blueprints(blueprint_map.get(key, []))
         exists = existing_by_job.get(row["job_number"], False)
         parent_results.append(
             {
