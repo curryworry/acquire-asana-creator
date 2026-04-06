@@ -52,6 +52,9 @@ Step-by-step process
   - Due date = earliest source due date minus 4 weekdays (Mon-Fri)
 - Add subtask: Check live status
   - Due date = earliest source due date plus 2 calendar days
+- Add subtask: Create and send Dash
+  - Due date = earliest source due date plus 3 weekdays (Mon-Fri)
+  - Assignee = DASH_ASSIGNEE_GID (or DEFAULT_ASSIGNEE_GID if not set)
 
 9) Parent due date rule
 - Parent due date is set to the `chase creative` subtask due date.

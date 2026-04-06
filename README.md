@@ -45,6 +45,7 @@ Reporting / behavior:
 - `GMAIL_SUBJECT_CONTAINS` (set to `Trafficking Report - acquirenz`)
 - `DRY_RUN_MODE` (`true` or `false`; recommended start with `true`)
 - `DEFAULT_ASSIGNEE_GID` (optional; e.g. Jasper: `1213009182588007`)
+- `DASH_ASSIGNEE_GID` (optional; defaults to `DEFAULT_ASSIGNEE_GID`)
 
 ### Optional GitHub repository secrets
 

@@ -79,6 +79,16 @@ def subtract_weekdays(from_date: date, weekdays: int) -> date:
     return d
 
 
+def add_weekdays(from_date: date, weekdays: int) -> date:
+    d = from_date
+    remaining = weekdays
+    while remaining > 0:
+        d = d + timedelta(days=1)
+        if d.weekday() < 5:
+            remaining -= 1
+    return d
+
+
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     clean = df.copy()
     clean.columns = [str(c).strip() for c in clean.columns]
@@ -210,6 +220,7 @@ def build_subtask_blueprints(trafficking_df: pd.DataFrame) -> Dict[Tuple[str, st
         earliest = min(valid_dates)
         chase_due = subtract_weekdays(earliest, 4)
         check_live_due = earliest + timedelta(days=2)
+        dash_due = add_weekdays(earliest, 3)
 
         rows.append(
             {
@@ -227,6 +238,15 @@ def build_subtask_blueprints(trafficking_df: pd.DataFrame) -> Dict[Tuple[str, st
                 "start_date_raw": earliest.isoformat(),
                 "subtask_due_on": check_live_due.isoformat(),
                 "subtask_kind": "control",
+            }
+        )
+        rows.append(
+            {
+                "our_ref": "",
+                "subtask_name": "Create and send Dash",
+                "start_date_raw": earliest.isoformat(),
+                "subtask_due_on": dash_due.isoformat(),
+                "subtask_kind": "control_dash",
             }
         )
 
@@ -300,6 +320,9 @@ def main() -> int:
     default_assignee_gid = env("DEFAULT_ASSIGNEE_GID", "")
     if default_assignee_gid:
         validate_gid_list("DEFAULT_ASSIGNEE_GID", [default_assignee_gid])
+    dash_assignee_gid = env("DASH_ASSIGNEE_GID", default_assignee_gid)
+    if dash_assignee_gid:
+        validate_gid_list("DASH_ASSIGNEE_GID", [dash_assignee_gid])
 
     inbox = GmailInboxClient(
         client_id=gmail_client_id,
@@ -435,6 +458,8 @@ def main() -> int:
             payload = {"name": sub["subtask_name"]}
             if sub["subtask_due_on"]:
                 payload["due_on"] = sub["subtask_due_on"]
+            if sub.get("subtask_kind") == "control_dash" and dash_assignee_gid:
+                payload["assignee"] = dash_assignee_gid
 
             try:
                 created_sub = asana_client.create_subtask(parent["parent_task_gid"], payload)
