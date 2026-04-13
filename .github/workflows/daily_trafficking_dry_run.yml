@@ -2,8 +2,17 @@ name: Daily Trafficking Dry Run
 
 on:
   schedule:
-    # 18:15 UTC daily (2:15 PM EDT / 1:15 PM EST)
+    # Multiple daily runs (UTC):
+    # 13:00 UTC = 9:00 AM EDT
+    # 18:15 UTC = 2:15 PM EDT
+    # 19:00 UTC = 3:00 PM EDT
+    # 02:00 UTC = 10:00 PM EDT (previous day UTC offset)
+    # 08:00 UTC = 4:00 AM EDT
+    - cron: "0 13 * * *"
     - cron: "15 18 * * *"
+    - cron: "0 19 * * *"
+    - cron: "0 2 * * *"
+    - cron: "0 8 * * *"
   workflow_dispatch:
 
 jobs:
