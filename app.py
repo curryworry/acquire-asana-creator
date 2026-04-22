@@ -467,9 +467,26 @@ def _render_live_alert_dashboard() -> bool:
     tab_active, tab_snoozed = st.tabs(["Active Alerts", "Snoozed"])
 
     with tab_active:
-        st.dataframe(active_df, use_container_width=True)
-        candidate_refs = sorted(active_df["OUR_REF"].dropna().astype(str).unique().tolist())
-        selected_refs = st.multiselect("OUR_REFs to snooze", options=candidate_refs, key="active_refs_to_snooze")
+        if active_df.empty:
+            st.info("No active alerts in this run.")
+            edited_active = pd.DataFrame()
+            selected_refs: List[str] = []
+        else:
+            active_view = active_df.copy()
+            active_view.insert(0, "SELECT", False)
+            edited_active = st.data_editor(
+                active_view,
+                use_container_width=True,
+                hide_index=True,
+                column_config={"SELECT": st.column_config.CheckboxColumn("Select")},
+                disabled=[c for c in active_view.columns if c != "SELECT"],
+                key="active_alerts_editor",
+            )
+            selected_refs = (
+                edited_active.loc[edited_active["SELECT"] == True, "OUR_REF"].dropna().astype(str).unique().tolist()
+            )
+            st.caption(f"Selected OUR_REF count: {len(selected_refs)}")
+
         snooze_reason = st.text_area("Snooze reason", key="snooze_reason_text")
         snooze_end_date = st.date_input(
             "Snooze end date (NZ)",
@@ -498,11 +515,30 @@ def _render_live_alert_dashboard() -> bool:
                 st.rerun()
 
     with tab_snoozed:
-        st.dataframe(snoozed_df, use_container_width=True)
-        snoozed_refs = sorted(snoozed_df["OUR_REF"].dropna().astype(str).unique().tolist())
-        selected_snoozed_refs = st.multiselect(
-            "Snoozed OUR_REFs", options=snoozed_refs, key="snoozed_refs_actions"
-        )
+        if snoozed_df.empty:
+            st.info("No snoozed or dismissed alerts in this run.")
+            edited_snoozed = pd.DataFrame()
+            selected_snoozed_refs: List[str] = []
+        else:
+            snoozed_view = snoozed_df.copy()
+            snoozed_view.insert(0, "SELECT", False)
+            edited_snoozed = st.data_editor(
+                snoozed_view,
+                use_container_width=True,
+                hide_index=True,
+                column_config={"SELECT": st.column_config.CheckboxColumn("Select")},
+                disabled=[c for c in snoozed_view.columns if c != "SELECT"],
+                key="snoozed_alerts_editor",
+            )
+            selected_snoozed_refs = (
+                edited_snoozed.loc[edited_snoozed["SELECT"] == True, "OUR_REF"]
+                .dropna()
+                .astype(str)
+                .unique()
+                .tolist()
+            )
+            st.caption(f"Selected OUR_REF count: {len(selected_snoozed_refs)}")
+
         extend_end_date = st.date_input(
             "New snooze end date (NZ)",
             value=today,
