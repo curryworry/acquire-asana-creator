@@ -464,6 +464,26 @@ def _render_live_alert_dashboard() -> bool:
     active_df = merged[merged["LIVE_ALERT_STATE"] == "OPEN"].copy()
     snoozed_df = merged[merged["LIVE_ALERT_STATE"] != "OPEN"].copy()
 
+    base_display_cols = [
+        "OUR_REF",
+        "JOB_NUMBER",
+        "START_DATE",
+        "END_DATE",
+        "ADVERTISER",
+        "CAMPAIGN",
+        "LOCATIONTEXT",
+        "PROPERTYNAME",
+        "BOOKINGSTATUS",
+    ]
+    snoozed_extra_cols = [
+        "SNOOZE_STATUS",
+        "SNOOZE_REASON",
+        "SNOOZE_END_DATE",
+        "SNOOZED_BY",
+        "DISMISSED_BY",
+        "UPDATED_AT",
+    ]
+
     tab_active, tab_snoozed = st.tabs(["Active Alerts", "Snoozed"])
 
     with tab_active:
@@ -472,7 +492,7 @@ def _render_live_alert_dashboard() -> bool:
             edited_active = pd.DataFrame()
             selected_refs: List[str] = []
         else:
-            active_view = active_df.copy()
+            active_view = active_df[[c for c in base_display_cols if c in active_df.columns]].copy()
             active_view.insert(0, "SELECT", False)
             edited_active = st.data_editor(
                 active_view,
@@ -520,7 +540,8 @@ def _render_live_alert_dashboard() -> bool:
             edited_snoozed = pd.DataFrame()
             selected_snoozed_refs: List[str] = []
         else:
-            snoozed_view = snoozed_df.copy()
+            snoozed_cols = [c for c in (base_display_cols + snoozed_extra_cols) if c in snoozed_df.columns]
+            snoozed_view = snoozed_df[snoozed_cols].copy()
             snoozed_view.insert(0, "SELECT", False)
             edited_snoozed = st.data_editor(
                 snoozed_view,
