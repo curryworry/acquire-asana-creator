@@ -18,6 +18,13 @@ python3 -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
+Manual trigger UI:
+- The app now includes an **Automation Control Panel** at the top.
+- Current manual triggers:
+  - Campaign not-live alert (`scripts/campaign_not_live_alert.py`)
+  - Daily trafficking script (`scripts/daily_trafficking_dry_run.py`)
+- This panel is intended as the central place to add more one-click automation triggers over time.
+
 ## 3) Daily automation (GitHub Actions)
 
 Workflow file:
@@ -58,6 +65,55 @@ Reporting / behavior:
 - `GMAIL_SEARCH_QUERY` (override query; default includes `-label:processed`)
 - `GMAIL_PROCESSED_LABEL` (default `processed`)
 - `TRAFFICKING_SKIP_TOP_ROWS` (default `0`)
+
+## 3b) Campaign not-live alert automation (BigQuery + Gmail)
+
+This is separate from Asana creation and only sends alerts.
+
+Workflow file:
+- `.github/workflows/campaign_not_live_alert.yml`
+
+Schedule:
+- Runs at `17:00` and `18:00` UTC daily.
+- Script only executes at `06:00` on weekdays in `Pacific/Auckland` (handles NZDST/NZST).
+
+Script:
+- `scripts/campaign_not_live_alert.py`
+
+Logic:
+- Group by `OURREF`
+- Campaign is flagged if:
+  - `STARTDATE < CURRENT_DATE('Pacific/Auckland')`
+  - `ENDDATE IS NOT NULL`
+  - `ENDDATE >= CURRENT_DATE('Pacific/Auckland')`
+  - `MAX(IMPRESSIONS) = 0` across all rows for that `OURREF`
+- Sends one digest email with CSV attachment fields:
+  - `OUR_REF, JOB_NUMBER, START_DATE, END_DATE, ADVERTISER, CAMPAIGN, LOCATIONTEXT, PROPERTYNAME`
+
+Required GitHub repository secrets:
+- `BQ_PROJECT_ID` (e.g. `sm-test-391201`)
+- `BQ_DATASET` (e.g. `supermetrics_data`)
+- `BQ_VIEW` (e.g. `master_overview`)
+- `BQ_SERVICE_ACCOUNT_JSON` (service account JSON key as one-line JSON string)
+- `GMAIL_CLIENT_ID`
+- `GMAIL_CLIENT_SECRET`
+- `GMAIL_REFRESH_TOKEN` (for `hi@acquire.agency`)
+- `ALERT_EMAIL_TO` (CSV list, e.g. `ashwin@acquirenz.com,zane@acquirenz.com`)
+
+Optional secrets:
+- `GMAIL_USER` (default `me`)
+- `ALERT_EMAIL_SUBJECT`
+- `ALERT_FORCE_RUN` (`true` to bypass NZ 6AM weekday guard, useful for manual tests)
+
+Local token check helper:
+- `scripts/print_gmail_access_token.py`
+- Example:
+```bash
+python3 scripts/print_gmail_access_token.py \
+  --client-id "..." \
+  --client-secret "..." \
+  --refresh-token "..."
+```
 
 ## 4) Automation behavior
 

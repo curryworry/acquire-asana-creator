@@ -1,5 +1,8 @@
 import re
+import subprocess
+import os
 from io import BytesIO
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import pandas as pd
@@ -31,6 +34,104 @@ def _as_int_secret(name: str, default: int) -> int:
         return max(1, int(raw))
     except ValueError:
         return default
+
+
+def _run_script(script_rel_path: str, env_overrides: Dict[str, str] | None = None) -> Tuple[int, str]:
+    repo_root = Path(__file__).resolve().parent
+    cmd = ["python3", script_rel_path]
+    run_env = os.environ.copy()
+    if env_overrides:
+        run_env.update({k: v for k, v in env_overrides.items() if v is not None})
+    result = subprocess.run(
+        cmd,
+        cwd=str(repo_root),
+        env=run_env,
+        capture_output=True,
+        text=True,
+    )
+    output = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
+    return result.returncode, output.strip()
+
+
+def _manual_automation_panel() -> None:
+    st.subheader("Automation Control Panel")
+    st.caption("Manual triggers for background automations. Useful for testing and one-off reruns.")
+
+    bq_project_id = _get_secret("BQ_PROJECT_ID", "sm-test-391201")
+    bq_dataset = _get_secret("BQ_DATASET", "supermetrics_data")
+    bq_view = _get_secret("BQ_VIEW", "master_overview")
+    bq_sa_json = _get_secret("BQ_SERVICE_ACCOUNT_JSON")
+    alert_to = _get_secret("ALERT_EMAIL_TO", "")
+    alert_subject = _get_secret("ALERT_EMAIL_SUBJECT")
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.markdown("**Campaign Not-Live Alert**")
+        st.caption("Runs BigQuery check and emails one digest if failures exist.")
+        alert_to_input = st.text_input(
+            "Recipients (comma separated)",
+            value=alert_to,
+            key="alert_email_to_input",
+            placeholder="ashwin@acquirenz.com,zane@acquirenz.com",
+        ).strip()
+        force_alert = st.checkbox("Force run (ignore NZ 6AM weekday guard)", value=True, key="force_alert_run")
+        if st.button("Run Campaign Alert Now", type="primary"):
+            env_overrides = {
+                "BQ_PROJECT_ID": bq_project_id,
+                "BQ_DATASET": bq_dataset,
+                "BQ_VIEW": bq_view,
+                "BQ_SERVICE_ACCOUNT_JSON": bq_sa_json,
+                "GMAIL_CLIENT_ID": _get_secret("GMAIL_CLIENT_ID"),
+                "GMAIL_CLIENT_SECRET": _get_secret("GMAIL_CLIENT_SECRET"),
+                "GMAIL_REFRESH_TOKEN": _get_secret("GMAIL_REFRESH_TOKEN"),
+                "GMAIL_USER": _get_secret("GMAIL_USER", "me"),
+                "ALERT_EMAIL_TO": alert_to_input,
+                "ALERT_EMAIL_SUBJECT": alert_subject,
+                "ALERT_FORCE_RUN": "true" if force_alert else "false",
+            }
+            with st.spinner("Running campaign alert..."):
+                code, output = _run_script("scripts/campaign_not_live_alert.py", env_overrides=env_overrides)
+            if code == 0:
+                st.success("Campaign alert run completed.")
+            else:
+                st.error(f"Campaign alert run failed (exit code {code}).")
+            if output:
+                st.code(output, language="text")
+
+    with c2:
+        st.markdown("**Daily Trafficking Dry Run**")
+        st.caption("Runs the same script as GitHub Actions for testing.")
+        force_dry_run = st.checkbox("Force DRY_RUN_MODE=true", value=True, key="force_daily_dry_run")
+        if st.button("Run Daily Trafficking Script Now"):
+            env_overrides = {
+                "ASANA_ACCESS_TOKEN": _get_secret("ASANA_ACCESS_TOKEN"),
+                "ASANA_WORKSPACE_GID": _get_secret("ASANA_WORKSPACE_GID"),
+                "ASANA_PROJECT_GID": _get_secret("ASANA_PROJECT_GID"),
+                "ASANA_DEDUPE_PROJECT_GIDS": _get_secret("ASANA_DEDUPE_PROJECT_GIDS"),
+                "GMAIL_CLIENT_ID": _get_secret("GMAIL_CLIENT_ID"),
+                "GMAIL_CLIENT_SECRET": _get_secret("GMAIL_CLIENT_SECRET"),
+                "GMAIL_REFRESH_TOKEN": _get_secret("GMAIL_REFRESH_TOKEN"),
+                "GMAIL_USER": _get_secret("GMAIL_USER", "me"),
+                "GMAIL_SUBJECT_CONTAINS": _get_secret("GMAIL_SUBJECT_CONTAINS"),
+                "GMAIL_SEARCH_QUERY": _get_secret("GMAIL_SEARCH_QUERY"),
+                "GMAIL_PROCESSED_LABEL": _get_secret("GMAIL_PROCESSED_LABEL"),
+                "TRAFFICKING_SKIP_TOP_ROWS": _get_secret("TRAFFICKING_SKIP_TOP_ROWS", "0"),
+                "REPORT_EMAIL_TO": _get_secret("REPORT_EMAIL_TO", "ashwin@acquirenz.com"),
+                "DRY_RUN_MODE": "true" if force_dry_run else _get_secret("DRY_RUN_MODE", "true"),
+                "DEFAULT_ASSIGNEE_GID": _get_secret("DEFAULT_ASSIGNEE_GID"),
+                "DASH_ASSIGNEE_GID": _get_secret("DASH_ASSIGNEE_GID"),
+            }
+            with st.spinner("Running daily trafficking script..."):
+                code, output = _run_script("scripts/daily_trafficking_dry_run.py", env_overrides=env_overrides)
+            if code == 0:
+                st.success("Daily trafficking script run completed.")
+            else:
+                st.error(f"Daily trafficking script failed (exit code {code}).")
+            if output:
+                st.code(output, language="text")
+
+    st.divider()
 
 
 def _clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -244,6 +345,7 @@ def main() -> None:
     st.caption(
         "Uses Trafficking report only: one parent task per unique CampaignName+JobNumber and one subtask per unique OurRef."
     )
+    _manual_automation_panel()
 
     access_token = _get_secret("ASANA_ACCESS_TOKEN")
     workspace_gid = _get_secret("ASANA_WORKSPACE_GID")
