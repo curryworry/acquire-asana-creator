@@ -258,6 +258,66 @@ WHERE rn = 1
     )
 
 
+def _fetch_global_latest_snooze_df(
+    client: bigquery.Client,
+    project_id: str,
+    dataset: str,
+) -> pd.DataFrame:
+    query = f"""
+WITH latest AS (
+  SELECT
+    our_ref,
+    snooze_status,
+    snooze_reason,
+    snooze_start_date,
+    snooze_end_date,
+    snoozed_by,
+    dismissed_by,
+    updated_at,
+    ROW_NUMBER() OVER (PARTITION BY our_ref, snooze_type ORDER BY updated_at DESC) AS rn
+  FROM {_snoozes_table_fqn(project_id, dataset)}
+  WHERE snooze_type = @alert_type
+)
+SELECT
+  our_ref,
+  snooze_status,
+  snooze_reason,
+  snooze_start_date,
+  snooze_end_date,
+  snoozed_by,
+  dismissed_by,
+  updated_at
+FROM latest
+WHERE rn = 1
+  AND (
+    (UPPER(COALESCE(snooze_status, '')) = 'ACTIVE' AND snooze_end_date >= CURRENT_DATE('Pacific/Auckland'))
+    OR UPPER(COALESCE(snooze_status, '')) = 'DISMISSED'
+  )
+ORDER BY updated_at DESC
+"""
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("alert_type", "STRING", ALERT_TYPE)]
+    )
+    rows = list(client.query(query, job_config=job_config).result())
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(
+        [
+            {
+                "OUR_REF": str(r["our_ref"] or ""),
+                "SNOOZE_STATUS": str(r["snooze_status"] or ""),
+                "SNOOZE_REASON": str(r["snooze_reason"] or ""),
+                "SNOOZE_START_DATE": str(r["snooze_start_date"] or ""),
+                "SNOOZE_END_DATE": str(r["snooze_end_date"] or ""),
+                "SNOOZED_BY": str(r["snoozed_by"] or ""),
+                "DISMISSED_BY": str(r["dismissed_by"] or ""),
+                "UPDATED_AT": str(r["updated_at"] or ""),
+            }
+            for r in rows
+        ]
+    )
+
+
 def _upsert_snooze_active(
     client: bigquery.Client,
     project_id: str,
@@ -535,13 +595,14 @@ def _render_live_alert_dashboard() -> bool:
                 st.rerun()
 
     with tab_snoozed:
-        if snoozed_df.empty:
-            st.info("No snoozed or dismissed alerts in this run.")
+        global_snoozed_df = _fetch_global_latest_snooze_df(bq_client, project_id, dataset)
+        if global_snoozed_df.empty:
+            st.info("No global snoozed or dismissed OUR_REFs.")
             edited_snoozed = pd.DataFrame()
             selected_snoozed_refs: List[str] = []
         else:
-            snoozed_cols = [c for c in (base_display_cols + snoozed_extra_cols) if c in snoozed_df.columns]
-            snoozed_view = snoozed_df[snoozed_cols].copy()
+            st.caption("Global snoozes/dismissed refs (not limited to this run).")
+            snoozed_view = global_snoozed_df.copy()
             snoozed_view.insert(0, "SELECT", False)
             edited_snoozed = st.data_editor(
                 snoozed_view,
