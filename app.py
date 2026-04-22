@@ -5,6 +5,7 @@ import json
 import hmac
 import hashlib
 import time
+import sys
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -570,7 +571,7 @@ def _render_live_alert_dashboard() -> bool:
 
 def _run_script(script_rel_path: str, env_overrides: Dict[str, str] | None = None) -> Tuple[int, str]:
     repo_root = Path(__file__).resolve().parent
-    cmd = ["python3", script_rel_path]
+    cmd = [sys.executable, script_rel_path]
     run_env = os.environ.copy()
     if env_overrides:
         run_env.update({k: v for k, v in env_overrides.items() if v is not None})
