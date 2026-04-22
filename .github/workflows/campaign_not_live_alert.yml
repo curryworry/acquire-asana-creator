@@ -41,4 +41,7 @@ jobs:
           ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
           ALERT_EMAIL_SUBJECT: ${{ secrets.ALERT_EMAIL_SUBJECT }}
           ALERT_FORCE_RUN: ${{ secrets.ALERT_FORCE_RUN }}
+          ALERT_DASHBOARD_BASE_URL: ${{ secrets.ALERT_DASHBOARD_BASE_URL }}
+          LINK_SIGNING_SECRET: ${{ secrets.LINK_SIGNING_SECRET }}
+          ALERT_LINK_TTL_DAYS: ${{ secrets.ALERT_LINK_TTL_DAYS }}
         run: python scripts/campaign_not_live_alert.py

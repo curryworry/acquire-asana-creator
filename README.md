@@ -86,9 +86,17 @@ Logic:
   - `STARTDATE < CURRENT_DATE('Pacific/Auckland')`
   - `ENDDATE IS NOT NULL`
   - `ENDDATE >= CURRENT_DATE('Pacific/Auckland')`
+  - `BOOKINGSTATUS = 'Booked'` (case-insensitive)
+  - `PROPERTYNAME` contains `Programmatic` (case-insensitive)
+  - `PROPERTYNAME` does not contain `Adserving` (case-insensitive)
   - `MAX(IMPRESSIONS) = 0` across all rows for that `OURREF`
+- Suppressed refs are excluded:
+  - active snoozes in `snoozes` table
+  - dismissed refs in `snoozes` table
+- Alert run rows are snapshot-stored in `live_alert_snapshots` table and used by the dashboard link
 - Sends one digest email with CSV attachment fields:
-  - `OUR_REF, JOB_NUMBER, START_DATE, END_DATE, ADVERTISER, CAMPAIGN, LOCATIONTEXT, PROPERTYNAME`
+  - `OUR_REF, JOB_NUMBER, START_DATE, END_DATE, ADVERTISER, CAMPAIGN, LOCATIONTEXT, PROPERTYNAME, BOOKINGSTATUS`
+- Email includes a signed dashboard link (`mode=live_alerts&user&run_id&exp&sig`)
 
 Required GitHub repository secrets:
 - `BQ_PROJECT_ID` (e.g. `sm-test-391201`)
@@ -99,11 +107,15 @@ Required GitHub repository secrets:
 - `GMAIL_CLIENT_SECRET`
 - `GMAIL_REFRESH_TOKEN` (for `hi@acquire.agency`)
 - `ALERT_EMAIL_TO` (CSV list, e.g. `ashwin@acquirenz.com,zane@acquirenz.com`)
+- `ALERT_DASHBOARD_BASE_URL` (your hosted Streamlit app URL)
+- `LINK_SIGNING_SECRET` (shared secret for signed dashboard links)
 
 Optional secrets:
 - `GMAIL_USER` (default `me`)
 - `ALERT_EMAIL_SUBJECT`
 - `ALERT_FORCE_RUN` (`true` to bypass NZ 6AM weekday guard, useful for manual tests)
+- `ALERT_LINK_TTL_DAYS` (default `7`)
+- `ADMIN_PASS` (required in Streamlit app for `Dismiss` action)
 
 Local token check helper:
 - `scripts/print_gmail_access_token.py`

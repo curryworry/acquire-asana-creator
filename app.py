@@ -1,12 +1,20 @@
 import re
 import subprocess
 import os
+import json
+import hmac
+import hashlib
+import time
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
+from google.cloud import bigquery
+from google.oauth2 import service_account
 
 from asana_client import AsanaClient, AsanaError
 from gmail_client import GmailAttachment, GmailError, GmailInboxClient
@@ -15,6 +23,7 @@ from gmail_client import GmailAttachment, GmailError, GmailInboxClient
 st.set_page_config(page_title="Trafficking to Asana", page_icon="✅", layout="wide")
 
 GID_RE = re.compile(r"^\d+$")
+ALERT_TYPE = "NOT_LIVE"
 
 
 def _get_secret(name: str, default: str = "") -> str:
@@ -34,6 +43,529 @@ def _as_int_secret(name: str, default: int) -> int:
         return max(1, int(raw))
     except ValueError:
         return default
+
+
+def _get_qparam(name: str) -> str:
+    try:
+        value = st.query_params.get(name, "")
+    except Exception:
+        return ""
+    if isinstance(value, list):
+        return str(value[0]).strip() if value else ""
+    return str(value).strip()
+
+
+def _sanitize_id(value: str, field_name: str) -> str:
+    clean = value.strip()
+    if not clean:
+        raise ValueError(f"{field_name} is required.")
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+    if not set(clean).issubset(allowed):
+        raise ValueError(f"{field_name} contains invalid characters: {clean}")
+    return clean
+
+
+def _today_nz() -> date:
+    return datetime.now(timezone.utc).astimezone(ZoneInfo("Pacific/Auckland")).date()
+
+
+def _build_bq_client_from_secrets() -> tuple[bigquery.Client, str, str]:
+    project_id = _sanitize_id(_get_secret("BQ_PROJECT_ID", "sm-test-391201"), "BQ_PROJECT_ID")
+    dataset = _sanitize_id(_get_secret("BQ_DATASET", "supermetrics_data"), "BQ_DATASET")
+    sa_json = _get_secret("BQ_SERVICE_ACCOUNT_JSON", "")
+
+    if sa_json:
+        info = json.loads(sa_json)
+        creds = service_account.Credentials.from_service_account_info(info)
+        return bigquery.Client(project=project_id or info.get("project_id"), credentials=creds), project_id, dataset
+
+    return bigquery.Client(project=project_id), project_id, dataset
+
+
+def _snoozes_table_fqn(project_id: str, dataset: str) -> str:
+    return f"`{project_id}.{dataset}.snoozes`"
+
+
+def _snapshots_table_fqn(project_id: str, dataset: str) -> str:
+    return f"`{project_id}.{dataset}.live_alert_snapshots`"
+
+
+def _ensure_control_tables(client: bigquery.Client, project_id: str, dataset: str) -> None:
+    client.query(
+        f"""
+CREATE TABLE IF NOT EXISTS {_snoozes_table_fqn(project_id, dataset)} (
+  our_ref STRING NOT NULL,
+  snooze_type STRING NOT NULL,
+  snooze_status STRING NOT NULL,
+  snooze_reason STRING,
+  snooze_start_date DATE,
+  snooze_end_date DATE,
+  snoozed_by STRING,
+  run_id STRING,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  unsnoozed_by STRING,
+  unsnoozed_at TIMESTAMP,
+  dismissed_by STRING,
+  dismissed_at TIMESTAMP
+)
+"""
+    ).result()
+
+    client.query(
+        f"""
+CREATE TABLE IF NOT EXISTS {_snapshots_table_fqn(project_id, dataset)} (
+  run_id STRING NOT NULL,
+  run_date_nz DATE NOT NULL,
+  run_timestamp_utc TIMESTAMP NOT NULL,
+  alert_type STRING NOT NULL,
+  our_ref STRING,
+  job_number STRING,
+  start_date DATE,
+  end_date DATE,
+  advertiser STRING,
+  campaign STRING,
+  location_text STRING,
+  property_name STRING,
+  booking_status STRING
+)
+"""
+    ).result()
+
+
+def _verify_live_alert_link(user: str, run_id: str, exp: str, sig: str, secret: str) -> bool:
+    try:
+        exp_int = int(exp)
+    except ValueError:
+        return False
+    if exp_int < int(time.time()):
+        return False
+    payload = f"{user}|{run_id}|{exp_int}"
+    expected = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig)
+
+
+def _fetch_snapshot_df(client: bigquery.Client, project_id: str, dataset: str, run_id: str) -> pd.DataFrame:
+    query = f"""
+SELECT
+  run_id,
+  run_date_nz,
+  run_timestamp_utc,
+  our_ref,
+  job_number,
+  start_date,
+  end_date,
+  advertiser,
+  campaign,
+  location_text,
+  property_name,
+  booking_status
+FROM {_snapshots_table_fqn(project_id, dataset)}
+WHERE alert_type = @alert_type
+  AND run_id = @run_id
+ORDER BY start_date, our_ref
+"""
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("alert_type", "STRING", ALERT_TYPE),
+            bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
+        ]
+    )
+    rows = list(client.query(query, job_config=job_config).result())
+    if not rows:
+        return pd.DataFrame()
+    data = []
+    for r in rows:
+        data.append(
+            {
+                "RUN_ID": str(r["run_id"] or ""),
+                "RUN_DATE_NZ": str(r["run_date_nz"] or ""),
+                "RUN_TS_UTC": str(r["run_timestamp_utc"] or ""),
+                "OUR_REF": str(r["our_ref"] or ""),
+                "JOB_NUMBER": str(r["job_number"] or ""),
+                "START_DATE": str(r["start_date"] or ""),
+                "END_DATE": str(r["end_date"] or ""),
+                "ADVERTISER": str(r["advertiser"] or ""),
+                "CAMPAIGN": str(r["campaign"] or ""),
+                "LOCATIONTEXT": str(r["location_text"] or ""),
+                "PROPERTYNAME": str(r["property_name"] or ""),
+                "BOOKINGSTATUS": str(r["booking_status"] or ""),
+            }
+        )
+    return pd.DataFrame(data)
+
+
+def _fetch_latest_snooze_df(
+    client: bigquery.Client,
+    project_id: str,
+    dataset: str,
+    refs: List[str],
+) -> pd.DataFrame:
+    if not refs:
+        return pd.DataFrame()
+    query = f"""
+WITH latest AS (
+  SELECT
+    our_ref,
+    snooze_status,
+    snooze_reason,
+    snooze_start_date,
+    snooze_end_date,
+    snoozed_by,
+    dismissed_by,
+    updated_at,
+    ROW_NUMBER() OVER (PARTITION BY our_ref, snooze_type ORDER BY updated_at DESC) AS rn
+  FROM {_snoozes_table_fqn(project_id, dataset)}
+  WHERE snooze_type = @alert_type
+    AND our_ref IN UNNEST(@refs)
+)
+SELECT
+  our_ref,
+  snooze_status,
+  snooze_reason,
+  snooze_start_date,
+  snooze_end_date,
+  snoozed_by,
+  dismissed_by,
+  updated_at
+FROM latest
+WHERE rn = 1
+"""
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("alert_type", "STRING", ALERT_TYPE),
+            bigquery.ArrayQueryParameter("refs", "STRING", refs),
+        ]
+    )
+    rows = list(client.query(query, job_config=job_config).result())
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(
+        [
+            {
+                "OUR_REF": str(r["our_ref"] or ""),
+                "SNOOZE_STATUS": str(r["snooze_status"] or ""),
+                "SNOOZE_REASON": str(r["snooze_reason"] or ""),
+                "SNOOZE_START_DATE": str(r["snooze_start_date"] or ""),
+                "SNOOZE_END_DATE": str(r["snooze_end_date"] or ""),
+                "SNOOZED_BY": str(r["snoozed_by"] or ""),
+                "DISMISSED_BY": str(r["dismissed_by"] or ""),
+                "UPDATED_AT": str(r["updated_at"] or ""),
+            }
+            for r in rows
+        ]
+    )
+
+
+def _upsert_snooze_active(
+    client: bigquery.Client,
+    project_id: str,
+    dataset: str,
+    our_ref: str,
+    user: str,
+    reason: str,
+    end_date: date,
+    run_id: str,
+) -> None:
+    query = f"""
+MERGE {_snoozes_table_fqn(project_id, dataset)} T
+USING (SELECT @our_ref AS our_ref, @alert_type AS snooze_type) S
+ON T.our_ref = S.our_ref AND T.snooze_type = S.snooze_type
+WHEN MATCHED THEN UPDATE SET
+  snooze_status = 'ACTIVE',
+  snooze_reason = @reason,
+  snooze_start_date = @start_date,
+  snooze_end_date = @end_date,
+  snoozed_by = @user,
+  run_id = @run_id,
+  updated_at = CURRENT_TIMESTAMP(),
+  unsnoozed_by = NULL,
+  unsnoozed_at = NULL,
+  dismissed_by = NULL,
+  dismissed_at = NULL
+WHEN NOT MATCHED THEN
+  INSERT (
+    our_ref, snooze_type, snooze_status, snooze_reason, snooze_start_date, snooze_end_date,
+    snoozed_by, run_id, created_at, updated_at, unsnoozed_by, unsnoozed_at, dismissed_by, dismissed_at
+  )
+  VALUES (
+    @our_ref, @alert_type, 'ACTIVE', @reason, @start_date, @end_date,
+    @user, @run_id, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), NULL, NULL, NULL, NULL
+  )
+"""
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("our_ref", "STRING", our_ref),
+            bigquery.ScalarQueryParameter("alert_type", "STRING", ALERT_TYPE),
+            bigquery.ScalarQueryParameter("reason", "STRING", reason),
+            bigquery.ScalarQueryParameter("start_date", "DATE", _today_nz().isoformat()),
+            bigquery.ScalarQueryParameter("end_date", "DATE", end_date.isoformat()),
+            bigquery.ScalarQueryParameter("user", "STRING", user),
+            bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
+        ]
+    )
+    client.query(query, job_config=job_config).result()
+
+
+def _upsert_unsnooze(
+    client: bigquery.Client,
+    project_id: str,
+    dataset: str,
+    our_ref: str,
+    user: str,
+    run_id: str,
+) -> None:
+    query = f"""
+MERGE {_snoozes_table_fqn(project_id, dataset)} T
+USING (SELECT @our_ref AS our_ref, @alert_type AS snooze_type) S
+ON T.our_ref = S.our_ref AND T.snooze_type = S.snooze_type
+WHEN MATCHED THEN UPDATE SET
+  snooze_status = 'UNSNOOZED',
+  snooze_reason = 'Manual unsnooze',
+  run_id = @run_id,
+  unsnoozed_by = @user,
+  unsnoozed_at = CURRENT_TIMESTAMP(),
+  updated_at = CURRENT_TIMESTAMP()
+WHEN NOT MATCHED THEN
+  INSERT (
+    our_ref, snooze_type, snooze_status, snooze_reason, snooze_start_date, snooze_end_date,
+    snoozed_by, run_id, created_at, updated_at, unsnoozed_by, unsnoozed_at, dismissed_by, dismissed_at
+  )
+  VALUES (
+    @our_ref, @alert_type, 'UNSNOOZED', 'Manual unsnooze', NULL, NULL,
+    NULL, @run_id, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), @user, CURRENT_TIMESTAMP(), NULL, NULL
+  )
+"""
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("our_ref", "STRING", our_ref),
+            bigquery.ScalarQueryParameter("alert_type", "STRING", ALERT_TYPE),
+            bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
+            bigquery.ScalarQueryParameter("user", "STRING", user),
+        ]
+    )
+    client.query(query, job_config=job_config).result()
+
+
+def _upsert_dismiss(
+    client: bigquery.Client,
+    project_id: str,
+    dataset: str,
+    our_ref: str,
+    user: str,
+    reason: str,
+    run_id: str,
+) -> None:
+    query = f"""
+MERGE {_snoozes_table_fqn(project_id, dataset)} T
+USING (SELECT @our_ref AS our_ref, @alert_type AS snooze_type) S
+ON T.our_ref = S.our_ref AND T.snooze_type = S.snooze_type
+WHEN MATCHED THEN UPDATE SET
+  snooze_status = 'DISMISSED',
+  snooze_reason = @reason,
+  run_id = @run_id,
+  dismissed_by = @user,
+  dismissed_at = CURRENT_TIMESTAMP(),
+  updated_at = CURRENT_TIMESTAMP()
+WHEN NOT MATCHED THEN
+  INSERT (
+    our_ref, snooze_type, snooze_status, snooze_reason, snooze_start_date, snooze_end_date,
+    snoozed_by, run_id, created_at, updated_at, unsnoozed_by, unsnoozed_at, dismissed_by, dismissed_at
+  )
+  VALUES (
+    @our_ref, @alert_type, 'DISMISSED', @reason, NULL, NULL,
+    NULL, @run_id, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), NULL, NULL, @user, CURRENT_TIMESTAMP()
+  )
+"""
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("our_ref", "STRING", our_ref),
+            bigquery.ScalarQueryParameter("alert_type", "STRING", ALERT_TYPE),
+            bigquery.ScalarQueryParameter("reason", "STRING", reason),
+            bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
+            bigquery.ScalarQueryParameter("user", "STRING", user),
+        ]
+    )
+    client.query(query, job_config=job_config).result()
+
+
+def _render_live_alert_dashboard() -> bool:
+    mode = _get_qparam("mode")
+    if mode != "live_alerts":
+        return False
+
+    user = _get_qparam("user")
+    run_id = _get_qparam("run_id")
+    exp = _get_qparam("exp")
+    sig = _get_qparam("sig")
+
+    if not user or not run_id or not exp or not sig:
+        st.error("Invalid dashboard link. Missing required parameters.")
+        return True
+
+    link_signing_secret = _get_secret("LINK_SIGNING_SECRET", "")
+    if not link_signing_secret:
+        st.error("Missing LINK_SIGNING_SECRET in app secrets.")
+        return True
+
+    if not _verify_live_alert_link(user=user, run_id=run_id, exp=exp, sig=sig, secret=link_signing_secret):
+        st.error("Link is invalid or expired. Please use the latest alert email link.")
+        return True
+
+    st.title("Live Alerts Dashboard")
+    st.caption(f"User: {user} | Run ID: {run_id}")
+    st.text_input("User", value=user, disabled=True)
+
+    try:
+        bq_client, project_id, dataset = _build_bq_client_from_secrets()
+        _ensure_control_tables(bq_client, project_id, dataset)
+    except Exception as exc:
+        st.error(f"Could not initialize BigQuery: {exc}")
+        return True
+
+    snapshot_df = _fetch_snapshot_df(bq_client, project_id, dataset, run_id=run_id)
+    if snapshot_df.empty:
+        st.warning("No rows found for this run link.")
+        return True
+
+    snooze_df = _fetch_latest_snooze_df(
+        bq_client,
+        project_id,
+        dataset,
+        refs=sorted(snapshot_df["OUR_REF"].dropna().astype(str).unique().tolist()),
+    )
+    if not snooze_df.empty:
+        merged = snapshot_df.merge(snooze_df, on="OUR_REF", how="left")
+    else:
+        merged = snapshot_df.copy()
+        merged["SNOOZE_STATUS"] = ""
+        merged["SNOOZE_REASON"] = ""
+        merged["SNOOZE_START_DATE"] = ""
+        merged["SNOOZE_END_DATE"] = ""
+        merged["SNOOZED_BY"] = ""
+        merged["DISMISSED_BY"] = ""
+        merged["UPDATED_AT"] = ""
+
+    today = _today_nz()
+    statuses = []
+    for _, row in merged.iterrows():
+        status = str(row.get("SNOOZE_STATUS", "") or "").upper()
+        end_date_raw = str(row.get("SNOOZE_END_DATE", "") or "").strip()
+        end_date = pd.to_datetime(end_date_raw, errors="coerce")
+        if status == "DISMISSED":
+            statuses.append("DISMISSED")
+        elif status == "ACTIVE" and not pd.isna(end_date) and end_date.date() >= today:
+            statuses.append("ACTIVE")
+        else:
+            statuses.append("OPEN")
+    merged["LIVE_ALERT_STATE"] = statuses
+
+    active_df = merged[merged["LIVE_ALERT_STATE"] == "OPEN"].copy()
+    snoozed_df = merged[merged["LIVE_ALERT_STATE"] != "OPEN"].copy()
+
+    tab_active, tab_snoozed = st.tabs(["Active Alerts", "Snoozed"])
+
+    with tab_active:
+        st.dataframe(active_df, use_container_width=True)
+        candidate_refs = sorted(active_df["OUR_REF"].dropna().astype(str).unique().tolist())
+        selected_refs = st.multiselect("OUR_REFs to snooze", options=candidate_refs, key="active_refs_to_snooze")
+        snooze_reason = st.text_area("Snooze reason", key="snooze_reason_text")
+        snooze_end_date = st.date_input(
+            "Snooze end date (NZ)",
+            value=today,
+            min_value=today,
+            key="snooze_end_date_input",
+        )
+        if st.button("Snooze Selected OUR_REFs", type="primary"):
+            if not selected_refs:
+                st.error("Select at least one OUR_REF.")
+            elif not snooze_reason.strip():
+                st.error("Snooze reason is required.")
+            else:
+                for ref in selected_refs:
+                    _upsert_snooze_active(
+                        bq_client,
+                        project_id,
+                        dataset,
+                        our_ref=ref,
+                        user=user,
+                        reason=snooze_reason.strip(),
+                        end_date=snooze_end_date,
+                        run_id=run_id,
+                    )
+                st.success(f"Snoozed {len(selected_refs)} OUR_REF(s).")
+                st.rerun()
+
+    with tab_snoozed:
+        st.dataframe(snoozed_df, use_container_width=True)
+        snoozed_refs = sorted(snoozed_df["OUR_REF"].dropna().astype(str).unique().tolist())
+        selected_snoozed_refs = st.multiselect(
+            "Snoozed OUR_REFs", options=snoozed_refs, key="snoozed_refs_actions"
+        )
+        extend_end_date = st.date_input(
+            "New snooze end date (NZ)",
+            value=today,
+            min_value=today,
+            key="extend_end_date_input",
+        )
+        extend_reason = st.text_input("Extend reason (optional)", key="extend_reason_input")
+        dismiss_reason = st.text_input("Dismiss reason", key="dismiss_reason_input")
+        admin_pass_input = st.text_input("Admin password (required for dismiss)", type="password", key="admin_pass")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if st.button("Unsnooze"):
+                if not selected_snoozed_refs:
+                    st.error("Select at least one OUR_REF.")
+                else:
+                    for ref in selected_snoozed_refs:
+                        _upsert_unsnooze(bq_client, project_id, dataset, our_ref=ref, user=user, run_id=run_id)
+                    st.success(f"Unsnoozed {len(selected_snoozed_refs)} OUR_REF(s).")
+                    st.rerun()
+        with c2:
+            if st.button("Extend Snooze"):
+                if not selected_snoozed_refs:
+                    st.error("Select at least one OUR_REF.")
+                else:
+                    reason = extend_reason.strip() or "Snooze extended"
+                    for ref in selected_snoozed_refs:
+                        _upsert_snooze_active(
+                            bq_client,
+                            project_id,
+                            dataset,
+                            our_ref=ref,
+                            user=user,
+                            reason=reason,
+                            end_date=extend_end_date,
+                            run_id=run_id,
+                        )
+                    st.success(f"Extended snooze for {len(selected_snoozed_refs)} OUR_REF(s).")
+                    st.rerun()
+        with c3:
+            if st.button("Dismiss"):
+                admin_pass = _get_secret("ADMIN_PASS", "")
+                if not admin_pass:
+                    st.error("ADMIN_PASS is not configured.")
+                elif admin_pass_input != admin_pass:
+                    st.error("Admin password is incorrect.")
+                elif not selected_snoozed_refs:
+                    st.error("Select at least one OUR_REF.")
+                elif not dismiss_reason.strip():
+                    st.error("Dismiss reason is required.")
+                else:
+                    for ref in selected_snoozed_refs:
+                        _upsert_dismiss(
+                            bq_client,
+                            project_id,
+                            dataset,
+                            our_ref=ref,
+                            user=user,
+                            reason=dismiss_reason.strip(),
+                            run_id=run_id,
+                        )
+                    st.success(f"Dismissed {len(selected_snoozed_refs)} OUR_REF(s).")
+                    st.rerun()
+
+    return True
 
 
 def _run_script(script_rel_path: str, env_overrides: Dict[str, str] | None = None) -> Tuple[int, str]:
@@ -63,6 +595,9 @@ def _manual_automation_panel() -> None:
     bq_sa_json = _get_secret("BQ_SERVICE_ACCOUNT_JSON")
     alert_to = _get_secret("ALERT_EMAIL_TO", "")
     alert_subject = _get_secret("ALERT_EMAIL_SUBJECT")
+    dashboard_base_url = _get_secret("ALERT_DASHBOARD_BASE_URL", "")
+    link_signing_secret = _get_secret("LINK_SIGNING_SECRET", "")
+    alert_link_ttl_days = _get_secret("ALERT_LINK_TTL_DAYS", "7")
 
     c1, c2 = st.columns(2)
 
@@ -89,6 +624,9 @@ def _manual_automation_panel() -> None:
                 "ALERT_EMAIL_TO": alert_to_input,
                 "ALERT_EMAIL_SUBJECT": alert_subject,
                 "ALERT_FORCE_RUN": "true" if force_alert else "false",
+                "ALERT_DASHBOARD_BASE_URL": dashboard_base_url,
+                "LINK_SIGNING_SECRET": link_signing_secret,
+                "ALERT_LINK_TTL_DAYS": alert_link_ttl_days,
             }
             with st.spinner("Running campaign alert..."):
                 code, output = _run_script("scripts/campaign_not_live_alert.py", env_overrides=env_overrides)
@@ -341,6 +879,9 @@ def _check_existing_job_numbers(
 
 
 def main() -> None:
+    if _render_live_alert_dashboard():
+        return
+
     st.title("Trafficking to Asana")
     st.caption(
         "Uses Trafficking report only: one parent task per unique CampaignName+JobNumber and one subtask per unique OurRef."
