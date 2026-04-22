@@ -28,20 +28,20 @@ jobs:
 
       - name: Run campaign not-live alert
         env:
-          BQ_PROJECT_ID: ${{ secrets.BQ_PROJECT_ID }}
-          BQ_DATASET: ${{ secrets.BQ_DATASET }}
-          BQ_VIEW: ${{ secrets.BQ_VIEW }}
+          BQ_PROJECT_ID: ${{ vars.BQ_PROJECT_ID || secrets.BQ_PROJECT_ID }}
+          BQ_DATASET: ${{ vars.BQ_DATASET || secrets.BQ_DATASET }}
+          BQ_VIEW: ${{ vars.BQ_VIEW || secrets.BQ_VIEW }}
           BQ_SERVICE_ACCOUNT_JSON: ${{ secrets.BQ_SERVICE_ACCOUNT_JSON }}
 
           GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
-          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_USER: ${{ vars.GMAIL_USER || secrets.GMAIL_USER }}
 
-          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
-          ALERT_EMAIL_SUBJECT: ${{ secrets.ALERT_EMAIL_SUBJECT }}
-          ALERT_FORCE_RUN: ${{ secrets.ALERT_FORCE_RUN }}
-          ALERT_DASHBOARD_BASE_URL: ${{ secrets.ALERT_DASHBOARD_BASE_URL }}
+          ALERT_EMAIL_TO: ${{ vars.ALERT_EMAIL_TO || secrets.ALERT_EMAIL_TO }}
+          ALERT_EMAIL_SUBJECT: ${{ vars.ALERT_EMAIL_SUBJECT || secrets.ALERT_EMAIL_SUBJECT }}
+          ALERT_FORCE_RUN: ${{ vars.ALERT_FORCE_RUN || secrets.ALERT_FORCE_RUN }}
+          ALERT_DASHBOARD_BASE_URL: ${{ vars.ALERT_DASHBOARD_BASE_URL || secrets.ALERT_DASHBOARD_BASE_URL }}
           LINK_SIGNING_SECRET: ${{ secrets.LINK_SIGNING_SECRET }}
-          ALERT_LINK_TTL_DAYS: ${{ secrets.ALERT_LINK_TTL_DAYS }}
+          ALERT_LINK_TTL_DAYS: ${{ vars.ALERT_LINK_TTL_DAYS || secrets.ALERT_LINK_TTL_DAYS }}
         run: python scripts/campaign_not_live_alert.py
