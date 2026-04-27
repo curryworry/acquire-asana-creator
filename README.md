@@ -74,7 +74,7 @@ Workflow file:
 - `.github/workflows/campaign_not_live_alert.yml`
 
 Schedule:
-- Runs at `17:00` and `18:00` UTC daily.
+- Runs at `18:00` UTC daily.
 - Script only executes at `06:00` on weekdays in `Pacific/Auckland` (handles NZDST/NZST).
 
 Script:
