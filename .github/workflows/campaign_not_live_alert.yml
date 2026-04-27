@@ -2,9 +2,7 @@ name: Campaign Not Live Alert
 
 on:
   schedule:
-    # Run both 17:00 and 18:00 UTC daily; script enforces NZ weekday 6:00 AM.
-    # This handles NZDST/NZST shifts without editing cron seasonally.
-    - cron: "0 17 * * *"
+    # Single daily trigger at 18:00 UTC; script enforces NZ weekday 6:00 AM.
     - cron: "0 18 * * *"
   workflow_dispatch:
 
