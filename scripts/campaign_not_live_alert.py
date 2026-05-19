@@ -25,7 +25,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from gmail_client import GmailInboxClient
 
-ALERT_TYPE = "NOT_LIVE"
+ALERT_TYPE_NOT_LIVE = "NOT_LIVE"
+ALERT_TYPE_MISSING_OUR_REF = "MISSING_OUR_REF"
 
 
 def env(name: str, default: str = "") -> str:
@@ -75,6 +76,10 @@ def bq_view() -> str:
     return sanitize_id(env("BQ_VIEW", "master_overview"), "BQ_VIEW")
 
 
+def bq_delivery_table() -> str:
+    return sanitize_id(env("BQ_DELIVERY_TABLE", "BLEND_BLEND_5_1_2"), "BQ_DELIVERY_TABLE")
+
+
 def build_bq_client() -> bigquery.Client:
     project_id = bq_project_id()
     sa_json = env("BQ_SERVICE_ACCOUNT_JSON")
@@ -108,11 +113,22 @@ def snapshots_table_ref() -> str:
     return f"{bq_project_id()}.{bq_dataset()}.live_alert_snapshots"
 
 
+def make_alert_key(alert_type: str, dims: List[str]) -> str:
+    canonical = "|".join([alert_type] + [str(x or "").strip().lower() for x in dims])
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+
+
+def _nullable_date(value: str) -> str | None:
+    clean = str(value or "").strip()
+    return clean or None
+
+
 def ensure_control_tables(client: bigquery.Client) -> None:
     client.query(
         f"""
 CREATE TABLE IF NOT EXISTS {snoozes_table_fqn()} (
   our_ref STRING NOT NULL,
+  alert_key STRING,
   snooze_type STRING NOT NULL,
   snooze_status STRING NOT NULL,
   snooze_reason STRING,
@@ -137,6 +153,7 @@ CREATE TABLE IF NOT EXISTS {snapshots_table_fqn()} (
   run_date_nz DATE NOT NULL,
   run_timestamp_utc TIMESTAMP NOT NULL,
   alert_type STRING NOT NULL,
+  alert_key STRING,
   our_ref STRING,
   job_number STRING,
   start_date DATE,
@@ -145,14 +162,35 @@ CREATE TABLE IF NOT EXISTS {snapshots_table_fqn()} (
   campaign STRING,
   location_text STRING,
   property_name STRING,
-  booking_status STRING
+  booking_status STRING,
+  datasource STRING,
+  account STRING,
+  first_missing_date DATE,
+  last_missing_date DATE,
+  total_impressions FLOAT64,
+  total_clicks FLOAT64,
+  total_cost FLOAT64,
+  row_count INT64
 )
 """
     ).result()
 
+    client.query(f"ALTER TABLE {snoozes_table_fqn()} ADD COLUMN IF NOT EXISTS alert_key STRING").result()
+    client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS alert_key STRING").result()
+    client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS datasource STRING").result()
+    client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS account STRING").result()
+    client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS first_missing_date DATE").result()
+    client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS last_missing_date DATE").result()
+    client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS total_impressions FLOAT64").result()
+    client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS total_clicks FLOAT64").result()
+    client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS total_cost FLOAT64").result()
+    client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS row_count INT64").result()
+
 
 @dataclass
 class AlertRow:
+    alert_type: str
+    alert_key: str
     our_ref: str
     job_number: str
     start_date: str
@@ -162,9 +200,17 @@ class AlertRow:
     location_text: str
     property_name: str
     booking_status: str
+    datasource: str = ""
+    account: str = ""
+    first_missing_date: str = ""
+    last_missing_date: str = ""
+    total_impressions: float = 0.0
+    total_clicks: float = 0.0
+    total_cost: float = 0.0
+    row_count: int = 0
 
 
-def fetch_alert_rows(client: bigquery.Client) -> List[AlertRow]:
+def fetch_not_live_rows(client: bigquery.Client) -> List[AlertRow]:
     table_fqn = f"`{bq_project_id()}.{bq_dataset()}.{bq_view()}`"
 
     query = f"""
@@ -233,9 +279,12 @@ ORDER BY START_DATE, OUR_REF
     rows = client.query(query).result()
     alerts: List[AlertRow] = []
     for row in rows:
+        our_ref = str(row["OUR_REF"] or "").strip()
         alerts.append(
             AlertRow(
-                our_ref=str(row["OUR_REF"] or "").strip(),
+                alert_type=ALERT_TYPE_NOT_LIVE,
+                alert_key=make_alert_key(ALERT_TYPE_NOT_LIVE, [our_ref]),
+                our_ref=our_ref,
                 job_number=str(row["JOB_NUMBER"] or "").strip(),
                 start_date=str(row["START_DATE"] or "").strip(),
                 end_date=str(row["END_DATE"] or "").strip(),
@@ -249,39 +298,111 @@ ORDER BY START_DATE, OUR_REF
     return alerts
 
 
-def fetch_latest_snooze_states(client: bigquery.Client, refs: List[str]) -> Dict[str, Dict[str, object]]:
-    if not refs:
+def fetch_missing_our_ref_rows(client: bigquery.Client) -> List[AlertRow]:
+    table_fqn = f"`{bq_project_id()}.{bq_dataset()}.{bq_delivery_table()}`"
+    query = f"""
+SELECT
+  DATASOURCENAME,
+  ACCOUNT,
+  ADVERTISER_NAME,
+  CAMPAIGN,
+  JOB_NUMBER,
+  MIN(DATE) AS FIRST_MISSING_DATE,
+  MAX(DATE) AS LAST_MISSING_DATE,
+  SUM(COALESCE(IMPRESSIONS, 0)) AS IMPRESSIONS,
+  SUM(COALESCE(CLICKS, 0)) AS CLICKS,
+  SUM(COALESCE(COST, 0)) AS COST,
+  COUNT(*) AS ROW_COUNT
+FROM {table_fqn}
+WHERE TRIM(COALESCE(OUR_REF, '')) = ''
+  AND LOWER(COALESCE(ADVERTISER_NAME, '')) NOT LIKE '%client card%'
+GROUP BY DATASOURCENAME, ACCOUNT, ADVERTISER_NAME, CAMPAIGN, JOB_NUMBER
+HAVING IMPRESSIONS > 0
+ORDER BY COST DESC, IMPRESSIONS DESC
+"""
+
+    rows = client.query(query).result()
+    alerts: List[AlertRow] = []
+    for row in rows:
+        datasource = str(row["DATASOURCENAME"] or "").strip()
+        account = str(row["ACCOUNT"] or "").strip()
+        advertiser = str(row["ADVERTISER_NAME"] or "").strip()
+        campaign = str(row["CAMPAIGN"] or "").strip()
+        job_number = str(row["JOB_NUMBER"] or "").strip()
+        key_dims = [datasource, account, advertiser, campaign, job_number]
+
+        alerts.append(
+            AlertRow(
+                alert_type=ALERT_TYPE_MISSING_OUR_REF,
+                alert_key=make_alert_key(ALERT_TYPE_MISSING_OUR_REF, key_dims),
+                our_ref="",
+                job_number=job_number,
+                start_date="",
+                end_date="",
+                advertiser=advertiser,
+                campaign=campaign,
+                location_text="",
+                property_name="",
+                booking_status="",
+                datasource=datasource,
+                account=account,
+                first_missing_date=str(row["FIRST_MISSING_DATE"] or "").strip(),
+                last_missing_date=str(row["LAST_MISSING_DATE"] or "").strip(),
+                total_impressions=float(row["IMPRESSIONS"] or 0),
+                total_clicks=float(row["CLICKS"] or 0),
+                total_cost=float(row["COST"] or 0),
+                row_count=int(row["ROW_COUNT"] or 0),
+            )
+        )
+    return alerts
+
+
+def fetch_latest_snooze_states(client: bigquery.Client, rows: List[AlertRow]) -> Dict[str, Dict[str, object]]:
+    if not rows:
         return {}
+
+    keys = sorted({r.alert_key for r in rows})
+    legacy_not_live_refs = sorted(
+        {r.our_ref for r in rows if r.alert_type == ALERT_TYPE_NOT_LIVE and str(r.our_ref).strip()}
+    )
+    types = sorted({r.alert_type for r in rows})
 
     query = f"""
 WITH latest AS (
   SELECT
-    our_ref,
+    COALESCE(alert_key, our_ref) AS resolved_alert_key,
+    snooze_type,
     snooze_status,
     snooze_end_date,
     snooze_reason,
     snoozed_by,
     updated_at,
-    ROW_NUMBER() OVER (PARTITION BY our_ref, snooze_type ORDER BY updated_at DESC) AS rn
+    ROW_NUMBER() OVER (PARTITION BY COALESCE(alert_key, our_ref), snooze_type ORDER BY updated_at DESC) AS rn
   FROM {snoozes_table_fqn()}
-  WHERE snooze_type = @snooze_type
-    AND our_ref IN UNNEST(@refs)
+  WHERE snooze_type IN UNNEST(@types)
+    AND (
+      COALESCE(alert_key, our_ref) IN UNNEST(@keys)
+      OR (snooze_type = @not_live_type AND our_ref IN UNNEST(@legacy_not_live_refs))
+    )
 )
-SELECT our_ref, snooze_status, snooze_end_date, snooze_reason, snoozed_by, updated_at
+SELECT resolved_alert_key, snooze_type, snooze_status, snooze_end_date, snooze_reason, snoozed_by, updated_at
 FROM latest
 WHERE rn = 1
 """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
-            bigquery.ScalarQueryParameter("snooze_type", "STRING", ALERT_TYPE),
-            bigquery.ArrayQueryParameter("refs", "STRING", refs),
+            bigquery.ArrayQueryParameter("types", "STRING", types),
+            bigquery.ArrayQueryParameter("keys", "STRING", keys),
+            bigquery.ScalarQueryParameter("not_live_type", "STRING", ALERT_TYPE_NOT_LIVE),
+            bigquery.ArrayQueryParameter("legacy_not_live_refs", "STRING", legacy_not_live_refs),
         ]
     )
     rows = client.query(query, job_config=job_config).result()
 
     out: Dict[str, Dict[str, object]] = {}
     for row in rows:
-        out[str(row["our_ref"])] = {
+        identity = f"{str(row['snooze_type'] or '').strip()}::{str(row['resolved_alert_key'] or '').strip()}"
+        out[identity] = {
             "snooze_status": str(row["snooze_status"] or ""),
             "snooze_end_date": row["snooze_end_date"],
             "snooze_reason": str(row["snooze_reason"] or ""),
@@ -295,7 +416,9 @@ def filter_suppressed_rows(rows: List[AlertRow], states: Dict[str, Dict[str, obj
     today = today_nz()
     filtered: List[AlertRow] = []
     for row in rows:
-        state = states.get(row.our_ref)
+        state = states.get(f"{row.alert_type}::{row.alert_key}")
+        if not state and row.alert_type == ALERT_TYPE_NOT_LIVE and row.our_ref:
+            state = states.get(f"{row.alert_type}::{row.our_ref}")
         if not state:
             filtered.append(row)
             continue
@@ -326,16 +449,25 @@ def store_snapshot_rows(client: bigquery.Client, rows: List[AlertRow], run_id: s
                 "run_id": run_id,
                 "run_date_nz": run_date,
                 "run_timestamp_utc": now_utc.isoformat(),
-                "alert_type": ALERT_TYPE,
+                "alert_type": row.alert_type,
+                "alert_key": row.alert_key,
                 "our_ref": row.our_ref,
                 "job_number": row.job_number,
-                "start_date": row.start_date,
-                "end_date": row.end_date,
+                "start_date": _nullable_date(row.start_date),
+                "end_date": _nullable_date(row.end_date),
                 "advertiser": row.advertiser,
                 "campaign": row.campaign,
                 "location_text": row.location_text,
                 "property_name": row.property_name,
                 "booking_status": row.booking_status,
+                "datasource": row.datasource,
+                "account": row.account,
+                "first_missing_date": _nullable_date(row.first_missing_date),
+                "last_missing_date": _nullable_date(row.last_missing_date),
+                "total_impressions": row.total_impressions,
+                "total_clicks": row.total_clicks,
+                "total_cost": row.total_cost,
+                "row_count": row.row_count,
             }
         )
 
@@ -344,7 +476,60 @@ def store_snapshot_rows(client: bigquery.Client, rows: List[AlertRow], run_id: s
         raise RuntimeError(f"Failed to insert live alert snapshot rows: {errors}")
 
 
-def build_csv(rows: List[AlertRow]) -> bytes:
+def build_csv_all(rows: List[AlertRow]) -> bytes:
+    buf = StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(
+        [
+            "ALERT_TYPE",
+            "ALERT_KEY",
+            "OUR_REF",
+            "JOB_NUMBER",
+            "START_DATE",
+            "END_DATE",
+            "ADVERTISER",
+            "CAMPAIGN",
+            "LOCATIONTEXT",
+            "PROPERTYNAME",
+            "BOOKINGSTATUS",
+            "DATASOURCE",
+            "ACCOUNT",
+            "FIRST_MISSING_DATE",
+            "LAST_MISSING_DATE",
+            "TOTAL_IMPRESSIONS",
+            "TOTAL_CLICKS",
+            "TOTAL_COST",
+            "ROW_COUNT",
+        ]
+    )
+    for row in rows:
+        writer.writerow(
+            [
+                row.alert_type,
+                row.alert_key,
+                row.our_ref,
+                row.job_number,
+                row.start_date,
+                row.end_date,
+                row.advertiser,
+                row.campaign,
+                row.location_text,
+                row.property_name,
+                row.booking_status,
+                row.datasource,
+                row.account,
+                row.first_missing_date,
+                row.last_missing_date,
+                row.total_impressions,
+                row.total_clicks,
+                row.total_cost,
+                row.row_count,
+            ]
+        )
+    return buf.getvalue().encode("utf-8")
+
+
+def build_csv_not_live(rows: List[AlertRow]) -> bytes:
     buf = StringIO()
     writer = csv.writer(buf)
     writer.writerow(
@@ -377,6 +562,43 @@ def build_csv(rows: List[AlertRow]) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
+def build_csv_missing_our_ref(rows: List[AlertRow]) -> bytes:
+    buf = StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(
+        [
+            "DATASOURCE",
+            "ACCOUNT",
+            "ADVERTISER",
+            "CAMPAIGN",
+            "JOB_NUMBER",
+            "FIRST_MISSING_DATE",
+            "LAST_MISSING_DATE",
+            "TOTAL_IMPRESSIONS",
+            "TOTAL_CLICKS",
+            "TOTAL_COST",
+            "ROW_COUNT",
+        ]
+    )
+    for row in rows:
+        writer.writerow(
+            [
+                row.datasource,
+                row.account,
+                row.advertiser,
+                row.campaign,
+                row.job_number,
+                row.first_missing_date,
+                row.last_missing_date,
+                row.total_impressions,
+                row.total_clicks,
+                row.total_cost,
+                row.row_count,
+            ]
+        )
+    return buf.getvalue().encode("utf-8")
+
+
 def build_signed_dashboard_link(base_url: str, user: str, run_id: str, ttl_days: int, secret: str) -> str:
     exp = int(time.time()) + max(ttl_days, 1) * 24 * 60 * 60
     payload = f"{user}|{run_id}|{exp}"
@@ -394,16 +616,20 @@ def build_signed_dashboard_link(base_url: str, user: str, run_id: str, ttl_days:
     return f"{base_url}{joiner}{query}"
 
 
-def build_email_body(link: str) -> str:
-    return (
-        "Please check the attached campaigns. They're either not live or have some issue with "
-        "SuperMetrics (line item IDs not added on platform, account not ticked on SuperMetrics). "
-        "Both kind of issues require action.\n\n"
-        "NOTE: This list does not include bookings that are booked in any property that does not "
-        "contain the word 'Programmatic' - so 'Acquire Fee', 'Other' or any custom Property names "
-        "on AdTeamPro are not included. Please check these manually\n\n"
-        f"Open dashboard: {link}"
-    )
+def build_email_body(link: str, rows: List[AlertRow]) -> str:
+    by_type: Dict[str, int] = {}
+    for row in rows:
+        by_type[row.alert_type] = by_type.get(row.alert_type, 0) + 1
+
+    lines = ["Alert summary:"]
+    for t in sorted(by_type.keys()):
+        lines.append(f"- {t}: {by_type[t]}")
+
+    lines.append("")
+    lines.append("Please check attachments and dashboard for details.")
+    lines.append("")
+    lines.append(f"Open dashboard: {link}")
+    return "\n".join(lines)
 
 
 def send_digest(rows: List[AlertRow], run_id: str) -> str:
@@ -429,10 +655,21 @@ def send_digest(rows: List[AlertRow], run_id: str) -> str:
 
     subject = env("ALERT_EMAIL_SUBJECT", "")
     if not subject:
-        subject = "ALERT: Campaigns not live"
+        subject = "ALERT: Campaign alert digest"
 
     now_nz = datetime.now(timezone.utc).astimezone(ZoneInfo("Pacific/Auckland"))
-    attachment_name = f"campaign_not_live_{now_nz.strftime('%Y%m%d')}.csv"
+    all_name = f"campaign_alerts_all_{now_nz.strftime('%Y%m%d')}.csv"
+
+    attachments = {all_name: build_csv_all(rows)}
+    for alert_type in sorted({r.alert_type for r in rows}):
+        type_rows = [r for r in rows if r.alert_type == alert_type]
+        type_name = f"campaign_alerts_{alert_type.lower()}_{now_nz.strftime('%Y%m%d')}.csv"
+        if alert_type == ALERT_TYPE_NOT_LIVE:
+            attachments[type_name] = build_csv_not_live(type_rows)
+        elif alert_type == ALERT_TYPE_MISSING_OUR_REF:
+            attachments[type_name] = build_csv_missing_our_ref(type_rows)
+        else:
+            attachments[type_name] = build_csv_all(type_rows)
 
     sent_ids: List[str] = []
     for recipient in recipients:
@@ -443,12 +680,12 @@ def send_digest(rows: List[AlertRow], run_id: str) -> str:
             ttl_days=link_ttl_days,
             secret=link_secret,
         )
-        body = build_email_body(link)
+        body = build_email_body(link, rows)
         msg_id = client.send_email(
             to_email=recipient,
             subject=subject,
             body_text=body,
-            attachments={attachment_name: build_csv(rows)},
+            attachments=attachments,
         )
         sent_ids.append(msg_id)
 
@@ -463,8 +700,8 @@ def main() -> int:
     bq_client = build_bq_client()
     ensure_control_tables(bq_client)
 
-    rows = fetch_alert_rows(bq_client)
-    states = fetch_latest_snooze_states(bq_client, [r.our_ref for r in rows])
+    rows = fetch_not_live_rows(bq_client) + fetch_missing_our_ref_rows(bq_client)
+    states = fetch_latest_snooze_states(bq_client, rows)
     rows = filter_suppressed_rows(rows, states)
 
     if not rows:

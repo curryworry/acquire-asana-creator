@@ -24,7 +24,8 @@ from gmail_client import GmailAttachment, GmailError, GmailInboxClient
 st.set_page_config(page_title="Trafficking to Asana", page_icon="✅", layout="wide")
 
 GID_RE = re.compile(r"^\d+$")
-ALERT_TYPE = "NOT_LIVE"
+ALERT_TYPE_NOT_LIVE = "NOT_LIVE"
+ALERT_TYPE_MISSING_OUR_REF = "MISSING_OUR_REF"
 
 
 def _get_secret(name: str, default: str = "") -> str:
@@ -96,6 +97,7 @@ def _ensure_control_tables(client: bigquery.Client, project_id: str, dataset: st
         f"""
 CREATE TABLE IF NOT EXISTS {_snoozes_table_fqn(project_id, dataset)} (
   our_ref STRING NOT NULL,
+  alert_key STRING,
   snooze_type STRING NOT NULL,
   snooze_status STRING NOT NULL,
   snooze_reason STRING,
@@ -120,6 +122,7 @@ CREATE TABLE IF NOT EXISTS {_snapshots_table_fqn(project_id, dataset)} (
   run_date_nz DATE NOT NULL,
   run_timestamp_utc TIMESTAMP NOT NULL,
   alert_type STRING NOT NULL,
+  alert_key STRING,
   our_ref STRING,
   job_number STRING,
   start_date DATE,
@@ -128,10 +131,20 @@ CREATE TABLE IF NOT EXISTS {_snapshots_table_fqn(project_id, dataset)} (
   campaign STRING,
   location_text STRING,
   property_name STRING,
-  booking_status STRING
+  booking_status STRING,
+  datasource STRING,
+  account STRING,
+  first_missing_date DATE,
+  last_missing_date DATE,
+  total_impressions FLOAT64,
+  total_clicks FLOAT64,
+  total_cost FLOAT64,
+  row_count INT64
 )
 """
     ).result()
+    client.query(f"ALTER TABLE {_snoozes_table_fqn(project_id, dataset)} ADD COLUMN IF NOT EXISTS alert_key STRING").result()
+    client.query(f"ALTER TABLE {_snapshots_table_fqn(project_id, dataset)} ADD COLUMN IF NOT EXISTS alert_key STRING").result()
 
 
 def _verify_live_alert_link(user: str, run_id: str, exp: str, sig: str, secret: str) -> bool:
@@ -152,6 +165,8 @@ SELECT
   run_id,
   run_date_nz,
   run_timestamp_utc,
+  alert_type,
+  alert_key,
   our_ref,
   job_number,
   start_date,
@@ -160,15 +175,21 @@ SELECT
   campaign,
   location_text,
   property_name,
-  booking_status
+  booking_status,
+  datasource,
+  account,
+  first_missing_date,
+  last_missing_date,
+  total_impressions,
+  total_clicks,
+  total_cost,
+  row_count
 FROM {_snapshots_table_fqn(project_id, dataset)}
-WHERE alert_type = @alert_type
-  AND run_id = @run_id
+WHERE run_id = @run_id
 ORDER BY start_date, our_ref
 """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
-            bigquery.ScalarQueryParameter("alert_type", "STRING", ALERT_TYPE),
             bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
         ]
     )
@@ -182,6 +203,8 @@ ORDER BY start_date, our_ref
                 "RUN_ID": str(r["run_id"] or ""),
                 "RUN_DATE_NZ": str(r["run_date_nz"] or ""),
                 "RUN_TS_UTC": str(r["run_timestamp_utc"] or ""),
+                "ALERT_TYPE": str(r["alert_type"] or ""),
+                "ALERT_KEY": str(r["alert_key"] or ""),
                 "OUR_REF": str(r["our_ref"] or ""),
                 "JOB_NUMBER": str(r["job_number"] or ""),
                 "START_DATE": str(r["start_date"] or ""),
@@ -191,6 +214,14 @@ ORDER BY start_date, our_ref
                 "LOCATIONTEXT": str(r["location_text"] or ""),
                 "PROPERTYNAME": str(r["property_name"] or ""),
                 "BOOKINGSTATUS": str(r["booking_status"] or ""),
+                "DATASOURCE": str(r["datasource"] or ""),
+                "ACCOUNT": str(r["account"] or ""),
+                "FIRST_MISSING_DATE": str(r["first_missing_date"] or ""),
+                "LAST_MISSING_DATE": str(r["last_missing_date"] or ""),
+                "TOTAL_IMPRESSIONS": float(r["total_impressions"] or 0),
+                "TOTAL_CLICKS": float(r["total_clicks"] or 0),
+                "TOTAL_COST": float(r["total_cost"] or 0),
+                "ROW_COUNT": int(r["row_count"] or 0),
             }
         )
     return pd.DataFrame(data)
@@ -200,13 +231,17 @@ def _fetch_latest_snooze_df(
     client: bigquery.Client,
     project_id: str,
     dataset: str,
-    refs: List[str],
+    alert_keys: List[str],
+    alert_types: List[str],
+    legacy_not_live_refs: List[str],
 ) -> pd.DataFrame:
-    if not refs:
+    if not alert_keys:
         return pd.DataFrame()
     query = f"""
 WITH latest AS (
   SELECT
+    COALESCE(alert_key, our_ref) AS alert_key,
+    snooze_type,
     our_ref,
     snooze_status,
     snooze_reason,
@@ -215,12 +250,17 @@ WITH latest AS (
     snoozed_by,
     dismissed_by,
     updated_at,
-    ROW_NUMBER() OVER (PARTITION BY our_ref, snooze_type ORDER BY updated_at DESC) AS rn
+    ROW_NUMBER() OVER (PARTITION BY COALESCE(alert_key, our_ref), snooze_type ORDER BY updated_at DESC) AS rn
   FROM {_snoozes_table_fqn(project_id, dataset)}
-  WHERE snooze_type = @alert_type
-    AND our_ref IN UNNEST(@refs)
+  WHERE snooze_type IN UNNEST(@alert_types)
+    AND (
+      COALESCE(alert_key, our_ref) IN UNNEST(@alert_keys)
+      OR (snooze_type = @not_live_type AND our_ref IN UNNEST(@legacy_not_live_refs))
+    )
 )
 SELECT
+  alert_key,
+  snooze_type,
   our_ref,
   snooze_status,
   snooze_reason,
@@ -234,8 +274,10 @@ WHERE rn = 1
 """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
-            bigquery.ScalarQueryParameter("alert_type", "STRING", ALERT_TYPE),
-            bigquery.ArrayQueryParameter("refs", "STRING", refs),
+            bigquery.ArrayQueryParameter("alert_types", "STRING", alert_types),
+            bigquery.ArrayQueryParameter("alert_keys", "STRING", alert_keys),
+            bigquery.ScalarQueryParameter("not_live_type", "STRING", ALERT_TYPE_NOT_LIVE),
+            bigquery.ArrayQueryParameter("legacy_not_live_refs", "STRING", legacy_not_live_refs),
         ]
     )
     rows = list(client.query(query, job_config=job_config).result())
@@ -244,6 +286,8 @@ WHERE rn = 1
     return pd.DataFrame(
         [
             {
+                "ALERT_KEY": str(r["alert_key"] or ""),
+                "ALERT_TYPE": str(r["snooze_type"] or ""),
                 "OUR_REF": str(r["our_ref"] or ""),
                 "SNOOZE_STATUS": str(r["snooze_status"] or ""),
                 "SNOOZE_REASON": str(r["snooze_reason"] or ""),
@@ -266,6 +310,8 @@ def _fetch_global_latest_snooze_df(
     query = f"""
 WITH latest AS (
   SELECT
+    COALESCE(alert_key, our_ref) AS alert_key,
+    snooze_type,
     our_ref,
     snooze_status,
     snooze_reason,
@@ -274,11 +320,12 @@ WITH latest AS (
     snoozed_by,
     dismissed_by,
     updated_at,
-    ROW_NUMBER() OVER (PARTITION BY our_ref, snooze_type ORDER BY updated_at DESC) AS rn
+    ROW_NUMBER() OVER (PARTITION BY COALESCE(alert_key, our_ref), snooze_type ORDER BY updated_at DESC) AS rn
   FROM {_snoozes_table_fqn(project_id, dataset)}
-  WHERE snooze_type = @alert_type
 )
 SELECT
+  alert_key,
+  snooze_type,
   our_ref,
   snooze_status,
   snooze_reason,
@@ -295,15 +342,14 @@ WHERE rn = 1
   )
 ORDER BY updated_at DESC
 """
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[bigquery.ScalarQueryParameter("alert_type", "STRING", ALERT_TYPE)]
-    )
-    rows = list(client.query(query, job_config=job_config).result())
+    rows = list(client.query(query).result())
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(
         [
             {
+                "ALERT_KEY": str(r["alert_key"] or ""),
+                "ALERT_TYPE": str(r["snooze_type"] or ""),
                 "OUR_REF": str(r["our_ref"] or ""),
                 "SNOOZE_STATUS": str(r["snooze_status"] or ""),
                 "SNOOZE_REASON": str(r["snooze_reason"] or ""),
@@ -322,6 +368,8 @@ def _upsert_snooze_active(
     client: bigquery.Client,
     project_id: str,
     dataset: str,
+    alert_type: str,
+    alert_key: str,
     our_ref: str,
     user: str,
     reason: str,
@@ -331,8 +379,9 @@ def _upsert_snooze_active(
     query = f"""
 MERGE {_snoozes_table_fqn(project_id, dataset)} T
 USING (SELECT @our_ref AS our_ref, @alert_type AS snooze_type) S
-ON T.our_ref = S.our_ref AND T.snooze_type = S.snooze_type
+ON COALESCE(T.alert_key, T.our_ref) = @alert_key AND T.snooze_type = S.snooze_type
 WHEN MATCHED THEN UPDATE SET
+  alert_key = @alert_key,
   snooze_status = 'ACTIVE',
   snooze_reason = @reason,
   snooze_start_date = @start_date,
@@ -346,18 +395,19 @@ WHEN MATCHED THEN UPDATE SET
   dismissed_at = NULL
 WHEN NOT MATCHED THEN
   INSERT (
-    our_ref, snooze_type, snooze_status, snooze_reason, snooze_start_date, snooze_end_date,
+    our_ref, alert_key, snooze_type, snooze_status, snooze_reason, snooze_start_date, snooze_end_date,
     snoozed_by, run_id, created_at, updated_at, unsnoozed_by, unsnoozed_at, dismissed_by, dismissed_at
   )
   VALUES (
-    @our_ref, @alert_type, 'ACTIVE', @reason, @start_date, @end_date,
+    @our_ref, @alert_key, @alert_type, 'ACTIVE', @reason, @start_date, @end_date,
     @user, @run_id, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), NULL, NULL, NULL, NULL
   )
 """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("our_ref", "STRING", our_ref),
-            bigquery.ScalarQueryParameter("alert_type", "STRING", ALERT_TYPE),
+            bigquery.ScalarQueryParameter("alert_type", "STRING", alert_type),
+            bigquery.ScalarQueryParameter("alert_key", "STRING", alert_key),
             bigquery.ScalarQueryParameter("reason", "STRING", reason),
             bigquery.ScalarQueryParameter("start_date", "DATE", _today_nz().isoformat()),
             bigquery.ScalarQueryParameter("end_date", "DATE", end_date.isoformat()),
@@ -372,6 +422,8 @@ def _upsert_unsnooze(
     client: bigquery.Client,
     project_id: str,
     dataset: str,
+    alert_type: str,
+    alert_key: str,
     our_ref: str,
     user: str,
     run_id: str,
@@ -379,8 +431,9 @@ def _upsert_unsnooze(
     query = f"""
 MERGE {_snoozes_table_fqn(project_id, dataset)} T
 USING (SELECT @our_ref AS our_ref, @alert_type AS snooze_type) S
-ON T.our_ref = S.our_ref AND T.snooze_type = S.snooze_type
+ON COALESCE(T.alert_key, T.our_ref) = @alert_key AND T.snooze_type = S.snooze_type
 WHEN MATCHED THEN UPDATE SET
+  alert_key = @alert_key,
   snooze_status = 'UNSNOOZED',
   snooze_reason = 'Manual unsnooze',
   run_id = @run_id,
@@ -389,18 +442,19 @@ WHEN MATCHED THEN UPDATE SET
   updated_at = CURRENT_TIMESTAMP()
 WHEN NOT MATCHED THEN
   INSERT (
-    our_ref, snooze_type, snooze_status, snooze_reason, snooze_start_date, snooze_end_date,
+    our_ref, alert_key, snooze_type, snooze_status, snooze_reason, snooze_start_date, snooze_end_date,
     snoozed_by, run_id, created_at, updated_at, unsnoozed_by, unsnoozed_at, dismissed_by, dismissed_at
   )
   VALUES (
-    @our_ref, @alert_type, 'UNSNOOZED', 'Manual unsnooze', NULL, NULL,
+    @our_ref, @alert_key, @alert_type, 'UNSNOOZED', 'Manual unsnooze', NULL, NULL,
     NULL, @run_id, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), @user, CURRENT_TIMESTAMP(), NULL, NULL
   )
 """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("our_ref", "STRING", our_ref),
-            bigquery.ScalarQueryParameter("alert_type", "STRING", ALERT_TYPE),
+            bigquery.ScalarQueryParameter("alert_type", "STRING", alert_type),
+            bigquery.ScalarQueryParameter("alert_key", "STRING", alert_key),
             bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
             bigquery.ScalarQueryParameter("user", "STRING", user),
         ]
@@ -412,6 +466,8 @@ def _upsert_dismiss(
     client: bigquery.Client,
     project_id: str,
     dataset: str,
+    alert_type: str,
+    alert_key: str,
     our_ref: str,
     user: str,
     reason: str,
@@ -420,8 +476,9 @@ def _upsert_dismiss(
     query = f"""
 MERGE {_snoozes_table_fqn(project_id, dataset)} T
 USING (SELECT @our_ref AS our_ref, @alert_type AS snooze_type) S
-ON T.our_ref = S.our_ref AND T.snooze_type = S.snooze_type
+ON COALESCE(T.alert_key, T.our_ref) = @alert_key AND T.snooze_type = S.snooze_type
 WHEN MATCHED THEN UPDATE SET
+  alert_key = @alert_key,
   snooze_status = 'DISMISSED',
   snooze_reason = @reason,
   run_id = @run_id,
@@ -430,18 +487,19 @@ WHEN MATCHED THEN UPDATE SET
   updated_at = CURRENT_TIMESTAMP()
 WHEN NOT MATCHED THEN
   INSERT (
-    our_ref, snooze_type, snooze_status, snooze_reason, snooze_start_date, snooze_end_date,
+    our_ref, alert_key, snooze_type, snooze_status, snooze_reason, snooze_start_date, snooze_end_date,
     snoozed_by, run_id, created_at, updated_at, unsnoozed_by, unsnoozed_at, dismissed_by, dismissed_at
   )
   VALUES (
-    @our_ref, @alert_type, 'DISMISSED', @reason, NULL, NULL,
+    @our_ref, @alert_key, @alert_type, 'DISMISSED', @reason, NULL, NULL,
     NULL, @run_id, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), NULL, NULL, @user, CURRENT_TIMESTAMP()
   )
 """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("our_ref", "STRING", our_ref),
-            bigquery.ScalarQueryParameter("alert_type", "STRING", ALERT_TYPE),
+            bigquery.ScalarQueryParameter("alert_type", "STRING", alert_type),
+            bigquery.ScalarQueryParameter("alert_key", "STRING", alert_key),
             bigquery.ScalarQueryParameter("reason", "STRING", reason),
             bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
             bigquery.ScalarQueryParameter("user", "STRING", user),
@@ -489,14 +547,21 @@ def _render_live_alert_dashboard() -> bool:
         st.warning("No rows found for this run link.")
         return True
 
+    alert_keys = sorted(snapshot_df["ALERT_KEY"].dropna().astype(str).unique().tolist())
+    alert_types = sorted(snapshot_df["ALERT_TYPE"].dropna().astype(str).unique().tolist())
+    legacy_not_live_refs = sorted(
+        snapshot_df.loc[snapshot_df["ALERT_TYPE"] == ALERT_TYPE_NOT_LIVE, "OUR_REF"].dropna().astype(str).unique().tolist()
+    )
     snooze_df = _fetch_latest_snooze_df(
         bq_client,
         project_id,
         dataset,
-        refs=sorted(snapshot_df["OUR_REF"].dropna().astype(str).unique().tolist()),
+        alert_keys=alert_keys,
+        alert_types=alert_types,
+        legacy_not_live_refs=legacy_not_live_refs,
     )
     if not snooze_df.empty:
-        merged = snapshot_df.merge(snooze_df, on="OUR_REF", how="left")
+        merged = snapshot_df.merge(snooze_df, on=["ALERT_TYPE", "ALERT_KEY"], how="left")
     else:
         merged = snapshot_df.copy()
         merged["SNOOZE_STATUS"] = ""
@@ -522,9 +587,9 @@ def _render_live_alert_dashboard() -> bool:
     merged["LIVE_ALERT_STATE"] = statuses
 
     active_df = merged[merged["LIVE_ALERT_STATE"] == "OPEN"].copy()
-    snoozed_df = merged[merged["LIVE_ALERT_STATE"] != "OPEN"].copy()
 
     base_display_cols = [
+        "ALERT_TYPE",
         "OUR_REF",
         "JOB_NUMBER",
         "START_DATE",
@@ -534,25 +599,33 @@ def _render_live_alert_dashboard() -> bool:
         "LOCATIONTEXT",
         "PROPERTYNAME",
         "BOOKINGSTATUS",
-    ]
-    snoozed_extra_cols = [
-        "SNOOZE_STATUS",
-        "SNOOZE_REASON",
-        "SNOOZE_END_DATE",
-        "SNOOZED_BY",
-        "DISMISSED_BY",
-        "UPDATED_AT",
+        "DATASOURCE",
+        "ACCOUNT",
+        "FIRST_MISSING_DATE",
+        "LAST_MISSING_DATE",
+        "TOTAL_IMPRESSIONS",
+        "TOTAL_CLICKS",
+        "TOTAL_COST",
+        "ROW_COUNT",
     ]
 
     tab_active, tab_snoozed = st.tabs(["Active Alerts", "Snoozed"])
 
     with tab_active:
-        if active_df.empty:
+        active_page = st.selectbox(
+            "Alert page",
+            options=["ALL"] + sorted(active_df["ALERT_TYPE"].dropna().astype(str).unique().tolist()),
+            index=0,
+            key="alert_page_select",
+        )
+        active_page_df = active_df if active_page == "ALL" else active_df[active_df["ALERT_TYPE"] == active_page].copy()
+
+        if active_page_df.empty:
             st.info("No active alerts in this run.")
             edited_active = pd.DataFrame()
-            selected_refs: List[str] = []
+            selected_alerts: List[Dict[str, str]] = []
         else:
-            active_view = active_df[[c for c in base_display_cols if c in active_df.columns]].copy()
+            active_view = active_page_df[[c for c in base_display_cols if c in active_page_df.columns]].copy()
             active_view.insert(0, "SELECT", False)
             edited_active = st.data_editor(
                 active_view,
@@ -562,10 +635,16 @@ def _render_live_alert_dashboard() -> bool:
                 disabled=[c for c in active_view.columns if c != "SELECT"],
                 key="active_alerts_editor",
             )
-            selected_refs = (
-                edited_active.loc[edited_active["SELECT"] == True, "OUR_REF"].dropna().astype(str).unique().tolist()
-            )
-            st.caption(f"Selected OUR_REF count: {len(selected_refs)}")
+            selected_rows = active_page_df.loc[edited_active["SELECT"] == True, ["ALERT_TYPE", "ALERT_KEY", "OUR_REF"]]
+            selected_alerts = [
+                {
+                    "alert_type": str(r["ALERT_TYPE"] or ""),
+                    "alert_key": str(r["ALERT_KEY"] or ""),
+                    "our_ref": str(r["OUR_REF"] or ""),
+                }
+                for _, r in selected_rows.iterrows()
+            ]
+            st.caption(f"Selected alert count: {len(selected_alerts)}")
 
         snooze_reason = st.text_area("Snooze reason", key="snooze_reason_text")
         snooze_end_date = st.date_input(
@@ -574,34 +653,36 @@ def _render_live_alert_dashboard() -> bool:
             min_value=today,
             key="snooze_end_date_input",
         )
-        if st.button("Snooze Selected OUR_REFs", type="primary"):
-            if not selected_refs:
-                st.error("Select at least one OUR_REF.")
+        if st.button("Snooze Selected Alerts", type="primary"):
+            if not selected_alerts:
+                st.error("Select at least one alert.")
             elif not snooze_reason.strip():
                 st.error("Snooze reason is required.")
             else:
-                for ref in selected_refs:
+                for item in selected_alerts:
                     _upsert_snooze_active(
                         bq_client,
                         project_id,
                         dataset,
-                        our_ref=ref,
+                        alert_type=item["alert_type"],
+                        alert_key=item["alert_key"],
+                        our_ref=item["our_ref"] or item["alert_key"],
                         user=user,
                         reason=snooze_reason.strip(),
                         end_date=snooze_end_date,
                         run_id=run_id,
                     )
-                st.success(f"Snoozed {len(selected_refs)} OUR_REF(s).")
+                st.success(f"Snoozed {len(selected_alerts)} alert(s).")
                 st.rerun()
 
     with tab_snoozed:
         global_snoozed_df = _fetch_global_latest_snooze_df(bq_client, project_id, dataset)
         if global_snoozed_df.empty:
-            st.info("No global snoozed or dismissed OUR_REFs.")
+            st.info("No global snoozed or dismissed alerts.")
             edited_snoozed = pd.DataFrame()
-            selected_snoozed_refs: List[str] = []
+            selected_snoozed_alerts: List[Dict[str, str]] = []
         else:
-            st.caption("Global snoozes/dismissed refs (not limited to this run).")
+            st.caption("Global snoozed/dismissed alerts (not limited to this run).")
             snoozed_view = global_snoozed_df.copy()
             snoozed_view.insert(0, "SELECT", False)
             edited_snoozed = st.data_editor(
@@ -612,14 +693,18 @@ def _render_live_alert_dashboard() -> bool:
                 disabled=[c for c in snoozed_view.columns if c != "SELECT"],
                 key="snoozed_alerts_editor",
             )
-            selected_snoozed_refs = (
-                edited_snoozed.loc[edited_snoozed["SELECT"] == True, "OUR_REF"]
-                .dropna()
-                .astype(str)
-                .unique()
-                .tolist()
-            )
-            st.caption(f"Selected OUR_REF count: {len(selected_snoozed_refs)}")
+            selected_rows = global_snoozed_df.loc[
+                edited_snoozed["SELECT"] == True, ["ALERT_TYPE", "ALERT_KEY", "OUR_REF"]
+            ]
+            selected_snoozed_alerts = [
+                {
+                    "alert_type": str(r["ALERT_TYPE"] or ""),
+                    "alert_key": str(r["ALERT_KEY"] or ""),
+                    "our_ref": str(r["OUR_REF"] or ""),
+                }
+                for _, r in selected_rows.iterrows()
+            ]
+            st.caption(f"Selected alert count: {len(selected_snoozed_alerts)}")
 
         extend_end_date = st.date_input(
             "New snooze end date (NZ)",
@@ -633,31 +718,42 @@ def _render_live_alert_dashboard() -> bool:
         c1, c2, c3 = st.columns(3)
         with c1:
             if st.button("Unsnooze"):
-                if not selected_snoozed_refs:
-                    st.error("Select at least one OUR_REF.")
+                if not selected_snoozed_alerts:
+                    st.error("Select at least one alert.")
                 else:
-                    for ref in selected_snoozed_refs:
-                        _upsert_unsnooze(bq_client, project_id, dataset, our_ref=ref, user=user, run_id=run_id)
-                    st.success(f"Unsnoozed {len(selected_snoozed_refs)} OUR_REF(s).")
+                    for item in selected_snoozed_alerts:
+                        _upsert_unsnooze(
+                            bq_client,
+                            project_id,
+                            dataset,
+                            alert_type=item["alert_type"],
+                            alert_key=item["alert_key"],
+                            our_ref=item["our_ref"] or item["alert_key"],
+                            user=user,
+                            run_id=run_id,
+                        )
+                    st.success(f"Unsnoozed {len(selected_snoozed_alerts)} alert(s).")
                     st.rerun()
         with c2:
             if st.button("Extend Snooze"):
-                if not selected_snoozed_refs:
-                    st.error("Select at least one OUR_REF.")
+                if not selected_snoozed_alerts:
+                    st.error("Select at least one alert.")
                 else:
                     reason = extend_reason.strip() or "Snooze extended"
-                    for ref in selected_snoozed_refs:
+                    for item in selected_snoozed_alerts:
                         _upsert_snooze_active(
                             bq_client,
                             project_id,
                             dataset,
-                            our_ref=ref,
+                            alert_type=item["alert_type"],
+                            alert_key=item["alert_key"],
+                            our_ref=item["our_ref"] or item["alert_key"],
                             user=user,
                             reason=reason,
                             end_date=extend_end_date,
                             run_id=run_id,
                         )
-                    st.success(f"Extended snooze for {len(selected_snoozed_refs)} OUR_REF(s).")
+                    st.success(f"Extended snooze for {len(selected_snoozed_alerts)} alert(s).")
                     st.rerun()
         with c3:
             if st.button("Dismiss"):
@@ -666,22 +762,24 @@ def _render_live_alert_dashboard() -> bool:
                     st.error("ADMIN_PASS is not configured.")
                 elif admin_pass_input != admin_pass:
                     st.error("Admin password is incorrect.")
-                elif not selected_snoozed_refs:
-                    st.error("Select at least one OUR_REF.")
+                elif not selected_snoozed_alerts:
+                    st.error("Select at least one alert.")
                 elif not dismiss_reason.strip():
                     st.error("Dismiss reason is required.")
                 else:
-                    for ref in selected_snoozed_refs:
+                    for item in selected_snoozed_alerts:
                         _upsert_dismiss(
                             bq_client,
                             project_id,
                             dataset,
-                            our_ref=ref,
+                            alert_type=item["alert_type"],
+                            alert_key=item["alert_key"],
+                            our_ref=item["our_ref"] or item["alert_key"],
                             user=user,
                             reason=dismiss_reason.strip(),
                             run_id=run_id,
                         )
-                    st.success(f"Dismissed {len(selected_snoozed_refs)} OUR_REF(s).")
+                    st.success(f"Dismissed {len(selected_snoozed_alerts)} alert(s).")
                     st.rerun()
 
     return True
