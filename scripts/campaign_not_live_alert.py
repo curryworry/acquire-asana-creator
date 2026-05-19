@@ -600,6 +600,10 @@ def build_csv_missing_our_ref(rows: List[AlertRow]) -> bytes:
 
 
 def build_signed_dashboard_link(base_url: str, user: str, run_id: str, ttl_days: int, secret: str) -> str:
+    normalized_base = base_url.strip()
+    if not normalized_base.lower().startswith(("http://", "https://")):
+        normalized_base = f"https://{normalized_base.lstrip('/')}"
+
     exp = int(time.time()) + max(ttl_days, 1) * 24 * 60 * 60
     payload = f"{user}|{run_id}|{exp}"
     sig = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -612,8 +616,8 @@ def build_signed_dashboard_link(base_url: str, user: str, run_id: str, ttl_days:
             "sig": sig,
         }
     )
-    joiner = "&" if "?" in base_url else "?"
-    return f"{base_url}{joiner}{query}"
+    joiner = "&" if "?" in normalized_base else "?"
+    return f"{normalized_base}{joiner}{query}"
 
 
 def build_email_body(link: str, rows: List[AlertRow]) -> str:
