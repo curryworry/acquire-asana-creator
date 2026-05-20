@@ -322,25 +322,40 @@ WITH latest AS (
     updated_at,
     ROW_NUMBER() OVER (PARTITION BY COALESCE(alert_key, our_ref), snooze_type ORDER BY updated_at DESC) AS rn
   FROM {_snoozes_table_fqn(project_id, dataset)}
+),
+snapshot_latest AS (
+  SELECT
+    alert_type,
+    alert_key,
+    advertiser,
+    campaign,
+    ROW_NUMBER() OVER (PARTITION BY alert_type, alert_key ORDER BY run_timestamp_utc DESC) AS rn
+  FROM {_snapshots_table_fqn(project_id, dataset)}
 )
 SELECT
-  alert_key,
-  snooze_type,
-  our_ref,
-  snooze_status,
-  snooze_reason,
-  snooze_start_date,
-  snooze_end_date,
-  snoozed_by,
-  dismissed_by,
-  updated_at
-FROM latest
-WHERE rn = 1
+  l.alert_key,
+  l.snooze_type,
+  l.our_ref,
+  l.snooze_status,
+  l.snooze_reason,
+  l.snooze_start_date,
+  l.snooze_end_date,
+  l.snoozed_by,
+  l.dismissed_by,
+  l.updated_at,
+  COALESCE(s.advertiser, '') AS advertiser,
+  COALESCE(s.campaign, '') AS campaign
+FROM latest l
+LEFT JOIN snapshot_latest s
+  ON s.alert_type = l.snooze_type
+ AND s.alert_key = l.alert_key
+ AND s.rn = 1
+WHERE l.rn = 1
   AND (
-    (UPPER(COALESCE(snooze_status, '')) = 'ACTIVE' AND snooze_end_date >= CURRENT_DATE('Pacific/Auckland'))
-    OR UPPER(COALESCE(snooze_status, '')) = 'DISMISSED'
+    (UPPER(COALESCE(l.snooze_status, '')) = 'ACTIVE' AND l.snooze_end_date >= CURRENT_DATE('Pacific/Auckland'))
+    OR UPPER(COALESCE(l.snooze_status, '')) = 'DISMISSED'
   )
-ORDER BY updated_at DESC
+ORDER BY l.updated_at DESC
 """
     rows = list(client.query(query).result())
     if not rows:
@@ -358,6 +373,8 @@ ORDER BY updated_at DESC
                 "SNOOZED_BY": str(r["snoozed_by"] or ""),
                 "DISMISSED_BY": str(r["dismissed_by"] or ""),
                 "UPDATED_AT": str(r["updated_at"] or ""),
+                "ADVERTISER": str(r["advertiser"] or ""),
+                "CAMPAIGN": str(r["campaign"] or ""),
             }
             for r in rows
         ]
