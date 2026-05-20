@@ -626,16 +626,21 @@ def _render_live_alert_dashboard() -> bool:
             selected_alerts: List[Dict[str, str]] = []
         else:
             active_view = active_page_df[[c for c in base_display_cols if c in active_page_df.columns]].copy()
+            active_view.insert(0, "_ROW_ID", active_page_df.index.astype(str))
             active_view.insert(0, "SELECT", False)
             edited_active = st.data_editor(
                 active_view,
                 use_container_width=True,
                 hide_index=True,
                 column_config={"SELECT": st.column_config.CheckboxColumn("Select")},
-                disabled=[c for c in active_view.columns if c != "SELECT"],
+                disabled=[c for c in active_view.columns if c not in {"SELECT"}],
+                column_order=["SELECT"] + [c for c in active_view.columns if c not in {"SELECT", "_ROW_ID"}],
                 key="active_alerts_editor",
             )
-            selected_rows = active_page_df.loc[edited_active["SELECT"] == True, ["ALERT_TYPE", "ALERT_KEY", "OUR_REF"]]
+            selected_ids = edited_active.loc[edited_active["SELECT"] == True, "_ROW_ID"].astype(str).tolist()
+            selected_rows = active_page_df.loc[
+                active_page_df.index.astype(str).isin(selected_ids), ["ALERT_TYPE", "ALERT_KEY", "OUR_REF"]
+            ]
             selected_alerts = [
                 {
                     "alert_type": str(r["ALERT_TYPE"] or ""),
@@ -684,17 +689,20 @@ def _render_live_alert_dashboard() -> bool:
         else:
             st.caption("Global snoozed/dismissed alerts (not limited to this run).")
             snoozed_view = global_snoozed_df.copy()
+            snoozed_view.insert(0, "_ROW_ID", global_snoozed_df.index.astype(str))
             snoozed_view.insert(0, "SELECT", False)
             edited_snoozed = st.data_editor(
                 snoozed_view,
                 use_container_width=True,
                 hide_index=True,
                 column_config={"SELECT": st.column_config.CheckboxColumn("Select")},
-                disabled=[c for c in snoozed_view.columns if c != "SELECT"],
+                disabled=[c for c in snoozed_view.columns if c not in {"SELECT"}],
+                column_order=["SELECT"] + [c for c in snoozed_view.columns if c not in {"SELECT", "_ROW_ID"}],
                 key="snoozed_alerts_editor",
             )
+            selected_ids = edited_snoozed.loc[edited_snoozed["SELECT"] == True, "_ROW_ID"].astype(str).tolist()
             selected_rows = global_snoozed_df.loc[
-                edited_snoozed["SELECT"] == True, ["ALERT_TYPE", "ALERT_KEY", "OUR_REF"]
+                global_snoozed_df.index.astype(str).isin(selected_ids), ["ALERT_TYPE", "ALERT_KEY", "OUR_REF"]
             ]
             selected_snoozed_alerts = [
                 {
