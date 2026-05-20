@@ -572,6 +572,10 @@ def _render_live_alert_dashboard() -> bool:
         merged["DISMISSED_BY"] = ""
         merged["UPDATED_AT"] = ""
 
+    # Merge can suffix duplicate columns (e.g. OUR_REF_x/OUR_REF_y). Normalize for downstream UI logic.
+    if "OUR_REF" not in merged.columns and "OUR_REF_x" in merged.columns:
+        merged["OUR_REF"] = merged["OUR_REF_x"]
+
     today = _today_nz()
     statuses = []
     for _, row in merged.iterrows():
@@ -638,9 +642,10 @@ def _render_live_alert_dashboard() -> bool:
                 key="active_alerts_editor",
             )
             selected_ids = edited_active.loc[edited_active["SELECT"] == True, "_ROW_ID"].astype(str).tolist()
+            our_ref_col = "OUR_REF" if "OUR_REF" in active_page_df.columns else "OUR_REF_x"
             selected_rows = active_page_df.loc[
-                active_page_df.index.astype(str).isin(selected_ids), ["ALERT_TYPE", "ALERT_KEY", "OUR_REF"]
-            ]
+                active_page_df.index.astype(str).isin(selected_ids), ["ALERT_TYPE", "ALERT_KEY", our_ref_col]
+            ].rename(columns={our_ref_col: "OUR_REF"})
             selected_alerts = [
                 {
                     "alert_type": str(r["ALERT_TYPE"] or ""),
