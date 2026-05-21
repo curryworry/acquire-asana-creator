@@ -435,6 +435,65 @@ WHEN NOT MATCHED THEN
     client.query(query, job_config=job_config).result()
 
 
+def _upsert_snooze_active_batch(
+    client: bigquery.Client,
+    project_id: str,
+    dataset: str,
+    alerts: List[Dict[str, str]],
+    user: str,
+    reason: str,
+    end_date: date,
+    run_id: str,
+) -> None:
+    if not alerts:
+        return
+    rows_payload = [
+        {"our_ref": str(a.get("our_ref", "") or ""), "alert_key": str(a.get("alert_key", "") or ""), "alert_type": str(a.get("alert_type", "") or "")}
+        for a in alerts
+    ]
+    query = f"""
+MERGE {_snoozes_table_fqn(project_id, dataset)} T
+USING (
+  SELECT r.our_ref, r.alert_key, r.alert_type
+  FROM UNNEST(@rows) AS r
+) S
+ON COALESCE(T.alert_key, T.our_ref) = S.alert_key AND T.snooze_type = S.alert_type
+WHEN MATCHED THEN UPDATE SET
+  alert_key = S.alert_key,
+  snooze_status = 'ACTIVE',
+  snooze_reason = @reason,
+  snooze_start_date = @start_date,
+  snooze_end_date = @end_date,
+  snoozed_by = @user,
+  run_id = @run_id,
+  updated_at = CURRENT_TIMESTAMP(),
+  unsnoozed_by = NULL,
+  unsnoozed_at = NULL,
+  dismissed_by = NULL,
+  dismissed_at = NULL
+WHEN NOT MATCHED THEN
+  INSERT (
+    our_ref, alert_key, snooze_type, snooze_status, snooze_reason, snooze_start_date, snooze_end_date,
+    snoozed_by, run_id, created_at, updated_at, unsnoozed_by, unsnoozed_at, dismissed_by, dismissed_at
+  )
+  VALUES (
+    S.our_ref, S.alert_key, S.alert_type, 'ACTIVE', @reason, @start_date, @end_date,
+    @user, @run_id, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), NULL, NULL, NULL, NULL
+  )
+"""
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ArrayQueryParameter("rows", "STRUCT<our_ref STRING, alert_key STRING, alert_type STRING>", rows_payload),
+            bigquery.ScalarQueryParameter("reason", "STRING", reason),
+            bigquery.ScalarQueryParameter("start_date", "DATE", _today_nz().isoformat()),
+            bigquery.ScalarQueryParameter("end_date", "DATE", end_date.isoformat()),
+            bigquery.ScalarQueryParameter("user", "STRING", user),
+            bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
+        ]
+    )
+    client.query(query, job_config=job_config).result()
+
+
 def _upsert_unsnooze(
     client: bigquery.Client,
     project_id: str,
@@ -472,6 +531,55 @@ WHEN NOT MATCHED THEN
             bigquery.ScalarQueryParameter("our_ref", "STRING", our_ref),
             bigquery.ScalarQueryParameter("alert_type", "STRING", alert_type),
             bigquery.ScalarQueryParameter("alert_key", "STRING", alert_key),
+            bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
+            bigquery.ScalarQueryParameter("user", "STRING", user),
+        ]
+    )
+    client.query(query, job_config=job_config).result()
+
+
+def _upsert_unsnooze_batch(
+    client: bigquery.Client,
+    project_id: str,
+    dataset: str,
+    alerts: List[Dict[str, str]],
+    user: str,
+    run_id: str,
+) -> None:
+    if not alerts:
+        return
+    rows_payload = [
+        {"our_ref": str(a.get("our_ref", "") or ""), "alert_key": str(a.get("alert_key", "") or ""), "alert_type": str(a.get("alert_type", "") or "")}
+        for a in alerts
+    ]
+    query = f"""
+MERGE {_snoozes_table_fqn(project_id, dataset)} T
+USING (
+  SELECT r.our_ref, r.alert_key, r.alert_type
+  FROM UNNEST(@rows) AS r
+) S
+ON COALESCE(T.alert_key, T.our_ref) = S.alert_key AND T.snooze_type = S.alert_type
+WHEN MATCHED THEN UPDATE SET
+  alert_key = S.alert_key,
+  snooze_status = 'UNSNOOZED',
+  snooze_reason = 'Manual unsnooze',
+  run_id = @run_id,
+  unsnoozed_by = @user,
+  unsnoozed_at = CURRENT_TIMESTAMP(),
+  updated_at = CURRENT_TIMESTAMP()
+WHEN NOT MATCHED THEN
+  INSERT (
+    our_ref, alert_key, snooze_type, snooze_status, snooze_reason, snooze_start_date, snooze_end_date,
+    snoozed_by, run_id, created_at, updated_at, unsnoozed_by, unsnoozed_at, dismissed_by, dismissed_at
+  )
+  VALUES (
+    S.our_ref, S.alert_key, S.alert_type, 'UNSNOOZED', 'Manual unsnooze', NULL, NULL,
+    NULL, @run_id, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), @user, CURRENT_TIMESTAMP(), NULL, NULL
+  )
+"""
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ArrayQueryParameter("rows", "STRUCT<our_ref STRING, alert_key STRING, alert_type STRING>", rows_payload),
             bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
             bigquery.ScalarQueryParameter("user", "STRING", user),
         ]
@@ -517,6 +625,57 @@ WHEN NOT MATCHED THEN
             bigquery.ScalarQueryParameter("our_ref", "STRING", our_ref),
             bigquery.ScalarQueryParameter("alert_type", "STRING", alert_type),
             bigquery.ScalarQueryParameter("alert_key", "STRING", alert_key),
+            bigquery.ScalarQueryParameter("reason", "STRING", reason),
+            bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
+            bigquery.ScalarQueryParameter("user", "STRING", user),
+        ]
+    )
+    client.query(query, job_config=job_config).result()
+
+
+def _upsert_dismiss_batch(
+    client: bigquery.Client,
+    project_id: str,
+    dataset: str,
+    alerts: List[Dict[str, str]],
+    user: str,
+    reason: str,
+    run_id: str,
+) -> None:
+    if not alerts:
+        return
+    rows_payload = [
+        {"our_ref": str(a.get("our_ref", "") or ""), "alert_key": str(a.get("alert_key", "") or ""), "alert_type": str(a.get("alert_type", "") or "")}
+        for a in alerts
+    ]
+    query = f"""
+MERGE {_snoozes_table_fqn(project_id, dataset)} T
+USING (
+  SELECT r.our_ref, r.alert_key, r.alert_type
+  FROM UNNEST(@rows) AS r
+) S
+ON COALESCE(T.alert_key, T.our_ref) = S.alert_key AND T.snooze_type = S.alert_type
+WHEN MATCHED THEN UPDATE SET
+  alert_key = S.alert_key,
+  snooze_status = 'DISMISSED',
+  snooze_reason = @reason,
+  run_id = @run_id,
+  dismissed_by = @user,
+  dismissed_at = CURRENT_TIMESTAMP(),
+  updated_at = CURRENT_TIMESTAMP()
+WHEN NOT MATCHED THEN
+  INSERT (
+    our_ref, alert_key, snooze_type, snooze_status, snooze_reason, snooze_start_date, snooze_end_date,
+    snoozed_by, run_id, created_at, updated_at, unsnoozed_by, unsnoozed_at, dismissed_by, dismissed_at
+  )
+  VALUES (
+    S.our_ref, S.alert_key, S.alert_type, 'DISMISSED', @reason, NULL, NULL,
+    NULL, @run_id, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), NULL, NULL, @user, CURRENT_TIMESTAMP()
+  )
+"""
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ArrayQueryParameter("rows", "STRUCT<our_ref STRING, alert_key STRING, alert_type STRING>", rows_payload),
             bigquery.ScalarQueryParameter("reason", "STRING", reason),
             bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
             bigquery.ScalarQueryParameter("user", "STRING", user),
@@ -686,19 +845,16 @@ def _render_live_alert_dashboard() -> bool:
             elif not snooze_reason.strip():
                 st.error("Snooze reason is required.")
             else:
-                for item in selected_alerts:
-                    _upsert_snooze_active(
-                        bq_client,
-                        project_id,
-                        dataset,
-                        alert_type=item["alert_type"],
-                        alert_key=item["alert_key"],
-                        our_ref=item["our_ref"] or item["alert_key"],
-                        user=user,
-                        reason=snooze_reason.strip(),
-                        end_date=snooze_end_date,
-                        run_id=run_id,
-                    )
+                _upsert_snooze_active_batch(
+                    bq_client,
+                    project_id,
+                    dataset,
+                    alerts=selected_alerts,
+                    user=user,
+                    reason=snooze_reason.strip(),
+                    end_date=snooze_end_date,
+                    run_id=run_id,
+                )
                 st.success(f"Snoozed {len(selected_alerts)} alert(s).")
                 st.rerun()
 
@@ -751,17 +907,14 @@ def _render_live_alert_dashboard() -> bool:
                 if not selected_snoozed_alerts:
                     st.error("Select at least one alert.")
                 else:
-                    for item in selected_snoozed_alerts:
-                        _upsert_unsnooze(
-                            bq_client,
-                            project_id,
-                            dataset,
-                            alert_type=item["alert_type"],
-                            alert_key=item["alert_key"],
-                            our_ref=item["our_ref"] or item["alert_key"],
-                            user=user,
-                            run_id=run_id,
-                        )
+                    _upsert_unsnooze_batch(
+                        bq_client,
+                        project_id,
+                        dataset,
+                        alerts=selected_snoozed_alerts,
+                        user=user,
+                        run_id=run_id,
+                    )
                     st.success(f"Unsnoozed {len(selected_snoozed_alerts)} alert(s).")
                     st.rerun()
         with c2:
@@ -770,19 +923,16 @@ def _render_live_alert_dashboard() -> bool:
                     st.error("Select at least one alert.")
                 else:
                     reason = extend_reason.strip() or "Snooze extended"
-                    for item in selected_snoozed_alerts:
-                        _upsert_snooze_active(
-                            bq_client,
-                            project_id,
-                            dataset,
-                            alert_type=item["alert_type"],
-                            alert_key=item["alert_key"],
-                            our_ref=item["our_ref"] or item["alert_key"],
-                            user=user,
-                            reason=reason,
-                            end_date=extend_end_date,
-                            run_id=run_id,
-                        )
+                    _upsert_snooze_active_batch(
+                        bq_client,
+                        project_id,
+                        dataset,
+                        alerts=selected_snoozed_alerts,
+                        user=user,
+                        reason=reason,
+                        end_date=extend_end_date,
+                        run_id=run_id,
+                    )
                     st.success(f"Extended snooze for {len(selected_snoozed_alerts)} alert(s).")
                     st.rerun()
         with c3:
@@ -797,18 +947,15 @@ def _render_live_alert_dashboard() -> bool:
                 elif not dismiss_reason.strip():
                     st.error("Dismiss reason is required.")
                 else:
-                    for item in selected_snoozed_alerts:
-                        _upsert_dismiss(
-                            bq_client,
-                            project_id,
-                            dataset,
-                            alert_type=item["alert_type"],
-                            alert_key=item["alert_key"],
-                            our_ref=item["our_ref"] or item["alert_key"],
-                            user=user,
-                            reason=dismiss_reason.strip(),
-                            run_id=run_id,
-                        )
+                    _upsert_dismiss_batch(
+                        bq_client,
+                        project_id,
+                        dataset,
+                        alerts=selected_snoozed_alerts,
+                        user=user,
+                        reason=dismiss_reason.strip(),
+                        run_id=run_id,
+                    )
                     st.success(f"Dismissed {len(selected_snoozed_alerts)} alert(s).")
                     st.rerun()
 
