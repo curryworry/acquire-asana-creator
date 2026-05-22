@@ -71,6 +71,22 @@ def _today_nz() -> date:
     return datetime.now(timezone.utc).astimezone(ZoneInfo("Pacific/Auckland")).date()
 
 
+def _run_query_with_details(
+    client: bigquery.Client,
+    query: str,
+    job_config: bigquery.QueryJobConfig,
+    context: str,
+) -> None:
+    try:
+        job = client.query(query, job_config=job_config)
+        job.result()
+    except Exception as exc:
+        details = getattr(exc, "errors", None)
+        if not details and "job" in locals():
+            details = getattr(job, "errors", None)
+        raise RuntimeError(f"{context} failed: {exc}; details={details}") from exc
+
+
 def _build_bq_client_from_secrets() -> tuple[bigquery.Client, str, str]:
     project_id = _sanitize_id(_get_secret("BQ_PROJECT_ID", "sm-test-391201"), "BQ_PROJECT_ID")
     dataset = _sanitize_id(_get_secret("BQ_DATASET", "supermetrics_data"), "BQ_DATASET")
@@ -432,7 +448,7 @@ WHEN NOT MATCHED THEN
             bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
         ]
     )
-    client.query(query, job_config=job_config).result()
+    _run_query_with_details(client, query, job_config, context="batch snooze active")
 
 
 def _upsert_snooze_active_batch(
@@ -447,15 +463,20 @@ def _upsert_snooze_active_batch(
 ) -> None:
     if not alerts:
         return
-    rows_payload = [
-        {"our_ref": str(a.get("our_ref", "") or ""), "alert_key": str(a.get("alert_key", "") or ""), "alert_type": str(a.get("alert_type", "") or "")}
-        for a in alerts
-    ]
+    our_refs = [str(a.get("our_ref", "") or "") for a in alerts]
+    alert_keys = [str(a.get("alert_key", "") or "") for a in alerts]
+    alert_types = [str(a.get("alert_type", "") or "") for a in alerts]
     query = f"""
 MERGE {_snoozes_table_fqn(project_id, dataset)} T
 USING (
-  SELECT r.our_ref, r.alert_key, r.alert_type
-  FROM UNNEST(@rows) AS r
+  SELECT
+    refs[OFFSET(i)] AS our_ref,
+    keys[OFFSET(i)] AS alert_key,
+    types[OFFSET(i)] AS alert_type
+  FROM (
+    SELECT @our_refs AS refs, @alert_keys AS keys, @alert_types AS types
+  ),
+  UNNEST(GENERATE_ARRAY(0, ARRAY_LENGTH(refs) - 1)) AS i
 ) S
 ON COALESCE(T.alert_key, T.our_ref) = S.alert_key AND T.snooze_type = S.alert_type
 WHEN MATCHED THEN UPDATE SET
@@ -483,7 +504,9 @@ WHEN NOT MATCHED THEN
 """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
-            bigquery.ArrayQueryParameter("rows", "STRUCT<our_ref STRING, alert_key STRING, alert_type STRING>", rows_payload),
+            bigquery.ArrayQueryParameter("our_refs", "STRING", our_refs),
+            bigquery.ArrayQueryParameter("alert_keys", "STRING", alert_keys),
+            bigquery.ArrayQueryParameter("alert_types", "STRING", alert_types),
             bigquery.ScalarQueryParameter("reason", "STRING", reason),
             bigquery.ScalarQueryParameter("start_date", "DATE", _today_nz().isoformat()),
             bigquery.ScalarQueryParameter("end_date", "DATE", end_date.isoformat()),
@@ -491,7 +514,7 @@ WHEN NOT MATCHED THEN
             bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
         ]
     )
-    client.query(query, job_config=job_config).result()
+    _run_query_with_details(client, query, job_config, context="batch unsnooze")
 
 
 def _upsert_unsnooze(
@@ -535,7 +558,7 @@ WHEN NOT MATCHED THEN
             bigquery.ScalarQueryParameter("user", "STRING", user),
         ]
     )
-    client.query(query, job_config=job_config).result()
+    _run_query_with_details(client, query, job_config, context="batch dismiss")
 
 
 def _upsert_unsnooze_batch(
@@ -548,15 +571,20 @@ def _upsert_unsnooze_batch(
 ) -> None:
     if not alerts:
         return
-    rows_payload = [
-        {"our_ref": str(a.get("our_ref", "") or ""), "alert_key": str(a.get("alert_key", "") or ""), "alert_type": str(a.get("alert_type", "") or "")}
-        for a in alerts
-    ]
+    our_refs = [str(a.get("our_ref", "") or "") for a in alerts]
+    alert_keys = [str(a.get("alert_key", "") or "") for a in alerts]
+    alert_types = [str(a.get("alert_type", "") or "") for a in alerts]
     query = f"""
 MERGE {_snoozes_table_fqn(project_id, dataset)} T
 USING (
-  SELECT r.our_ref, r.alert_key, r.alert_type
-  FROM UNNEST(@rows) AS r
+  SELECT
+    refs[OFFSET(i)] AS our_ref,
+    keys[OFFSET(i)] AS alert_key,
+    types[OFFSET(i)] AS alert_type
+  FROM (
+    SELECT @our_refs AS refs, @alert_keys AS keys, @alert_types AS types
+  ),
+  UNNEST(GENERATE_ARRAY(0, ARRAY_LENGTH(refs) - 1)) AS i
 ) S
 ON COALESCE(T.alert_key, T.our_ref) = S.alert_key AND T.snooze_type = S.alert_type
 WHEN MATCHED THEN UPDATE SET
@@ -579,7 +607,9 @@ WHEN NOT MATCHED THEN
 """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
-            bigquery.ArrayQueryParameter("rows", "STRUCT<our_ref STRING, alert_key STRING, alert_type STRING>", rows_payload),
+            bigquery.ArrayQueryParameter("our_refs", "STRING", our_refs),
+            bigquery.ArrayQueryParameter("alert_keys", "STRING", alert_keys),
+            bigquery.ArrayQueryParameter("alert_types", "STRING", alert_types),
             bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
             bigquery.ScalarQueryParameter("user", "STRING", user),
         ]
@@ -644,15 +674,20 @@ def _upsert_dismiss_batch(
 ) -> None:
     if not alerts:
         return
-    rows_payload = [
-        {"our_ref": str(a.get("our_ref", "") or ""), "alert_key": str(a.get("alert_key", "") or ""), "alert_type": str(a.get("alert_type", "") or "")}
-        for a in alerts
-    ]
+    our_refs = [str(a.get("our_ref", "") or "") for a in alerts]
+    alert_keys = [str(a.get("alert_key", "") or "") for a in alerts]
+    alert_types = [str(a.get("alert_type", "") or "") for a in alerts]
     query = f"""
 MERGE {_snoozes_table_fqn(project_id, dataset)} T
 USING (
-  SELECT r.our_ref, r.alert_key, r.alert_type
-  FROM UNNEST(@rows) AS r
+  SELECT
+    refs[OFFSET(i)] AS our_ref,
+    keys[OFFSET(i)] AS alert_key,
+    types[OFFSET(i)] AS alert_type
+  FROM (
+    SELECT @our_refs AS refs, @alert_keys AS keys, @alert_types AS types
+  ),
+  UNNEST(GENERATE_ARRAY(0, ARRAY_LENGTH(refs) - 1)) AS i
 ) S
 ON COALESCE(T.alert_key, T.our_ref) = S.alert_key AND T.snooze_type = S.alert_type
 WHEN MATCHED THEN UPDATE SET
@@ -675,7 +710,9 @@ WHEN NOT MATCHED THEN
 """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
-            bigquery.ArrayQueryParameter("rows", "STRUCT<our_ref STRING, alert_key STRING, alert_type STRING>", rows_payload),
+            bigquery.ArrayQueryParameter("our_refs", "STRING", our_refs),
+            bigquery.ArrayQueryParameter("alert_keys", "STRING", alert_keys),
+            bigquery.ArrayQueryParameter("alert_types", "STRING", alert_types),
             bigquery.ScalarQueryParameter("reason", "STRING", reason),
             bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
             bigquery.ScalarQueryParameter("user", "STRING", user),
