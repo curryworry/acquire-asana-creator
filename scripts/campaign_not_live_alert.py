@@ -27,6 +27,7 @@ from gmail_client import GmailInboxClient
 
 ALERT_TYPE_NOT_LIVE = "NOT_LIVE"
 ALERT_TYPE_MISSING_OUR_REF = "MISSING_OUR_REF"
+ALERT_TYPE_ENDED_BUT_IMPRESSIONS = "ENDED_BUT_IMPRESSIONS"
 
 
 def env(name: str, default: str = "") -> str:
@@ -357,6 +358,93 @@ ORDER BY COST DESC, IMPRESSIONS DESC
     return alerts
 
 
+def fetch_ended_but_impressions_rows(client: bigquery.Client) -> List[AlertRow]:
+    overview_table_fqn = f"`{bq_project_id()}.{bq_dataset()}.{bq_view()}`"
+    delivery_table_fqn = f"`{bq_project_id()}.{bq_dataset()}.{bq_delivery_table()}`"
+    query = f"""
+WITH meta AS (
+  SELECT
+    TRIM(CAST(OURREF AS STRING)) AS OUR_REF,
+    ANY_VALUE(CAST(JOBNUMBER AS STRING)) AS JOB_NUMBER,
+    ANY_VALUE(CAST(ADVERTISERNAME AS STRING)) AS ADVERTISER,
+    ANY_VALUE(CAST(CAMPAIGNNAME AS STRING)) AS CAMPAIGN,
+    ANY_VALUE(CAST(LOCATIONTEXT AS STRING)) AS LOCATION_TEXT,
+    ANY_VALUE(CAST(PROPERTYNAME AS STRING)) AS PROPERTY_NAME,
+    ANY_VALUE(CAST(BOOKINGSTATUS AS STRING)) AS BOOKING_STATUS,
+    MAX(SAFE_CAST(ENDDATE AS DATE)) AS END_DATE
+  FROM {overview_table_fqn}
+  WHERE OURREF IS NOT NULL
+    AND TRIM(CAST(OURREF AS STRING)) != ''
+    AND LOWER(COALESCE(BOOKINGSTATUS, '')) = 'booked'
+    AND LOWER(COALESCE(PROPERTYNAME, '')) LIKE '%programmatic%'
+    AND LOWER(COALESCE(PROPERTYNAME, '')) NOT LIKE '%adserving%'
+  GROUP BY 1
+),
+delivery AS (
+  SELECT
+    TRIM(CAST(OUR_REF AS STRING)) AS OUR_REF,
+    SAFE_CAST(DATE AS DATE) AS DELIVERY_DATE,
+    SUM(COALESCE(IMPRESSIONS, 0)) AS IMPRESSIONS,
+    SUM(COALESCE(CLICKS, 0)) AS CLICKS,
+    SUM(COALESCE(COST, 0)) AS COST,
+    COUNT(*) AS ROW_COUNT
+  FROM {delivery_table_fqn}
+  WHERE OUR_REF IS NOT NULL
+    AND TRIM(CAST(OUR_REF AS STRING)) != ''
+  GROUP BY 1, 2
+)
+SELECT
+  m.OUR_REF,
+  m.JOB_NUMBER,
+  m.ADVERTISER,
+  m.CAMPAIGN,
+  m.LOCATION_TEXT,
+  m.PROPERTY_NAME,
+  m.BOOKING_STATUS,
+  m.END_DATE,
+  MIN(d.DELIVERY_DATE) AS FIRST_IMPRESSIONS_AFTER_END_DATE,
+  MAX(d.DELIVERY_DATE) AS LAST_IMPRESSIONS_AFTER_END_DATE,
+  SUM(d.IMPRESSIONS) AS TOTAL_IMPRESSIONS_AFTER_END_DATE,
+  SUM(d.CLICKS) AS TOTAL_CLICKS_AFTER_END_DATE,
+  SUM(d.COST) AS TOTAL_COST_AFTER_END_DATE,
+  SUM(d.ROW_COUNT) AS TOTAL_ROWS_AFTER_END_DATE
+FROM meta m
+JOIN delivery d ON d.OUR_REF = m.OUR_REF
+WHERE m.END_DATE < CURRENT_DATE('Pacific/Auckland')
+  AND d.DELIVERY_DATE > m.END_DATE
+GROUP BY m.OUR_REF, m.JOB_NUMBER, m.ADVERTISER, m.CAMPAIGN, m.LOCATION_TEXT, m.PROPERTY_NAME, m.BOOKING_STATUS, m.END_DATE
+HAVING SUM(d.IMPRESSIONS) > 10
+ORDER BY TOTAL_IMPRESSIONS_AFTER_END_DATE DESC, m.OUR_REF
+"""
+
+    rows = client.query(query).result()
+    alerts: List[AlertRow] = []
+    for row in rows:
+        our_ref = str(row["OUR_REF"] or "").strip()
+        alerts.append(
+            AlertRow(
+                alert_type=ALERT_TYPE_ENDED_BUT_IMPRESSIONS,
+                alert_key=make_alert_key(ALERT_TYPE_ENDED_BUT_IMPRESSIONS, [our_ref]),
+                our_ref=our_ref,
+                job_number=str(row["JOB_NUMBER"] or "").strip(),
+                start_date="",
+                end_date=str(row["END_DATE"] or "").strip(),
+                advertiser=str(row["ADVERTISER"] or "").strip(),
+                campaign=str(row["CAMPAIGN"] or "").strip(),
+                location_text=str(row["LOCATION_TEXT"] or "").strip(),
+                property_name=str(row["PROPERTY_NAME"] or "").strip(),
+                booking_status=str(row["BOOKING_STATUS"] or "").strip(),
+                first_missing_date=str(row["FIRST_IMPRESSIONS_AFTER_END_DATE"] or "").strip(),
+                last_missing_date=str(row["LAST_IMPRESSIONS_AFTER_END_DATE"] or "").strip(),
+                total_impressions=float(row["TOTAL_IMPRESSIONS_AFTER_END_DATE"] or 0),
+                total_clicks=float(row["TOTAL_CLICKS_AFTER_END_DATE"] or 0),
+                total_cost=float(row["TOTAL_COST_AFTER_END_DATE"] or 0),
+                row_count=int(row["TOTAL_ROWS_AFTER_END_DATE"] or 0),
+            )
+        )
+    return alerts
+
+
 def fetch_latest_snooze_states(client: bigquery.Client, rows: List[AlertRow]) -> Dict[str, Dict[str, object]]:
     if not rows:
         return {}
@@ -599,6 +687,49 @@ def build_csv_missing_our_ref(rows: List[AlertRow]) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
+def build_csv_ended_but_impressions(rows: List[AlertRow]) -> bytes:
+    buf = StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(
+        [
+            "OUR_REF",
+            "JOB_NUMBER",
+            "ADVERTISER",
+            "CAMPAIGN",
+            "LOCATIONTEXT",
+            "PROPERTYNAME",
+            "BOOKINGSTATUS",
+            "END_DATE",
+            "FIRST_IMPRESSIONS_AFTER_END_DATE",
+            "LAST_IMPRESSIONS_AFTER_END_DATE",
+            "TOTAL_IMPRESSIONS_AFTER_END_DATE",
+            "TOTAL_CLICKS_AFTER_END_DATE",
+            "TOTAL_COST_AFTER_END_DATE",
+            "TOTAL_ROWS_AFTER_END_DATE",
+        ]
+    )
+    for row in rows:
+        writer.writerow(
+            [
+                row.our_ref,
+                row.job_number,
+                row.advertiser,
+                row.campaign,
+                row.location_text,
+                row.property_name,
+                row.booking_status,
+                row.end_date,
+                row.first_missing_date,
+                row.last_missing_date,
+                row.total_impressions,
+                row.total_clicks,
+                row.total_cost,
+                row.row_count,
+            ]
+        )
+    return buf.getvalue().encode("utf-8")
+
+
 def build_signed_dashboard_link(base_url: str, user: str, run_id: str, ttl_days: int, secret: str) -> str:
     normalized_base = base_url.strip()
     if not normalized_base.lower().startswith(("http://", "https://")):
@@ -672,6 +803,8 @@ def send_digest(rows: List[AlertRow], run_id: str) -> str:
             attachments[type_name] = build_csv_not_live(type_rows)
         elif alert_type == ALERT_TYPE_MISSING_OUR_REF:
             attachments[type_name] = build_csv_missing_our_ref(type_rows)
+        elif alert_type == ALERT_TYPE_ENDED_BUT_IMPRESSIONS:
+            attachments[type_name] = build_csv_ended_but_impressions(type_rows)
         else:
             attachments[type_name] = build_csv_all(type_rows)
 
@@ -704,7 +837,11 @@ def main() -> int:
     bq_client = build_bq_client()
     ensure_control_tables(bq_client)
 
-    rows = fetch_not_live_rows(bq_client) + fetch_missing_our_ref_rows(bq_client)
+    rows = (
+        fetch_not_live_rows(bq_client)
+        + fetch_missing_our_ref_rows(bq_client)
+        + fetch_ended_but_impressions_rows(bq_client)
+    )
     states = fetch_latest_snooze_states(bq_client, rows)
     rows = filter_suppressed_rows(rows, states)
 
