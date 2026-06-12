@@ -6,7 +6,6 @@ import hmac
 import hashlib
 import time
 import sys
-from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from datetime import date, datetime, timezone
@@ -19,6 +18,17 @@ from google.oauth2 import service_account
 
 from asana_client import AsanaClient, AsanaError
 from gmail_client import GmailAttachment, GmailError, GmailInboxClient
+from trafficking_logic import (
+    REQUIRED_TRAFFICKING_COLUMNS,
+    build_candidate_rows,
+    build_subtask_blueprints,
+    build_subtask_rows,
+    clean_dataframe,
+    existing_subtask_matches,
+    find_existing_parent_task,
+    parent_due_from_blueprints,
+    read_table_bytes,
+)
 
 
 st.set_page_config(page_title="Trafficking to Asana", page_icon="✅", layout="wide")
@@ -1103,52 +1113,6 @@ def _manual_automation_panel() -> None:
     st.divider()
 
 
-def _clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    clean = df.copy()
-    clean.columns = [str(c).strip() for c in clean.columns]
-    unnamed_cols = [c for c in clean.columns if c.lower().startswith("unnamed:")]
-    if unnamed_cols:
-        clean = clean.drop(columns=unnamed_cols, errors="ignore")
-    return clean.fillna("")
-
-
-def _read_uploaded_table(uploaded_file: Any, skip_top_rows: int) -> pd.DataFrame:
-    filename = str(getattr(uploaded_file, "name", "")).lower()
-    raw = uploaded_file.getvalue()
-
-    if filename.endswith(".tsv"):
-        for enc in ("utf-8", "cp1252", "latin-1"):
-            try:
-                return pd.read_csv(
-                    BytesIO(raw), sep="\t", skiprows=skip_top_rows, engine="python", encoding=enc
-                )
-            except Exception:
-                continue
-        raise ValueError("Could not parse TSV file with supported encodings.")
-
-    if filename.endswith(".csv"):
-        return pd.read_csv(BytesIO(raw), skiprows=skip_top_rows)
-
-    if filename.endswith(".xls") or filename.endswith(".xlsx"):
-        try:
-            return pd.read_excel(BytesIO(raw), skiprows=skip_top_rows)
-        except Exception:
-            for enc in ("utf-8", "cp1252", "latin-1"):
-                try:
-                    return pd.read_csv(
-                        BytesIO(raw),
-                        sep="\t",
-                        skiprows=skip_top_rows,
-                        engine="python",
-                        encoding=enc,
-                    )
-                except Exception:
-                    continue
-            raise
-
-    raise ValueError("Unsupported file type. Upload .tsv, .csv, .xls, or .xlsx.")
-
-
 class _InMemoryUpload:
     def __init__(self, name: str, content: bytes):
         self.name = name
@@ -1158,154 +1122,21 @@ class _InMemoryUpload:
         return self._content
 
 
-def _normalize_campaign_name(value: Any) -> str:
-    text = "" if value is None else str(value)
-    text = text.strip()
-    text = re.sub(r",\s*$", "", text)
-    text = re.sub(r"\s+", " ", text)
-    return text
-
-
-def _normalize_job_number(value: Any) -> str:
-    text = "" if value is None else str(value).strip()
-    if text.endswith(".0") and text.replace(".", "", 1).isdigit():
-        text = text[:-2]
-    return text
-
-
-def _as_due_on(date_value: Any) -> str:
-    raw = str(date_value).strip()
-    if re.match(r"^\\d{4}-\\d{2}-\\d{2}$", raw):
-        parsed = pd.to_datetime(raw, format="%Y-%m-%d", errors="coerce")
-    else:
-        parsed = pd.to_datetime(raw, dayfirst=True, errors="coerce")
-    if pd.isna(parsed):
-        return ""
-    return parsed.strftime("%Y-%m-%d")
-
-
-def _build_candidate_rows(trafficking_df: pd.DataFrame) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
-    candidates: List[Dict[str, str]] = []
-    unmatched: List[Dict[str, str]] = []
-
-    seen_keys = set()
-    missing_campaign = 0
-    missing_job = 0
-
-    for _, row in trafficking_df.iterrows():
-        campaign_name = _normalize_campaign_name(row.get("CampaignName", ""))
-        job_number = _normalize_job_number(row.get("JobNumber", ""))
-
-        if not campaign_name:
-            missing_campaign += 1
-            continue
-        if not job_number:
-            missing_job += 1
-            continue
-
-        key = (campaign_name, job_number)
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-
-        candidates.append(
-            {
-                "campaign_name": campaign_name,
-                "job_number": job_number,
-                "task_name": f"{campaign_name} ({job_number})",
-            }
-        )
-
-    if missing_campaign:
-        unmatched.append(
-            {
-                "item": "Trafficking rows",
-                "reason": f"{missing_campaign} rows missing CampaignName",
-            }
-        )
-    if missing_job:
-        unmatched.append(
-            {
-                "item": "Trafficking rows",
-                "reason": f"{missing_job} rows missing JobNumber",
-            }
-        )
-
-    return sorted(candidates, key=lambda x: (x["campaign_name"], x["job_number"])), unmatched
-
-
-def _build_subtask_rows(
-    trafficking_df: pd.DataFrame,
-    candidates: List[Dict[str, str]],
-    parent_status_by_job: Dict[str, str],
-) -> List[Dict[str, str]]:
-    by_campaign_job: Dict[Tuple[str, str], List[Dict[str, str]]] = {}
-    seen_refs = set()
-
-    for _, row in trafficking_df.iterrows():
-        campaign_name = _normalize_campaign_name(row.get("CampaignName", ""))
-        job_number = _normalize_job_number(row.get("JobNumber", ""))
-        if not campaign_name or not job_number:
-            continue
-
-        our_ref = str(row.get("OurRef", "")).strip()
-        if not our_ref:
-            continue
-
-        dedupe_key = (campaign_name, job_number, our_ref)
-        if dedupe_key in seen_refs:
-            continue
-        seen_refs.add(dedupe_key)
-
-        property_value = str(row.get("PropertyName", "")).strip()
-        location_value = str(row.get("LocationText", "")).strip()
-        ad_unit_value = str(row.get("SpecificationText", "")).strip()
-        start_date_raw = str(row.get("StartDate", "")).strip()
-
-        subtask_name = f"({our_ref}) {property_value} - {location_value}: {ad_unit_value}".strip()
-        by_campaign_job.setdefault((campaign_name, job_number), []).append(
-            {
-                "our_ref": our_ref,
-                "subtask_name": subtask_name,
-                "start_date_raw": start_date_raw,
-                "subtask_due_on": _as_due_on(start_date_raw),
-            }
-        )
-
-    out: List[Dict[str, str]] = []
-    for parent in candidates:
-        parent_status = parent_status_by_job.get(parent["job_number"], "would_create")
-        key = (parent["campaign_name"], parent["job_number"])
-        for sub in by_campaign_job.get(key, []):
-            out.append(
-                {
-                    "parent_task_name": parent["task_name"],
-                    "parent_job_number": parent["job_number"],
-                    "parent_status": parent_status,
-                    "our_ref": sub["our_ref"],
-                    "subtask_name": sub["subtask_name"],
-                    "subtask_due_on": sub["subtask_due_on"],
-                    "start_date_raw": sub["start_date_raw"],
-                    "subtask_status": (
-                        "parent_skip_exists" if parent_status == "skip_exists" else "would_create"
-                    ),
-                }
-            )
-
-    return out
-
-
-def _check_existing_job_numbers(
-    client: AsanaClient, dedupe_project_gids: List[str], jobs_to_check: List[str]
-) -> Dict[str, bool]:
-    existing_task_names: List[str] = []
+def _fetch_dedupe_project_tasks(client: AsanaClient, dedupe_project_gids: List[str]) -> List[Dict[str, str]]:
+    tasks: List[Dict[str, str]] = []
     for project_gid in dedupe_project_gids:
-        existing_task_names.extend(client.list_project_task_names(project_gid))
+        tasks.extend(client.list_project_tasks(project_gid))
+    return tasks
 
-    existing_by_job: Dict[str, bool] = {}
-    for job in jobs_to_check:
-        existing_by_job[job] = any(job in name for name in existing_task_names)
 
+def _build_existing_parent_index(
+    project_tasks: List[Dict[str, str]], candidates: List[Dict[str, str]]
+) -> Dict[str, Dict[str, str]]:
+    existing_by_job: Dict[str, Dict[str, str]] = {}
+    for row in candidates:
+        existing = find_existing_parent_task(project_tasks, row["campaign_name"], row["job_number"])
+        if existing:
+            existing_by_job[row["job_number"]] = existing
     return existing_by_job
 
 
@@ -1315,7 +1146,7 @@ def main() -> None:
 
     st.title("Trafficking to Asana")
     st.caption(
-        "Uses Trafficking report only: one parent task per unique CampaignName+JobNumber and one subtask per unique OurRef."
+        "Uses Trafficking report only: one parent task per unique CampaignName+JobNumber, one source subtask per unique OurRef, and shared control subtasks from the daily automation."
     )
     _manual_automation_panel()
 
@@ -1411,7 +1242,9 @@ def main() -> None:
 
     try:
         upload_obj = _InMemoryUpload(attachment.filename, attachment.content)
-        trafficking_df = _clean_dataframe(_read_uploaded_table(upload_obj, int(skip_top_rows)))
+        trafficking_df = clean_dataframe(
+            read_table_bytes(upload_obj.name, upload_obj.getvalue(), int(skip_top_rows))
+        )
     except Exception as exc:
         st.error(f"Could not read Trafficking Report file: {exc}")
         return
@@ -1424,16 +1257,7 @@ def main() -> None:
         st.dataframe(trafficking_df.head(20), use_container_width=True)
         return
 
-    required_cols = [
-        "CampaignName",
-        "JobNumber",
-        "OurRef",
-        "PropertyName",
-        "LocationText",
-        "SpecificationText",
-        "StartDate",
-    ]
-    missing_cols = [c for c in required_cols if c not in trafficking_df.columns]
+    missing_cols = [c for c in REQUIRED_TRAFFICKING_COLUMNS if c not in trafficking_df.columns]
     if missing_cols:
         st.error("Trafficking Report is missing required columns: " + ", ".join(missing_cols))
         return
@@ -1441,7 +1265,8 @@ def main() -> None:
     st.subheader("Trafficking Report Preview")
     st.dataframe(trafficking_df.head(max_preview_rows), use_container_width=True)
 
-    candidates, unmatched = _build_candidate_rows(trafficking_df)
+    candidates, unmatched = build_candidate_rows(trafficking_df)
+    blueprint_map = build_subtask_blueprints(trafficking_df)
     if len(candidates) > max_candidate_rows:
         st.error(
             f"Candidate task count ({len(candidates)}) exceeds APP_MAX_CANDIDATE_ROWS={max_candidate_rows}."
@@ -1473,15 +1298,15 @@ def main() -> None:
     check_clicked = st.button("Check Existing + Build Task + Subtask List", type="primary")
     if not check_clicked:
         st.caption(
-            "On click: checks dedupe projects for existing job number in task names, then shows parent tasks and subtasks that would be created."
+            "On click: checks dedupe projects for existing job numbers, then shows parent due dates plus source and control subtasks that would be created."
         )
         return
 
     client = AsanaClient(access_token=access_token.strip())
 
-    job_numbers = sorted({row["job_number"] for row in candidates})
     try:
-        existing_by_job = _check_existing_job_numbers(client, dedupe_project_gids, job_numbers)
+        dedupe_project_tasks = _fetch_dedupe_project_tasks(client, dedupe_project_gids)
+        existing_by_job = _build_existing_parent_index(dedupe_project_tasks, candidates)
     except AsanaError as exc:
         st.error(f"Failed while checking existing tasks: {exc}")
         return
@@ -1490,18 +1315,22 @@ def main() -> None:
     progress = st.progress(0)
     total = max(len(candidates), 1)
     for idx, row in enumerate(candidates):
-        exists = existing_by_job.get(row["job_number"], False)
+        existing_parent = existing_by_job.get(row["job_number"])
         results.append(
             {
                 "task_name": row["task_name"],
                 "campaign_name": row["campaign_name"],
                 "job_number": row["job_number"],
-                "status": "skip_exists" if exists else "would_create",
+                "parent_due_on": parent_due_from_blueprints(
+                    blueprint_map.get((row["campaign_name"], row["job_number"]), [])
+                ),
+                "status": "existing_parent" if existing_parent else "would_create",
                 "reason": (
-                    "Found existing task containing job number in dedupe projects"
-                    if exists
+                    "Found existing parent task in dedupe projects"
+                    if existing_parent
                     else "No existing task found in dedupe projects"
                 ),
+                "parent_task_gid": existing_parent.get("gid", "") if existing_parent else "",
                 "target_project_gid": target_project_gid.strip(),
             }
         )
@@ -1518,7 +1347,23 @@ def main() -> None:
     )
 
     parent_status_by_job = {row["job_number"]: row["status"] for row in results}
-    subtask_rows = _build_subtask_rows(trafficking_df, candidates, parent_status_by_job)
+    subtask_rows = build_subtask_rows(candidates, blueprint_map, parent_status_by_job)
+    existing_subtasks_by_job: Dict[str, List[Dict[str, str]]] = {}
+    for row in results:
+        if row["status"] == "existing_parent" and row["parent_task_gid"]:
+            try:
+                existing_subtasks_by_job[row["job_number"]] = client.list_subtasks(row["parent_task_gid"])
+            except AsanaError as exc:
+                st.error(f"Failed while checking existing subtasks for job {row['job_number']}: {exc}")
+                return
+
+    for subtask_row in subtask_rows:
+        if subtask_row["parent_status"] != "existing_parent":
+            continue
+        existing_subtasks = existing_subtasks_by_job.get(subtask_row["parent_job_number"], [])
+        if existing_subtask_matches(subtask_row, existing_subtasks):
+            subtask_row["subtask_status"] = "skip_subtask_exists"
+
     st.subheader("Subtask Output (Dry Run)")
     subtask_df = pd.DataFrame(subtask_rows)
     st.dataframe(subtask_df, use_container_width=True)
@@ -1530,14 +1375,19 @@ def main() -> None:
     )
 
     would_create_count = int((result_df["status"] == "would_create").sum()) if not result_df.empty else 0
-    skipped_count = int((result_df["status"] == "skip_exists").sum()) if not result_df.empty else 0
+    existing_parent_count = int((result_df["status"] == "existing_parent").sum()) if not result_df.empty else 0
     subtask_would_create = (
         int(sum(1 for row in subtask_rows if row["subtask_status"] == "would_create"))
         if subtask_rows
         else 0
     )
+    subtask_skipped_existing = (
+        int(sum(1 for row in subtask_rows if row["subtask_status"] == "skip_subtask_exists"))
+        if subtask_rows
+        else 0
+    )
     st.success(
-        f"Dry run complete. Parent would create: {would_create_count}, parent skipped existing: {skipped_count}, subtask would create: {subtask_would_create}."
+        f"Dry run complete. Parent would create: {would_create_count}, existing parents: {existing_parent_count}, subtask would create: {subtask_would_create}, subtask already exists: {subtask_skipped_existing}."
     )
 
 

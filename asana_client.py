@@ -65,15 +65,14 @@ class AsanaClient:
         body = response.json()
         return body.get("data", body)
 
-    def list_project_task_names(self, project_gid: str) -> List[str]:
-        names: List[str] = []
+    def list_project_tasks(self, project_gid: str) -> List[Dict[str, str]]:
+        tasks: List[Dict[str, str]] = []
         offset = None
 
         while True:
             params: Dict[str, Any] = {
                 "limit": 100,
-                "opt_fields": "name",
-                # Include completed tasks to avoid recreating historical jobs.
+                "opt_fields": "gid,name",
                 "completed_since": "1970-01-01T00:00:00.000Z",
             }
             if offset:
@@ -90,17 +89,59 @@ class AsanaClient:
 
             body = response.json()
             for task in body.get("data", []):
-                if isinstance(task, dict):
-                    name = str(task.get("name", "")).strip()
-                    if name:
-                        names.append(name)
+                if not isinstance(task, dict):
+                    continue
+                name = str(task.get("name", "")).strip()
+                gid = str(task.get("gid", "")).strip()
+                if name and gid:
+                    tasks.append({"gid": gid, "name": name})
 
             next_page = body.get("next_page")
             if not isinstance(next_page, dict) or not next_page.get("offset"):
                 break
             offset = next_page["offset"]
 
-        return names
+        return tasks
+
+    def list_project_task_names(self, project_gid: str) -> List[str]:
+        return [task["name"] for task in self.list_project_tasks(project_gid)]
+
+    def list_subtasks(self, parent_task_gid: str) -> List[Dict[str, str]]:
+        subtasks: List[Dict[str, str]] = []
+        offset = None
+
+        while True:
+            params: Dict[str, Any] = {
+                "limit": 100,
+                "opt_fields": "gid,name",
+            }
+            if offset:
+                params["offset"] = offset
+
+            response = self.session.get(
+                f"{ASANA_API_BASE}/tasks/{parent_task_gid}/subtasks",
+                params=params,
+                timeout=self.timeout,
+            )
+            if response.status_code >= 400:
+                msg = self._extract_error_message(response)
+                raise AsanaError(msg)
+
+            body = response.json()
+            for task in body.get("data", []):
+                if not isinstance(task, dict):
+                    continue
+                name = str(task.get("name", "")).strip()
+                gid = str(task.get("gid", "")).strip()
+                if name and gid:
+                    subtasks.append({"gid": gid, "name": name})
+
+            next_page = body.get("next_page")
+            if not isinstance(next_page, dict) or not next_page.get("offset"):
+                break
+            offset = next_page["offset"]
+
+        return subtasks
 
     @staticmethod
     def _extract_error_message(response: requests.Response) -> str:

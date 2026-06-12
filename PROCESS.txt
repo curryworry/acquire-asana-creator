@@ -1,7 +1,7 @@
 Trafficking Automation Process (Plain-English)
 
 Purpose
-- Run once per day in GitHub Actions.
+- Run multiple times per day in GitHub Actions.
 - Pull the latest trafficking report email attachment.
 - Convert rows into parent tasks + subtasks in Asana.
 - Send a summary email with CSV outputs.
@@ -9,7 +9,8 @@ Purpose
 Step-by-step process
 
 1) Trigger
-- GitHub Actions runs on schedule (currently 17:00 UTC) or manual trigger.
+- GitHub Actions runs on five daily schedules or manual trigger.
+- Current UTC schedules: 02:00, 08:00, 13:00, 18:15, 19:00.
 - Workflow calls: scripts/daily_trafficking_dry_run.py
 
 2) Load configuration
