@@ -6,10 +6,13 @@ import hmac
 import hashlib
 import time
 import sys
+import uuid
+import tomllib
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
+from collections.abc import Mapping
 
 import pandas as pd
 import streamlit as st
@@ -36,6 +39,15 @@ st.set_page_config(page_title="Trafficking to Asana", page_icon="✅", layout="w
 GID_RE = re.compile(r"^\d+$")
 ALERT_TYPE_NOT_LIVE = "NOT_LIVE"
 ALERT_TYPE_MISSING_OUR_REF = "MISSING_OUR_REF"
+MARGIN_SNOOZE_TYPE = "MARGIN_DASHBOARD"
+DEFAULT_BQ_PROJECT_ID = "sm-test-391201"
+DEFAULT_BQ_DATASET = "supermetrics_data"
+MARGIN_VIEW_NAME = "margin_dashboard"
+APP_PAGES = {
+    "home": "Home",
+    "margin_dashboard": "Margin Dashboard",
+    "alerts_dashboard": "Alerts Dashboard",
+}
 
 
 def _get_secret(name: str, default: str = "") -> str:
@@ -43,6 +55,153 @@ def _get_secret(name: str, default: str = "") -> str:
         return str(st.secrets.get(name, default))
     except Exception:
         return default
+
+
+def _set_query_params(params: Dict[str, str]) -> None:
+    try:
+        st.query_params.clear()
+        for key, value in params.items():
+            if value:
+                st.query_params[key] = value
+    except Exception:
+        pass
+
+
+def _get_auth_users() -> Dict[str, Dict[str, str]]:
+    auth_block: Any = {}
+    try:
+        auth_block = st.secrets.get("auth", {})
+    except Exception:
+        auth_block = {}
+
+    if not auth_block:
+        try:
+            secrets_path = Path(__file__).resolve().parent / ".streamlit" / "secrets.toml"
+            if secrets_path.exists():
+                parsed = tomllib.loads(secrets_path.read_text(encoding="utf-8"))
+                auth_block = parsed.get("auth", {})
+        except Exception:
+            auth_block = {}
+
+    if not isinstance(auth_block, Mapping):
+        return {}
+
+    users = auth_block.get("users", {})
+    if not isinstance(users, Mapping):
+        return {}
+
+    out: Dict[str, Dict[str, str]] = {}
+    for username, raw_value in users.items():
+        if not isinstance(raw_value, Mapping):
+            continue
+        password = str(raw_value.get("password", "") or "").strip()
+        if not password:
+            continue
+        out[str(username).strip()] = {
+            "display_name": str(raw_value.get("display_name", username) or username).strip(),
+            "password": password,
+        }
+    return out
+
+
+def _verify_password(password: str, expected_password: str) -> bool:
+    return hmac.compare_digest(password, expected_password)
+
+
+def _is_auth_enabled() -> bool:
+    return bool(_get_auth_users())
+
+
+def _is_authenticated() -> bool:
+    return bool(st.session_state.get("auth_user"))
+
+
+def _get_authenticated_user() -> Dict[str, str]:
+    user = st.session_state.get("auth_user")
+    return user if isinstance(user, dict) else {}
+
+
+def _get_actor_name(fallback: str = "") -> str:
+    auth_user = _get_authenticated_user()
+    if auth_user:
+        return str(auth_user.get("display_name") or auth_user.get("username") or "").strip()
+    return fallback.strip()
+
+
+def _render_login_gate() -> bool:
+    if not _is_auth_enabled():
+        st.info("Auth is not configured. Add `[auth.users]` entries in `.streamlit/secrets.toml` to enable login.")
+        return True
+
+    if _is_authenticated():
+        return True
+
+    st.title("Dashboard Login")
+    st.caption("Sign in to access the dashboards.")
+    with st.form("login_form"):
+        username = st.text_input("Username").strip()
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Sign In", type="primary")
+
+    if submitted:
+        users = _get_auth_users()
+        user = users.get(username)
+        if not user or not _verify_password(password, user["password"]):
+            st.error("Invalid username or password.")
+        else:
+            st.session_state["auth_user"] = {
+                "username": username,
+                "display_name": user["display_name"],
+            }
+            st.rerun()
+    return False
+
+
+def _render_navigation() -> None:
+    auth_user = _get_authenticated_user()
+    if auth_user:
+        st.sidebar.caption(f"Signed in as {auth_user.get('display_name', auth_user.get('username', ''))}")
+        if st.sidebar.button("Home", use_container_width=True):
+            _set_query_params({"page": "home"})
+            st.rerun()
+        if st.sidebar.button("Margin Dashboard", use_container_width=True):
+            _set_query_params({"page": "margin_dashboard"})
+            st.rerun()
+        if st.sidebar.button("Alerts Dashboard", use_container_width=True):
+            _set_query_params({"page": "alerts_dashboard"})
+            st.rerun()
+        if st.sidebar.button("Sign Out", use_container_width=True):
+            st.session_state.pop("auth_user", None)
+            _set_query_params({"page": "home"})
+            st.rerun()
+
+
+def _render_home_page() -> bool:
+    page = _get_qparam("page")
+    mode = _get_qparam("mode")
+    if mode == "live_alerts" or page in {"margin_dashboard", "alerts_dashboard"}:
+        return False
+
+    st.title("Dashboards")
+    auth_user = _get_authenticated_user()
+    if auth_user:
+        st.caption(f"Welcome, {auth_user.get('display_name', auth_user.get('username', ''))}.")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Margin Dashboard")
+        st.caption("Live margin, pacing, and snooze workflow at `OUR REF` level.")
+        if st.button("Open Margin Dashboard", type="primary", key="open_margin_dashboard"):
+            _set_query_params({"page": "margin_dashboard"})
+            st.rerun()
+    with c2:
+        st.subheader("Alerts Dashboard")
+        st.caption("Open the active alerts and snoozed workflow view.")
+        if st.button("Open Alerts Dashboard", key="open_alerts_dashboard"):
+            _set_query_params({"page": "alerts_dashboard"})
+            st.rerun()
+
+    return True
 
 
 def _split_csv_secret(value: str) -> List[str]:
@@ -98,8 +257,8 @@ def _run_query_with_details(
 
 
 def _build_bq_client_from_secrets() -> tuple[bigquery.Client, str, str]:
-    project_id = _sanitize_id(_get_secret("BQ_PROJECT_ID", "sm-test-391201"), "BQ_PROJECT_ID")
-    dataset = _sanitize_id(_get_secret("BQ_DATASET", "supermetrics_data"), "BQ_DATASET")
+    project_id = _sanitize_id(_get_secret("BQ_PROJECT_ID", DEFAULT_BQ_PROJECT_ID), "BQ_PROJECT_ID")
+    dataset = _sanitize_id(_get_secret("BQ_DATASET", DEFAULT_BQ_DATASET), "BQ_DATASET")
     sa_json = _get_secret("BQ_SERVICE_ACCOUNT_JSON", "")
 
     if sa_json:
@@ -108,6 +267,97 @@ def _build_bq_client_from_secrets() -> tuple[bigquery.Client, str, str]:
         return bigquery.Client(project=project_id or info.get("project_id"), credentials=creds), project_id, dataset
 
     return bigquery.Client(project=project_id), project_id, dataset
+
+
+def _margin_view_fqn(project_id: str, dataset: str) -> str:
+    return f"`{project_id}.{dataset}.{MARGIN_VIEW_NAME}`"
+
+
+def _margin_view_sql(project_id: str, dataset: str) -> str:
+    sql_path = Path(__file__).resolve().parent / "sql" / "margin_dashboard_view.sql"
+    template = sql_path.read_text(encoding="utf-8")
+    source = f"{DEFAULT_BQ_PROJECT_ID}.{DEFAULT_BQ_DATASET}"
+    target = f"{project_id}.{dataset}"
+    return template.replace(source, target)
+
+
+def _create_or_replace_margin_view(client: bigquery.Client, project_id: str, dataset: str) -> None:
+    client.query(_margin_view_sql(project_id, dataset)).result()
+
+
+def _fetch_margin_dashboard_df(client: bigquery.Client, project_id: str, dataset: str) -> pd.DataFrame:
+    query = f"""
+SELECT
+  our_ref,
+  job_number,
+  campaign_name,
+  advertiser_name,
+  property_name,
+  location_text,
+  account_manager_name,
+  trafficker_name,
+  campaign_lead,
+  booking_status,
+  budget,
+  booked_nett_cost,
+  start_date,
+  end_date,
+  latest_delivery_date,
+  as_of_date,
+  total_days,
+  elapsed_days,
+  pacing_ratio,
+  actual_nett_spend,
+  total_impressions,
+  total_clicks,
+  first_delivery_date,
+  last_delivery_date,
+  expected_gross_spend_to_date,
+  margin_amount,
+  margin_pct,
+  spend_vs_budget_ratio
+FROM {_margin_view_fqn(project_id, dataset)}
+ORDER BY margin_amount ASC, our_ref
+"""
+    rows = list(client.query(query).result())
+    if not rows:
+        return pd.DataFrame()
+
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        out.append(
+            {
+                "OUR_REF": str(row["our_ref"] or ""),
+                "JOB_NUMBER": str(row["job_number"] or ""),
+                "CAMPAIGN_NAME": str(row["campaign_name"] or ""),
+                "ADVERTISER_NAME": str(row["advertiser_name"] or ""),
+                "PROPERTY_NAME": str(row["property_name"] or ""),
+                "LOCATION_TEXT": str(row["location_text"] or ""),
+                "ACCOUNT_MANAGER": str(row["account_manager_name"] or ""),
+                "TRAFFICKER_NAME": str(row["trafficker_name"] or ""),
+                "CAMPAIGN_LEAD": str(row["campaign_lead"] or ""),
+                "BOOKING_STATUS": str(row["booking_status"] or ""),
+                "BUDGET": float(row["budget"] or 0),
+                "BOOKED_NETT_COST": float(row["booked_nett_cost"] or 0),
+                "START_DATE": str(row["start_date"] or ""),
+                "END_DATE": str(row["end_date"] or ""),
+                "LATEST_DELIVERY_DATE": str(row["latest_delivery_date"] or ""),
+                "AS_OF_DATE": str(row["as_of_date"] or ""),
+                "TOTAL_DAYS": int(row["total_days"] or 0),
+                "ELAPSED_DAYS": int(row["elapsed_days"] or 0),
+                "PACING_RATIO": float(row["pacing_ratio"] or 0),
+                "ACTUAL_NETT_SPEND": float(row["actual_nett_spend"] or 0),
+                "TOTAL_IMPRESSIONS": float(row["total_impressions"] or 0),
+                "TOTAL_CLICKS": float(row["total_clicks"] or 0),
+                "FIRST_DELIVERY_DATE": str(row["first_delivery_date"] or ""),
+                "LAST_DELIVERY_DATE": str(row["last_delivery_date"] or ""),
+                "EXPECTED_GROSS_SPEND_TO_DATE": float(row["expected_gross_spend_to_date"] or 0),
+                "MARGIN_AMOUNT": float(row["margin_amount"] or 0),
+                "MARGIN_PCT": (float(row["margin_pct"]) if row["margin_pct"] is not None else None),
+                "SPEND_VS_BUDGET_RATIO": (float(row["spend_vs_budget_ratio"]) if row["spend_vs_budget_ratio"] is not None else None),
+            }
+        )
+    return pd.DataFrame(out)
 
 
 def _snoozes_table_fqn(project_id: str, dataset: str) -> str:
@@ -220,6 +470,96 @@ ORDER BY start_date, our_ref
         ]
     )
     rows = list(client.query(query, job_config=job_config).result())
+    if not rows:
+        return pd.DataFrame()
+    data = []
+    for r in rows:
+        data.append(
+            {
+                "RUN_ID": str(r["run_id"] or ""),
+                "RUN_DATE_NZ": str(r["run_date_nz"] or ""),
+                "RUN_TS_UTC": str(r["run_timestamp_utc"] or ""),
+                "ALERT_TYPE": str(r["alert_type"] or ""),
+                "ALERT_KEY": str(r["alert_key"] or ""),
+                "OUR_REF": str(r["our_ref"] or ""),
+                "JOB_NUMBER": str(r["job_number"] or ""),
+                "START_DATE": str(r["start_date"] or ""),
+                "END_DATE": str(r["end_date"] or ""),
+                "ADVERTISER": str(r["advertiser"] or ""),
+                "CAMPAIGN": str(r["campaign"] or ""),
+                "LOCATIONTEXT": str(r["location_text"] or ""),
+                "PROPERTYNAME": str(r["property_name"] or ""),
+                "BOOKINGSTATUS": str(r["booking_status"] or ""),
+                "DATASOURCE": str(r["datasource"] or ""),
+                "ACCOUNT": str(r["account"] or ""),
+                "FIRST_MISSING_DATE": str(r["first_missing_date"] or ""),
+                "LAST_MISSING_DATE": str(r["last_missing_date"] or ""),
+                "TOTAL_IMPRESSIONS": float(r["total_impressions"] or 0),
+                "TOTAL_CLICKS": float(r["total_clicks"] or 0),
+                "TOTAL_COST": float(r["total_cost"] or 0),
+                "ROW_COUNT": int(r["row_count"] or 0),
+            }
+        )
+    return pd.DataFrame(data)
+
+
+def _fetch_latest_snapshot_global_df(client: bigquery.Client, project_id: str, dataset: str) -> pd.DataFrame:
+    query = f"""
+WITH latest AS (
+  SELECT
+    run_id,
+    run_date_nz,
+    run_timestamp_utc,
+    alert_type,
+    alert_key,
+    our_ref,
+    job_number,
+    start_date,
+    end_date,
+    advertiser,
+    campaign,
+    location_text,
+    property_name,
+    booking_status,
+    datasource,
+    account,
+    first_missing_date,
+    last_missing_date,
+    total_impressions,
+    total_clicks,
+    total_cost,
+    row_count,
+    ROW_NUMBER() OVER (PARTITION BY alert_type, alert_key ORDER BY run_timestamp_utc DESC) AS rn
+  FROM {_snapshots_table_fqn(project_id, dataset)}
+)
+SELECT
+  run_id,
+  run_date_nz,
+  run_timestamp_utc,
+  alert_type,
+  alert_key,
+  our_ref,
+  job_number,
+  start_date,
+  end_date,
+  advertiser,
+  campaign,
+  location_text,
+  property_name,
+  booking_status,
+  datasource,
+  account,
+  first_missing_date,
+  last_missing_date,
+  total_impressions,
+  total_clicks,
+  total_cost,
+  row_count
+FROM latest
+WHERE rn = 1
+ORDER BY run_timestamp_utc DESC, alert_type, our_ref
+"""
+    rows = list(client.query(query).result())
     if not rows:
         return pd.DataFrame()
     data = []
@@ -731,32 +1071,14 @@ WHEN NOT MATCHED THEN
     client.query(query, job_config=job_config).result()
 
 
-def _render_live_alert_dashboard() -> bool:
+def _render_margin_dashboard() -> bool:
     mode = _get_qparam("mode")
-    if mode != "live_alerts":
+    page = _get_qparam("page")
+    if mode != "margin_dashboard" and page != "margin_dashboard":
         return False
 
-    user = _get_qparam("user")
-    run_id = _get_qparam("run_id")
-    exp = _get_qparam("exp")
-    sig = _get_qparam("sig")
-
-    if not user or not run_id or not exp or not sig:
-        st.error("Invalid dashboard link. Missing required parameters.")
-        return True
-
-    link_signing_secret = _get_secret("LINK_SIGNING_SECRET", "")
-    if not link_signing_secret:
-        st.error("Missing LINK_SIGNING_SECRET in app secrets.")
-        return True
-
-    if not _verify_live_alert_link(user=user, run_id=run_id, exp=exp, sig=sig, secret=link_signing_secret):
-        st.error("Link is invalid or expired. Please use the latest alert email link.")
-        return True
-
-    st.title("Live Alerts Dashboard")
-    st.caption(f"User: {user} | Run ID: {run_id}")
-    st.text_input("User", value=user, disabled=True)
+    st.title("Live Margin Dashboard")
+    st.caption("Margin at `OUR REF` level using budget from `ACTUALPRICE` and actual nett spend from delivery `COST`.")
 
     try:
         bq_client, project_id, dataset = _build_bq_client_from_secrets()
@@ -765,10 +1087,402 @@ def _render_live_alert_dashboard() -> bool:
         st.error(f"Could not initialize BigQuery: {exc}")
         return True
 
-    snapshot_df = _fetch_snapshot_df(bq_client, project_id, dataset, run_id=run_id)
-    if snapshot_df.empty:
-        st.warning("No rows found for this run link.")
+    view_sql = _margin_view_sql(project_id, dataset)
+    try:
+        _create_or_replace_margin_view(bq_client, project_id, dataset)
+    except Exception as exc:
+        st.error(f"Could not create or update margin view: {exc}")
         return True
+
+    st.caption(f"View: `{project_id}.{dataset}.{MARGIN_VIEW_NAME}`")
+    margin_user = _get_actor_name()
+
+    with st.expander("Formula"):
+        st.markdown(
+            """
+- `budget = ACTUALPRICE`
+- `actual_nett_spend = SUM(COST)`
+- `expected_gross_spend_to_date = budget * elapsed_days / total_days`
+- `margin_amount = expected_gross_spend_to_date - actual_nett_spend`
+- `margin_pct = 1 - actual_nett_spend / expected_gross_spend_to_date`
+- `as_of_date = LEAST(latest_delivery_date, end_date)`
+"""
+        )
+
+    with st.expander("View SQL"):
+        st.code(view_sql, language="sql")
+
+    try:
+        margin_df = _fetch_margin_dashboard_df(bq_client, project_id, dataset)
+    except Exception as exc:
+        st.error(f"Could not query margin view: {exc}")
+        return True
+
+    if margin_df.empty:
+        st.warning("Margin view returned no rows.")
+        return True
+
+    margin_refs = sorted(margin_df["OUR_REF"].dropna().astype(str).unique().tolist())
+    margin_snooze_df = _fetch_latest_snooze_df(
+        bq_client,
+        project_id,
+        dataset,
+        alert_keys=margin_refs,
+        alert_types=[MARGIN_SNOOZE_TYPE],
+        legacy_not_live_refs=[],
+    )
+    if not margin_snooze_df.empty:
+        margin_df = margin_df.merge(
+            margin_snooze_df[
+                [
+                    "ALERT_KEY",
+                    "OUR_REF",
+                    "SNOOZE_STATUS",
+                    "SNOOZE_REASON",
+                    "SNOOZE_START_DATE",
+                    "SNOOZE_END_DATE",
+                    "SNOOZED_BY",
+                    "UPDATED_AT",
+                ]
+            ],
+            on="OUR_REF",
+            how="left",
+        )
+    else:
+        margin_df["SNOOZE_STATUS"] = ""
+        margin_df["SNOOZE_REASON"] = ""
+        margin_df["SNOOZE_START_DATE"] = ""
+        margin_df["SNOOZE_END_DATE"] = ""
+        margin_df["SNOOZED_BY"] = ""
+        margin_df["UPDATED_AT"] = ""
+
+    today = _today_nz()
+    margin_states = []
+    for _, row in margin_df.iterrows():
+        status = str(row.get("SNOOZE_STATUS", "") or "").upper()
+        end_date_raw = str(row.get("SNOOZE_END_DATE", "") or "").strip()
+        end_date = pd.to_datetime(end_date_raw, errors="coerce")
+        if status == "ACTIVE" and not pd.isna(end_date) and end_date.date() >= today:
+            margin_states.append("ACTIVE")
+        else:
+            margin_states.append("OPEN")
+    margin_df["MARGIN_SNOOZE_STATE"] = margin_states
+
+    latest_delivery_date = margin_df["LATEST_DELIVERY_DATE"].replace("", pd.NA).dropna()
+    as_of_dates = margin_df["AS_OF_DATE"].replace("", pd.NA).dropna()
+    st.caption(
+        f"Latest delivery date: {latest_delivery_date.max() if not latest_delivery_date.empty else 'N/A'} | "
+        f"As-of date max: {as_of_dates.max() if not as_of_dates.empty else 'N/A'}"
+    )
+
+    filter_col1, filter_col2, filter_col3 = st.columns(3)
+    with filter_col1:
+        advertiser_options = ["ALL"] + sorted(margin_df["ADVERTISER_NAME"].dropna().astype(str).unique().tolist())
+        advertiser_filter = st.selectbox("Advertiser", advertiser_options, index=0)
+    with filter_col2:
+        booking_options = ["ALL"] + sorted(margin_df["BOOKING_STATUS"].dropna().astype(str).unique().tolist())
+        booking_filter = st.selectbox("Booking Status", booking_options, index=0)
+    with filter_col3:
+        search_term = st.text_input("Search OUR REF / Job / Campaign", "").strip().lower()
+
+    filtered_df = margin_df.copy()
+    if advertiser_filter != "ALL":
+        filtered_df = filtered_df[filtered_df["ADVERTISER_NAME"] == advertiser_filter]
+    if booking_filter != "ALL":
+        filtered_df = filtered_df[filtered_df["BOOKING_STATUS"] == booking_filter]
+    if search_term:
+        search_mask = (
+            filtered_df["OUR_REF"].str.lower().str.contains(search_term, na=False)
+            | filtered_df["JOB_NUMBER"].str.lower().str.contains(search_term, na=False)
+            | filtered_df["CAMPAIGN_NAME"].str.lower().str.contains(search_term, na=False)
+        )
+        filtered_df = filtered_df[search_mask]
+
+    with st.expander("Column Filters"):
+        candidate_columns = filtered_df.columns.tolist()
+        selected_filter_columns = st.multiselect(
+            "Choose columns to filter",
+            options=candidate_columns,
+            default=[],
+            key="margin_dashboard_filter_columns",
+        )
+
+        for col_name in selected_filter_columns:
+            series = filtered_df[col_name]
+            st.markdown(f"**{col_name}**")
+
+            if pd.api.types.is_numeric_dtype(series):
+                numeric_series = pd.to_numeric(series, errors="coerce").dropna()
+                if numeric_series.empty:
+                    st.caption("No numeric values available for filtering.")
+                    continue
+                min_value = float(numeric_series.min())
+                max_value = float(numeric_series.max())
+                range_value = st.slider(
+                    f"{col_name} range",
+                    min_value=min_value,
+                    max_value=max_value,
+                    value=(min_value, max_value),
+                    key=f"margin_filter_range_{col_name}",
+                )
+                filtered_df = filtered_df[
+                    pd.to_numeric(filtered_df[col_name], errors="coerce").between(range_value[0], range_value[1], inclusive="both")
+                ]
+                continue
+
+            non_null_values = sorted(series.dropna().astype(str).unique().tolist())
+            if not non_null_values:
+                st.caption("No values available for filtering.")
+                continue
+
+            if len(non_null_values) <= 50:
+                selected_values = st.multiselect(
+                    f"{col_name} values",
+                    options=non_null_values,
+                    default=[],
+                    key=f"margin_filter_values_{col_name}",
+                )
+                if selected_values:
+                    filtered_df = filtered_df[filtered_df[col_name].astype(str).isin(selected_values)]
+            else:
+                contains_value = st.text_input(
+                    f"{col_name} contains",
+                    "",
+                    key=f"margin_filter_contains_{col_name}",
+                ).strip().lower()
+                if contains_value:
+                    filtered_df = filtered_df[
+                        filtered_df[col_name].astype(str).str.lower().str.contains(contains_value, na=False)
+                    ]
+
+    active_df = filtered_df[filtered_df["MARGIN_SNOOZE_STATE"] == "OPEN"].copy()
+    snoozed_df = filtered_df[filtered_df["MARGIN_SNOOZE_STATE"] == "ACTIVE"].copy()
+
+    metric1, metric2, metric3, metric4 = st.columns(4)
+    metric1.metric("Active Rows", f"{len(active_df):,}")
+    metric2.metric("Snoozed Rows", f"{len(snoozed_df):,}")
+    metric3.metric("Active Budget", f"${active_df['BUDGET'].sum():,.0f}")
+    metric4.metric("Active Actual Nett Spend", f"${active_df['ACTUAL_NETT_SPEND'].sum():,.0f}")
+
+    metric5, metric6, metric7 = st.columns(3)
+    metric5.metric("Active Margin Amount", f"${active_df['MARGIN_AMOUNT'].sum():,.0f}")
+    margin_pct_series = active_df["MARGIN_PCT"].dropna()
+    metric6.metric("Active Average Margin %", f"{(margin_pct_series.mean() * 100):.1f}%" if not margin_pct_series.empty else "N/A")
+    pacing_series = active_df["PACING_RATIO"].dropna()
+    metric7.metric("Active Average Pace %", f"{(pacing_series.mean() * 100):.1f}%" if not pacing_series.empty else "N/A")
+
+    def _prepare_margin_display(df: pd.DataFrame) -> pd.DataFrame:
+        display_df = df.copy()
+        for col in ["PACING_RATIO", "MARGIN_PCT", "SPEND_VS_BUDGET_RATIO"]:
+            if col in display_df.columns:
+                display_df[col] = display_df[col].apply(lambda v: None if pd.isna(v) else round(float(v) * 100, 2))
+        return display_df
+
+    table_column_config = {
+        "PACING_RATIO": st.column_config.NumberColumn("PACING_RATIO (%)", format="%.2f"),
+        "MARGIN_PCT": st.column_config.NumberColumn("MARGIN_PCT (%)", format="%.2f"),
+        "SPEND_VS_BUDGET_RATIO": st.column_config.NumberColumn("SPEND_VS_BUDGET_RATIO (%)", format="%.2f"),
+        "BUDGET": st.column_config.NumberColumn("BUDGET", format="$%.2f"),
+        "BOOKED_NETT_COST": st.column_config.NumberColumn("BOOKED_NETT_COST", format="$%.2f"),
+        "ACTUAL_NETT_SPEND": st.column_config.NumberColumn("ACTUAL_NETT_SPEND", format="$%.2f"),
+        "EXPECTED_GROSS_SPEND_TO_DATE": st.column_config.NumberColumn("EXPECTED_GROSS_SPEND_TO_DATE", format="$%.2f"),
+        "MARGIN_AMOUNT": st.column_config.NumberColumn("MARGIN_AMOUNT", format="$%.2f"),
+    }
+
+    tab_active, tab_snoozed = st.tabs(["Active Rows", "Snoozed"])
+
+    with tab_active:
+        if active_df.empty:
+            st.info("No active rows for the current filters.")
+        else:
+            active_view = _prepare_margin_display(active_df)
+            active_view.insert(0, "_ROW_ID", active_df.index.astype(str))
+            active_view.insert(0, "SELECT", False)
+            edited_active = st.data_editor(
+                active_view,
+                use_container_width=True,
+                hide_index=True,
+                column_config={"SELECT": st.column_config.CheckboxColumn("Select"), **table_column_config},
+                disabled=[c for c in active_view.columns if c not in {"SELECT"}],
+                column_order=["SELECT"] + [c for c in active_view.columns if c not in {"SELECT", "_ROW_ID"}],
+                key="margin_active_rows_editor",
+            )
+            selected_ids = edited_active.loc[edited_active["SELECT"] == True, "_ROW_ID"].astype(str).tolist()
+            selected_rows = active_df.loc[active_df.index.astype(str).isin(selected_ids), ["OUR_REF"]]
+            selected_margin_rows = [
+                {
+                    "alert_type": MARGIN_SNOOZE_TYPE,
+                    "alert_key": str(r["OUR_REF"] or ""),
+                    "our_ref": str(r["OUR_REF"] or ""),
+                }
+                for _, r in selected_rows.iterrows()
+            ]
+            st.caption(f"Selected row count: {len(selected_margin_rows)}")
+
+            snooze_reason = st.text_area("Snooze reason", key="margin_snooze_reason_text")
+            snooze_end_date = st.date_input(
+                "Snooze end date (NZ)",
+                value=today,
+                min_value=today,
+                key="margin_snooze_end_date_input",
+            )
+            if st.button("Snooze Selected Rows", type="primary"):
+                if not selected_margin_rows:
+                    st.error("Select at least one row.")
+                elif not snooze_reason.strip():
+                    st.error("Snooze reason is required.")
+                else:
+                    _upsert_snooze_active_batch(
+                        bq_client,
+                        project_id,
+                        dataset,
+                        alerts=selected_margin_rows,
+                        user=margin_user,
+                        reason=snooze_reason.strip(),
+                        end_date=snooze_end_date,
+                        run_id=f"margin_dashboard:{uuid.uuid4().hex}",
+                    )
+                    st.success(f"Snoozed {len(selected_margin_rows)} row(s).")
+                    st.rerun()
+
+            st.download_button(
+                "Download Active Margin CSV",
+                data=_prepare_margin_display(active_df).to_csv(index=False).encode("utf-8"),
+                file_name="margin_dashboard_active.csv",
+                mime="text/csv",
+            )
+
+    with tab_snoozed:
+        if snoozed_df.empty:
+            st.info("No snoozed rows for the current filters.")
+        else:
+            snoozed_view = _prepare_margin_display(snoozed_df)
+            snoozed_view.insert(0, "_ROW_ID", snoozed_df.index.astype(str))
+            snoozed_view.insert(0, "SELECT", False)
+            edited_snoozed = st.data_editor(
+                snoozed_view,
+                use_container_width=True,
+                hide_index=True,
+                column_config={"SELECT": st.column_config.CheckboxColumn("Select"), **table_column_config},
+                disabled=[c for c in snoozed_view.columns if c not in {"SELECT"}],
+                column_order=["SELECT"] + [c for c in snoozed_view.columns if c not in {"SELECT", "_ROW_ID"}],
+                key="margin_snoozed_rows_editor",
+            )
+            selected_ids = edited_snoozed.loc[edited_snoozed["SELECT"] == True, "_ROW_ID"].astype(str).tolist()
+            selected_rows = snoozed_df.loc[snoozed_df.index.astype(str).isin(selected_ids), ["OUR_REF"]]
+            selected_snoozed_rows = [
+                {
+                    "alert_type": MARGIN_SNOOZE_TYPE,
+                    "alert_key": str(r["OUR_REF"] or ""),
+                    "our_ref": str(r["OUR_REF"] or ""),
+                }
+                for _, r in selected_rows.iterrows()
+            ]
+            st.caption(f"Selected row count: {len(selected_snoozed_rows)}")
+
+            extend_end_date = st.date_input(
+                "New snooze end date (NZ)",
+                value=today,
+                min_value=today,
+                key="margin_extend_end_date_input",
+            )
+            extend_reason = st.text_input("Extend reason (optional)", key="margin_extend_reason_input")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Unsnooze Selected Rows"):
+                    if not selected_snoozed_rows:
+                        st.error("Select at least one row.")
+                    else:
+                        _upsert_unsnooze_batch(
+                            bq_client,
+                            project_id,
+                            dataset,
+                            alerts=selected_snoozed_rows,
+                            user=margin_user,
+                            run_id=f"margin_dashboard:{uuid.uuid4().hex}",
+                        )
+                        st.success(f"Unsnoozed {len(selected_snoozed_rows)} row(s).")
+                        st.rerun()
+            with c2:
+                if st.button("Extend Snooze"):
+                    if not selected_snoozed_rows:
+                        st.error("Select at least one row.")
+                    else:
+                        reason = extend_reason.strip() or "Snooze extended"
+                        _upsert_snooze_active_batch(
+                            bq_client,
+                            project_id,
+                            dataset,
+                            alerts=selected_snoozed_rows,
+                            user=margin_user,
+                            reason=reason,
+                            end_date=extend_end_date,
+                            run_id=f"margin_dashboard:{uuid.uuid4().hex}",
+                        )
+                        st.success(f"Extended snooze for {len(selected_snoozed_rows)} row(s).")
+                        st.rerun()
+
+            st.download_button(
+                "Download Snoozed Margin CSV",
+                data=_prepare_margin_display(snoozed_df).to_csv(index=False).encode("utf-8"),
+                file_name="margin_dashboard_snoozed.csv",
+                mime="text/csv",
+            )
+    return True
+
+def _render_live_alert_dashboard() -> bool:
+    mode = _get_qparam("mode")
+    page = _get_qparam("page")
+    if mode != "live_alerts" and page != "alerts_dashboard":
+        return False
+
+    user = _get_qparam("user")
+    run_id = _get_qparam("run_id")
+    exp = _get_qparam("exp")
+    sig = _get_qparam("sig")
+
+    st.title("Live Alerts Dashboard")
+    acting_user = _get_actor_name()
+
+    if mode == "live_alerts":
+        if not user or not run_id or not exp or not sig:
+            st.error("Invalid dashboard link. Missing required parameters.")
+            return True
+
+        link_signing_secret = _get_secret("LINK_SIGNING_SECRET", "")
+        if not link_signing_secret:
+            st.error("Missing LINK_SIGNING_SECRET in app secrets.")
+            return True
+
+        if not _verify_live_alert_link(user=user, run_id=run_id, exp=exp, sig=sig, secret=link_signing_secret):
+            st.error("Link is invalid or expired. Please use the latest alert email link.")
+            return True
+
+        st.caption(f"Signed link user: {user} | Run ID: {run_id}")
+        dashboard_mode = "signed_run"
+    else:
+        st.caption(f"Signed in as {acting_user}")
+        dashboard_mode = "global"
+
+    try:
+        bq_client, project_id, dataset = _build_bq_client_from_secrets()
+        _ensure_control_tables(bq_client, project_id, dataset)
+    except Exception as exc:
+        st.error(f"Could not initialize BigQuery: {exc}")
+        return True
+
+    if dashboard_mode == "signed_run":
+        snapshot_df = _fetch_snapshot_df(bq_client, project_id, dataset, run_id=run_id)
+    else:
+        snapshot_df = _fetch_latest_snapshot_global_df(bq_client, project_id, dataset)
+    if snapshot_df.empty:
+        st.warning("No alert rows found.")
+        return True
+
+    if dashboard_mode == "global":
+        latest_run_ts = snapshot_df["RUN_TS_UTC"].replace("", pd.NA).dropna()
+        latest_run_label = latest_run_ts.max() if not latest_run_ts.empty else "N/A"
+        st.caption(f"Latest alert snapshot timestamp (UTC): {latest_run_label}")
 
     alert_keys = sorted(snapshot_df["ALERT_KEY"].dropna().astype(str).unique().tolist())
     alert_types = sorted(snapshot_df["ALERT_TYPE"].dropna().astype(str).unique().tolist())
@@ -896,11 +1610,11 @@ def _render_live_alert_dashboard() -> bool:
                     bq_client,
                     project_id,
                     dataset,
-                    alerts=selected_alerts,
-                    user=user,
-                    reason=snooze_reason.strip(),
-                    end_date=snooze_end_date,
-                    run_id=run_id,
+                        alerts=selected_alerts,
+                        user=acting_user,
+                        reason=snooze_reason.strip(),
+                        end_date=snooze_end_date,
+                        run_id=run_id,
                 )
                 st.success(f"Snoozed {len(selected_alerts)} alert(s).")
                 st.rerun()
@@ -959,7 +1673,7 @@ def _render_live_alert_dashboard() -> bool:
                         project_id,
                         dataset,
                         alerts=selected_snoozed_alerts,
-                        user=user,
+                        user=acting_user,
                         run_id=run_id,
                     )
                     st.success(f"Unsnoozed {len(selected_snoozed_alerts)} alert(s).")
@@ -975,7 +1689,7 @@ def _render_live_alert_dashboard() -> bool:
                         project_id,
                         dataset,
                         alerts=selected_snoozed_alerts,
-                        user=user,
+                        user=acting_user,
                         reason=reason,
                         end_date=extend_end_date,
                         run_id=run_id,
@@ -999,7 +1713,7 @@ def _render_live_alert_dashboard() -> bool:
                         project_id,
                         dataset,
                         alerts=selected_snoozed_alerts,
-                        user=user,
+                        user=acting_user,
                         reason=dismiss_reason.strip(),
                         run_id=run_id,
                     )
@@ -1141,6 +1855,16 @@ def _build_existing_parent_index(
 
 
 def main() -> None:
+    auth_ready = _render_login_gate()
+    if not auth_ready:
+        return
+
+    _render_navigation()
+
+    if _render_home_page():
+        return
+    if _render_margin_dashboard():
+        return
     if _render_live_alert_dashboard():
         return
 
