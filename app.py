@@ -124,7 +124,7 @@ def _get_authenticated_user() -> Dict[str, str]:
 def _get_actor_name(fallback: str = "") -> str:
     auth_user = _get_authenticated_user()
     if auth_user:
-        return str(auth_user.get("display_name") or auth_user.get("username") or "").strip()
+        return str(auth_user.get("username") or auth_user.get("display_name") or "").strip()
     return fallback.strip()
 
 
@@ -505,32 +505,41 @@ ORDER BY start_date, our_ref
 
 def _fetch_latest_snapshot_global_df(client: bigquery.Client, project_id: str, dataset: str) -> pd.DataFrame:
     query = f"""
-WITH latest AS (
+WITH latest_run AS (
   SELECT
     run_id,
-    run_date_nz,
-    run_timestamp_utc,
-    alert_type,
-    alert_key,
-    our_ref,
-    job_number,
-    start_date,
-    end_date,
-    advertiser,
-    campaign,
-    location_text,
-    property_name,
-    booking_status,
-    datasource,
-    account,
-    first_missing_date,
-    last_missing_date,
-    total_impressions,
-    total_clicks,
-    total_cost,
-    row_count,
-    ROW_NUMBER() OVER (PARTITION BY alert_type, alert_key ORDER BY run_timestamp_utc DESC) AS rn
+    run_timestamp_utc
   FROM {_snapshots_table_fqn(project_id, dataset)}
+  ORDER BY run_timestamp_utc DESC
+  LIMIT 1
+),
+latest AS (
+  SELECT
+    s.run_id,
+    s.run_date_nz,
+    s.run_timestamp_utc,
+    s.alert_type,
+    s.alert_key,
+    s.our_ref,
+    s.job_number,
+    s.start_date,
+    s.end_date,
+    s.advertiser,
+    s.campaign,
+    s.location_text,
+    s.property_name,
+    s.booking_status,
+    s.datasource,
+    s.account,
+    s.first_missing_date,
+    s.last_missing_date,
+    s.total_impressions,
+    s.total_clicks,
+    s.total_cost,
+    s.row_count
+  FROM {_snapshots_table_fqn(project_id, dataset)} s
+  INNER JOIN latest_run lr
+    ON s.run_id = lr.run_id
 )
 SELECT
   run_id,
@@ -556,7 +565,6 @@ SELECT
   total_cost,
   row_count
 FROM latest
-WHERE rn = 1
 ORDER BY run_timestamp_utc DESC, alert_type, our_ref
 """
     rows = list(client.query(query).result())
@@ -718,7 +726,10 @@ LEFT JOIN snapshot_latest s
  AND s.rn = 1
 WHERE l.rn = 1
   AND (
-    (UPPER(COALESCE(l.snooze_status, '')) = 'ACTIVE' AND l.snooze_end_date >= CURRENT_DATE('Pacific/Auckland'))
+    (
+      UPPER(COALESCE(l.snooze_status, '')) = 'ACTIVE'
+      AND (l.snooze_end_date IS NULL OR l.snooze_end_date >= CURRENT_DATE('Pacific/Auckland'))
+    )
     OR UPPER(COALESCE(l.snooze_status, '')) = 'DISMISSED'
   )
 ORDER BY l.updated_at DESC
@@ -756,7 +767,7 @@ def _upsert_snooze_active(
     our_ref: str,
     user: str,
     reason: str,
-    end_date: date,
+    end_date: date | None,
     run_id: str,
 ) -> None:
     query = f"""
@@ -793,7 +804,7 @@ WHEN NOT MATCHED THEN
             bigquery.ScalarQueryParameter("alert_key", "STRING", alert_key),
             bigquery.ScalarQueryParameter("reason", "STRING", reason),
             bigquery.ScalarQueryParameter("start_date", "DATE", _today_nz().isoformat()),
-            bigquery.ScalarQueryParameter("end_date", "DATE", end_date.isoformat()),
+            bigquery.ScalarQueryParameter("end_date", "DATE", end_date.isoformat() if end_date else None),
             bigquery.ScalarQueryParameter("user", "STRING", user),
             bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
         ]
@@ -808,7 +819,7 @@ def _upsert_snooze_active_batch(
     alerts: List[Dict[str, str]],
     user: str,
     reason: str,
-    end_date: date,
+    end_date: date | None,
     run_id: str,
 ) -> None:
     if not alerts:
@@ -859,7 +870,7 @@ WHEN NOT MATCHED THEN
             bigquery.ArrayQueryParameter("alert_types", "STRING", alert_types),
             bigquery.ScalarQueryParameter("reason", "STRING", reason),
             bigquery.ScalarQueryParameter("start_date", "DATE", _today_nz().isoformat()),
-            bigquery.ScalarQueryParameter("end_date", "DATE", end_date.isoformat()),
+            bigquery.ScalarQueryParameter("end_date", "DATE", end_date.isoformat() if end_date else None),
             bigquery.ScalarQueryParameter("user", "STRING", user),
             bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
         ]
@@ -1162,7 +1173,7 @@ def _render_margin_dashboard() -> bool:
         status = str(row.get("SNOOZE_STATUS", "") or "").upper()
         end_date_raw = str(row.get("SNOOZE_END_DATE", "") or "").strip()
         end_date = pd.to_datetime(end_date_raw, errors="coerce")
-        if status == "ACTIVE" and not pd.isna(end_date) and end_date.date() >= today:
+        if status == "ACTIVE" and (not end_date_raw or (not pd.isna(end_date) and end_date.date() >= today)):
             margin_states.append("ACTIVE")
         else:
             margin_states.append("OPEN")
@@ -1276,6 +1287,12 @@ def _render_margin_dashboard() -> bool:
         for col in ["PACING_RATIO", "MARGIN_PCT", "SPEND_VS_BUDGET_RATIO"]:
             if col in display_df.columns:
                 display_df[col] = display_df[col].apply(lambda v: None if pd.isna(v) else round(float(v) * 100, 2))
+        if "SNOOZE_STATUS" in display_df.columns and "SNOOZE_END_DATE" in display_df.columns:
+            active_permanent_mask = (
+                display_df["SNOOZE_STATUS"].astype(str).str.upper().eq("ACTIVE")
+                & display_df["SNOOZE_END_DATE"].astype(str).str.strip().eq("")
+            )
+            display_df.loc[active_permanent_mask, "SNOOZE_END_DATE"] = "Permanent"
         return display_df
 
     table_column_config = {
@@ -1320,12 +1337,15 @@ def _render_margin_dashboard() -> bool:
             st.caption(f"Selected row count: {len(selected_margin_rows)}")
 
             snooze_reason = st.text_area("Snooze reason", key="margin_snooze_reason_text")
-            snooze_end_date = st.date_input(
-                "Snooze end date (NZ)",
-                value=today,
-                min_value=today,
-                key="margin_snooze_end_date_input",
-            )
+            permanent_snooze = st.checkbox("Permanent snooze", key="margin_permanent_snooze_checkbox")
+            snooze_end_date = None
+            if not permanent_snooze:
+                snooze_end_date = st.date_input(
+                    "Snooze end date (NZ)",
+                    value=today,
+                    min_value=today,
+                    key="margin_snooze_end_date_input",
+                )
             if st.button("Snooze Selected Rows", type="primary"):
                 if not selected_margin_rows:
                     st.error("Select at least one row.")
@@ -1380,12 +1400,15 @@ def _render_margin_dashboard() -> bool:
             ]
             st.caption(f"Selected row count: {len(selected_snoozed_rows)}")
 
-            extend_end_date = st.date_input(
-                "New snooze end date (NZ)",
-                value=today,
-                min_value=today,
-                key="margin_extend_end_date_input",
-            )
+            extend_permanent_snooze = st.checkbox("Set as permanent snooze", key="margin_extend_permanent_snooze_checkbox")
+            extend_end_date = None
+            if not extend_permanent_snooze:
+                extend_end_date = st.date_input(
+                    "New snooze end date (NZ)",
+                    value=today,
+                    min_value=today,
+                    key="margin_extend_end_date_input",
+                )
             extend_reason = st.text_input("Extend reason (optional)", key="margin_extend_reason_input")
             c1, c2 = st.columns(2)
             with c1:
@@ -1521,7 +1544,7 @@ def _render_live_alert_dashboard() -> bool:
         end_date = pd.to_datetime(end_date_raw, errors="coerce")
         if status == "DISMISSED":
             statuses.append("DISMISSED")
-        elif status == "ACTIVE" and not pd.isna(end_date) and end_date.date() >= today:
+        elif status == "ACTIVE" and (not end_date_raw or (not pd.isna(end_date) and end_date.date() >= today)):
             statuses.append("ACTIVE")
         else:
             statuses.append("OPEN")
@@ -1594,12 +1617,15 @@ def _render_live_alert_dashboard() -> bool:
             st.caption(f"Selected alert count: {len(selected_alerts)}")
 
         snooze_reason = st.text_area("Snooze reason", key="snooze_reason_text")
-        snooze_end_date = st.date_input(
-            "Snooze end date (NZ)",
-            value=today,
-            min_value=today,
-            key="snooze_end_date_input",
-        )
+        permanent_snooze = st.checkbox("Permanent snooze", key="alerts_permanent_snooze_checkbox")
+        snooze_end_date = None
+        if not permanent_snooze:
+            snooze_end_date = st.date_input(
+                "Snooze end date (NZ)",
+                value=today,
+                min_value=today,
+                key="snooze_end_date_input",
+            )
         if st.button("Snooze Selected Alerts", type="primary"):
             if not selected_alerts:
                 st.error("Select at least one alert.")
@@ -1628,6 +1654,11 @@ def _render_live_alert_dashboard() -> bool:
         else:
             st.caption("Global snoozed/dismissed alerts (not limited to this run).")
             snoozed_view = global_snoozed_df.copy()
+            active_permanent_mask = (
+                snoozed_view["SNOOZE_STATUS"].astype(str).str.upper().eq("ACTIVE")
+                & snoozed_view["SNOOZE_END_DATE"].astype(str).str.strip().eq("")
+            )
+            snoozed_view.loc[active_permanent_mask, "SNOOZE_END_DATE"] = "Permanent"
             snoozed_view.insert(0, "_ROW_ID", global_snoozed_df.index.astype(str))
             snoozed_view.insert(0, "SELECT", False)
             edited_snoozed = st.data_editor(
@@ -1653,12 +1684,15 @@ def _render_live_alert_dashboard() -> bool:
             ]
             st.caption(f"Selected alert count: {len(selected_snoozed_alerts)}")
 
-        extend_end_date = st.date_input(
-            "New snooze end date (NZ)",
-            value=today,
-            min_value=today,
-            key="extend_end_date_input",
-        )
+        extend_permanent_snooze = st.checkbox("Set as permanent snooze", key="alerts_extend_permanent_snooze_checkbox")
+        extend_end_date = None
+        if not extend_permanent_snooze:
+            extend_end_date = st.date_input(
+                "New snooze end date (NZ)",
+                value=today,
+                min_value=today,
+                key="extend_end_date_input",
+            )
         extend_reason = st.text_input("Extend reason (optional)", key="extend_reason_input")
         dismiss_reason = st.text_input("Dismiss reason", key="dismiss_reason_input")
         admin_pass_input = st.text_input("Admin password (required for dismiss)", type="password", key="admin_pass")
