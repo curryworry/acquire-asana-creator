@@ -45,7 +45,8 @@ DEFAULT_BQ_DATASET = "supermetrics_data"
 MARGIN_VIEW_NAME = "margin_dashboard"
 APP_PAGES = {
     "home": "Home",
-    "margin_dashboard": "Margin Dashboard",
+    "live_margin_dashboard": "Live Margin Dashboard",
+    "margin_analysis_dashboard": "Margin Analysis Dashboard",
     "alerts_dashboard": "Alerts Dashboard",
 }
 
@@ -164,8 +165,11 @@ def _render_navigation() -> None:
         if st.sidebar.button("Home", use_container_width=True):
             _set_query_params({"page": "home"})
             st.rerun()
-        if st.sidebar.button("Margin Dashboard", use_container_width=True):
-            _set_query_params({"page": "margin_dashboard"})
+        if st.sidebar.button("Live Margin Dashboard", use_container_width=True):
+            _set_query_params({"page": "live_margin_dashboard"})
+            st.rerun()
+        if st.sidebar.button("Margin Analysis Dashboard", use_container_width=True):
+            _set_query_params({"page": "margin_analysis_dashboard"})
             st.rerun()
         if st.sidebar.button("Alerts Dashboard", use_container_width=True):
             _set_query_params({"page": "alerts_dashboard"})
@@ -179,7 +183,7 @@ def _render_navigation() -> None:
 def _render_home_page() -> bool:
     page = _get_qparam("page")
     mode = _get_qparam("mode")
-    if mode == "live_alerts" or page in {"margin_dashboard", "alerts_dashboard"}:
+    if mode == "live_alerts" or page in {"margin_dashboard", "live_margin_dashboard", "margin_analysis_dashboard", "alerts_dashboard"}:
         return False
 
     st.title("Dashboards")
@@ -187,14 +191,20 @@ def _render_home_page() -> bool:
     if auth_user:
         st.caption(f"Welcome, {auth_user.get('display_name', auth_user.get('username', ''))}.")
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
-        st.subheader("Margin Dashboard")
-        st.caption("Live margin, pacing, and snooze workflow at `OUR REF` level.")
-        if st.button("Open Margin Dashboard", type="primary", key="open_margin_dashboard"):
-            _set_query_params({"page": "margin_dashboard"})
+        st.subheader("Live Margin Dashboard")
+        st.caption("Current live margin, pacing, and snooze workflow at `OUR REF` level.")
+        if st.button("Open Live Margin Dashboard", type="primary", key="open_live_margin_dashboard"):
+            _set_query_params({"page": "live_margin_dashboard"})
             st.rerun()
     with c2:
+        st.subheader("Margin Analysis Dashboard")
+        st.caption("Selected-period margin analysis using overlap logic and period-only spend.")
+        if st.button("Open Margin Analysis Dashboard", key="open_margin_analysis_dashboard"):
+            _set_query_params({"page": "margin_analysis_dashboard"})
+            st.rerun()
+    with c3:
         st.subheader("Alerts Dashboard")
         st.caption("Open the active alerts and snoozed workflow view.")
         if st.button("Open Alerts Dashboard", key="open_alerts_dashboard"):
@@ -238,6 +248,10 @@ def _sanitize_id(value: str, field_name: str) -> str:
 
 def _today_nz() -> date:
     return datetime.now(timezone.utc).astimezone(ZoneInfo("Pacific/Auckland")).date()
+
+
+def _month_start_nz() -> date:
+    return _today_nz().replace(day=1)
 
 
 def _run_query_with_details(
@@ -355,6 +369,180 @@ ORDER BY margin_amount ASC, our_ref
                 "MARGIN_AMOUNT": float(row["margin_amount"] or 0),
                 "MARGIN_PCT": (float(row["margin_pct"]) if row["margin_pct"] is not None else None),
                 "SPEND_VS_BUDGET_RATIO": (float(row["spend_vs_budget_ratio"]) if row["spend_vs_budget_ratio"] is not None else None),
+            }
+        )
+    return pd.DataFrame(out)
+
+
+def _fetch_period_margin_dashboard_df(
+    client: bigquery.Client,
+    project_id: str,
+    dataset: str,
+    period_start: date,
+    period_end: date,
+) -> pd.DataFrame:
+    query = f"""
+WITH line_items AS (
+  SELECT
+    TRIM(CAST(OURREF AS STRING)) AS our_ref,
+    CAST(JOBNUMBER AS STRING) AS job_number,
+    MAX(CAMPAIGNNAME) AS campaign_name,
+    MAX(ADVERTISERNAME) AS advertiser_name,
+    MAX(PROPERTYNAME) AS property_name,
+    MAX(LOCATIONTEXT) AS location_text,
+    MAX(ACCOUNTMANAGERNAME) AS account_manager_name,
+    MAX(TRAFFICKERNAME) AS trafficker_name,
+    MAX(CAMPAIGNLEAD) AS campaign_lead,
+    MAX(BOOKINGSTATUS) AS booking_status,
+    MAX(ACTUALPRICE) AS budget,
+    MAX(OURCOST) AS booked_nett_cost,
+    COALESCE(
+      MIN(SAFE_CAST(STARTDATE AS DATE)),
+      MIN(SAFE.PARSE_DATE('%Y-%m-%d', CAST(STARTDATE AS STRING))),
+      MIN(SAFE.PARSE_DATE('%d/%m/%Y', CAST(STARTDATE AS STRING))),
+      MIN(SAFE.PARSE_DATE('%m/%d/%Y', CAST(STARTDATE AS STRING)))
+    ) AS start_date,
+    COALESCE(
+      MAX(SAFE_CAST(ENDDATE AS DATE)),
+      MAX(SAFE.PARSE_DATE('%Y-%m-%d', CAST(ENDDATE AS STRING))),
+      MAX(SAFE.PARSE_DATE('%d/%m/%Y', CAST(ENDDATE AS STRING))),
+      MAX(SAFE.PARSE_DATE('%m/%d/%Y', CAST(ENDDATE AS STRING)))
+    ) AS end_date
+  FROM `{project_id}.{dataset}.master_overview`
+  WHERE OURREF IS NOT NULL
+    AND TRIM(CAST(OURREF AS STRING)) != ''
+  GROUP BY 1, 2
+),
+delivery AS (
+  SELECT
+    TRIM(CAST(OUR_REF AS STRING)) AS our_ref,
+    SUM(COALESCE(COST, 0)) AS actual_spend_in_period,
+    SUM(COALESCE(IMPRESSIONS, 0)) AS total_impressions_in_period,
+    SUM(COALESCE(CLICKS, 0)) AS total_clicks_in_period,
+    MIN(DATE) AS first_delivery_date_in_period,
+    MAX(DATE) AS last_delivery_date_in_period
+  FROM `{project_id}.{dataset}.BLEND_BLEND_5_1_2`
+  WHERE OUR_REF IS NOT NULL
+    AND TRIM(CAST(OUR_REF AS STRING)) != ''
+    AND DATE BETWEEN @period_start AND @period_end
+  GROUP BY 1
+),
+base AS (
+  SELECT
+    l.our_ref,
+    l.job_number,
+    l.campaign_name,
+    l.advertiser_name,
+    l.property_name,
+    l.location_text,
+    l.account_manager_name,
+    l.trafficker_name,
+    l.campaign_lead,
+    l.booking_status,
+    l.budget,
+    l.booked_nett_cost,
+    l.start_date,
+    l.end_date,
+    @period_start AS period_start,
+    @period_end AS period_end,
+    GREATEST(l.start_date, @period_start) AS effective_start,
+    LEAST(l.end_date, @period_end) AS effective_end,
+    DATE_DIFF(l.end_date, l.start_date, DAY) + 1 AS total_days,
+    DATE_DIFF(LEAST(l.end_date, @period_end), GREATEST(l.start_date, @period_start), DAY) + 1 AS days_in_period,
+    COALESCE(d.actual_spend_in_period, 0) AS actual_spend_in_period,
+    COALESCE(d.total_impressions_in_period, 0) AS total_impressions_in_period,
+    COALESCE(d.total_clicks_in_period, 0) AS total_clicks_in_period,
+    d.first_delivery_date_in_period,
+    d.last_delivery_date_in_period
+  FROM line_items l
+  LEFT JOIN delivery d
+    ON d.our_ref = l.our_ref
+  WHERE l.start_date IS NOT NULL
+    AND l.end_date IS NOT NULL
+    AND l.end_date >= l.start_date
+    AND l.start_date <= @period_end
+    AND l.end_date >= @period_start
+)
+SELECT
+  our_ref,
+  job_number,
+  campaign_name,
+  advertiser_name,
+  property_name,
+  location_text,
+  account_manager_name,
+  trafficker_name,
+  campaign_lead,
+  booking_status,
+  budget,
+  booked_nett_cost,
+  start_date,
+  end_date,
+  period_start,
+  period_end,
+  effective_start,
+  effective_end,
+  total_days,
+  days_in_period,
+  actual_spend_in_period,
+  total_impressions_in_period,
+  total_clicks_in_period,
+  first_delivery_date_in_period,
+  last_delivery_date_in_period,
+  SAFE_MULTIPLY(budget, SAFE_DIVIDE(days_in_period, total_days)) AS prorated_revenue_in_period,
+  SAFE_MULTIPLY(budget, SAFE_DIVIDE(days_in_period, total_days)) - actual_spend_in_period AS margin_in_period,
+  CASE
+    WHEN SAFE_MULTIPLY(budget, SAFE_DIVIDE(days_in_period, total_days)) > 0
+    THEN 1 - SAFE_DIVIDE(actual_spend_in_period, SAFE_MULTIPLY(budget, SAFE_DIVIDE(days_in_period, total_days)))
+    ELSE NULL
+  END AS margin_pct_in_period
+FROM base
+ORDER BY margin_in_period ASC, our_ref
+"""
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("period_start", "DATE", period_start.isoformat()),
+            bigquery.ScalarQueryParameter("period_end", "DATE", period_end.isoformat()),
+        ]
+    )
+    rows = list(client.query(query, job_config=job_config).result())
+    if not rows:
+        return pd.DataFrame()
+
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        out.append(
+            {
+                "OUR_REF": str(row["our_ref"] or ""),
+                "JOB_NUMBER": str(row["job_number"] or ""),
+                "CAMPAIGN_NAME": str(row["campaign_name"] or ""),
+                "ADVERTISER_NAME": str(row["advertiser_name"] or ""),
+                "PROPERTY_NAME": str(row["property_name"] or ""),
+                "LOCATION_TEXT": str(row["location_text"] or ""),
+                "ACCOUNT_MANAGER": str(row["account_manager_name"] or ""),
+                "TRAFFICKER_NAME": str(row["trafficker_name"] or ""),
+                "CAMPAIGN_LEAD": str(row["campaign_lead"] or ""),
+                "BOOKING_STATUS": str(row["booking_status"] or ""),
+                "BUDGET": float(row["budget"] or 0),
+                "BOOKED_NETT_COST": float(row["booked_nett_cost"] or 0),
+                "START_DATE": str(row["start_date"] or ""),
+                "END_DATE": str(row["end_date"] or ""),
+                "PERIOD_START": str(row["period_start"] or ""),
+                "PERIOD_END": str(row["period_end"] or ""),
+                "EFFECTIVE_START": str(row["effective_start"] or ""),
+                "EFFECTIVE_END": str(row["effective_end"] or ""),
+                "TOTAL_DAYS": int(row["total_days"] or 0),
+                "DAYS_IN_PERIOD": int(row["days_in_period"] or 0),
+                "ACTUAL_SPEND_IN_PERIOD": float(row["actual_spend_in_period"] or 0),
+                "TOTAL_IMPRESSIONS_IN_PERIOD": float(row["total_impressions_in_period"] or 0),
+                "TOTAL_CLICKS_IN_PERIOD": float(row["total_clicks_in_period"] or 0),
+                "FIRST_DELIVERY_DATE_IN_PERIOD": str(row["first_delivery_date_in_period"] or ""),
+                "LAST_DELIVERY_DATE_IN_PERIOD": str(row["last_delivery_date_in_period"] or ""),
+                "PRORATED_REVENUE_IN_PERIOD": float(row["prorated_revenue_in_period"] or 0),
+                "MARGIN_IN_PERIOD": float(row["margin_in_period"] or 0),
+                "MARGIN_PCT_IN_PERIOD": (
+                    float(row["margin_pct_in_period"]) if row["margin_pct_in_period"] is not None else None
+                ),
             }
         )
     return pd.DataFrame(out)
@@ -1085,11 +1273,16 @@ WHEN NOT MATCHED THEN
 def _render_margin_dashboard() -> bool:
     mode = _get_qparam("mode")
     page = _get_qparam("page")
-    if mode != "margin_dashboard" and page != "margin_dashboard":
+    if mode != "margin_dashboard" and page not in {"margin_dashboard", "live_margin_dashboard", "margin_analysis_dashboard"}:
         return False
 
-    st.title("Live Margin Dashboard")
-    st.caption("Margin at `OUR REF` level using budget from `ACTUALPRICE` and actual nett spend from delivery `COST`.")
+    is_period_mode = page == "margin_analysis_dashboard"
+    if is_period_mode:
+        st.title("Margin Analysis Dashboard")
+        st.caption("Selected-period margin analysis at `OUR REF` level using full budget, prorated revenue, and period-only spend.")
+    else:
+        st.title("Live Margin Dashboard")
+        st.caption("Margin at `OUR REF` level using budget from `ACTUALPRICE` and actual nett spend from delivery `COST`.")
 
     try:
         bq_client, project_id, dataset = _build_bq_client_from_secrets()
@@ -1107,10 +1300,33 @@ def _render_margin_dashboard() -> bool:
 
     st.caption(f"View: `{project_id}.{dataset}.{MARGIN_VIEW_NAME}`")
     margin_user = _get_actor_name()
+    today = _today_nz()
+    default_period_start = _month_start_nz()
+    default_period_end = today
+    period_start = default_period_start
+    period_end = default_period_end
+    if is_period_mode:
+        period_col1, period_col2 = st.columns(2)
+        with period_col1:
+            period_start = st.date_input(
+                "Period Start",
+                value=default_period_start,
+                key="margin_period_start",
+            )
+        with period_col2:
+            period_end = st.date_input(
+                "Period End",
+                value=default_period_end,
+                key="margin_period_end",
+            )
+        if period_start > period_end:
+            st.error("Period start must be on or before period end.")
+            return True
 
     with st.expander("Formula"):
-        st.markdown(
-            """
+        if not is_period_mode:
+            st.markdown(
+                """
 - `budget = ACTUALPRICE`
 - `actual_nett_spend = SUM(COST)`
 - `expected_gross_spend_to_date = budget * elapsed_days / total_days`
@@ -1118,19 +1334,45 @@ def _render_margin_dashboard() -> bool:
 - `margin_pct = 1 - actual_nett_spend / expected_gross_spend_to_date`
 - `as_of_date = LEAST(latest_delivery_date, end_date)`
 """
-        )
+            )
+        else:
+            st.markdown(
+                """
+- `campaign is included if start_date <= period_end AND end_date >= period_start`
+- `full campaign budget = ACTUALPRICE`
+- `effective_start = GREATEST(start_date, period_start)`
+- `effective_end = LEAST(end_date, period_end)`
+- `days_in_period = effective_end - effective_start + 1`
+- `prorated_revenue_in_period = budget * days_in_period / total_days`
+- `actual_spend_in_period = SUM(COST where DATE between period_start and period_end)`
+- `margin_in_period = prorated_revenue_in_period - actual_spend_in_period`
+- `margin_pct_in_period = 1 - actual_spend_in_period / prorated_revenue_in_period`
+"""
+            )
 
-    with st.expander("View SQL"):
-        st.code(view_sql, language="sql")
+    with st.expander("Query Source"):
+        if not is_period_mode:
+            st.code(view_sql, language="sql")
+        else:
+            st.caption("Selected Period uses a parameterized BigQuery query, not the saved live margin view.")
 
     try:
-        margin_df = _fetch_margin_dashboard_df(bq_client, project_id, dataset)
+        if not is_period_mode:
+            margin_df = _fetch_margin_dashboard_df(bq_client, project_id, dataset)
+        else:
+            margin_df = _fetch_period_margin_dashboard_df(
+                bq_client,
+                project_id,
+                dataset,
+                period_start=period_start,
+                period_end=period_end,
+            )
     except Exception as exc:
-        st.error(f"Could not query margin view: {exc}")
+        st.error(f"Could not query margin data: {exc}")
         return True
 
     if margin_df.empty:
-        st.warning("Margin view returned no rows.")
+        st.warning("Margin query returned no rows.")
         return True
 
     margin_refs = sorted(margin_df["OUR_REF"].dropna().astype(str).unique().tolist())
@@ -1167,7 +1409,6 @@ def _render_margin_dashboard() -> bool:
         margin_df["SNOOZED_BY"] = ""
         margin_df["UPDATED_AT"] = ""
 
-    today = _today_nz()
     margin_states = []
     for _, row in margin_df.iterrows():
         status = str(row.get("SNOOZE_STATUS", "") or "").upper()
@@ -1179,12 +1420,15 @@ def _render_margin_dashboard() -> bool:
             margin_states.append("OPEN")
     margin_df["MARGIN_SNOOZE_STATE"] = margin_states
 
-    latest_delivery_date = margin_df["LATEST_DELIVERY_DATE"].replace("", pd.NA).dropna()
-    as_of_dates = margin_df["AS_OF_DATE"].replace("", pd.NA).dropna()
-    st.caption(
-        f"Latest delivery date: {latest_delivery_date.max() if not latest_delivery_date.empty else 'N/A'} | "
-        f"As-of date max: {as_of_dates.max() if not as_of_dates.empty else 'N/A'}"
-    )
+    if not is_period_mode:
+        latest_delivery_date = margin_df["LATEST_DELIVERY_DATE"].replace("", pd.NA).dropna()
+        as_of_dates = margin_df["AS_OF_DATE"].replace("", pd.NA).dropna()
+        st.caption(
+            f"Latest delivery date: {latest_delivery_date.max() if not latest_delivery_date.empty else 'N/A'} | "
+            f"As-of date max: {as_of_dates.max() if not as_of_dates.empty else 'N/A'}"
+        )
+    else:
+        st.caption(f"Selected period: {period_start.isoformat()} to {period_end.isoformat()} (inclusive)")
 
     filter_col1, filter_col2, filter_col3 = st.columns(3)
     with filter_col1:
@@ -1273,18 +1517,33 @@ def _render_margin_dashboard() -> bool:
     metric1.metric("Active Rows", f"{len(active_df):,}")
     metric2.metric("Snoozed Rows", f"{len(snoozed_df):,}")
     metric3.metric("Active Budget", f"${active_df['BUDGET'].sum():,.0f}")
-    metric4.metric("Active Actual Nett Spend", f"${active_df['ACTUAL_NETT_SPEND'].sum():,.0f}")
-
-    metric5, metric6, metric7 = st.columns(3)
-    metric5.metric("Active Margin Amount", f"${active_df['MARGIN_AMOUNT'].sum():,.0f}")
-    margin_pct_series = active_df["MARGIN_PCT"].dropna()
-    metric6.metric("Active Average Margin %", f"{(margin_pct_series.mean() * 100):.1f}%" if not margin_pct_series.empty else "N/A")
-    pacing_series = active_df["PACING_RATIO"].dropna()
-    metric7.metric("Active Average Pace %", f"{(pacing_series.mean() * 100):.1f}%" if not pacing_series.empty else "N/A")
+    if not is_period_mode:
+        metric4.metric("Active Actual Nett Spend", f"${active_df['ACTUAL_NETT_SPEND'].sum():,.0f}")
+        metric5, metric6, metric7 = st.columns(3)
+        metric5.metric("Active Margin Amount", f"${active_df['MARGIN_AMOUNT'].sum():,.0f}")
+        margin_pct_series = active_df["MARGIN_PCT"].dropna()
+        metric6.metric("Active Average Margin %", f"{(margin_pct_series.mean() * 100):.1f}%" if not margin_pct_series.empty else "N/A")
+        pacing_series = active_df["PACING_RATIO"].dropna()
+        metric7.metric("Active Average Pace %", f"{(pacing_series.mean() * 100):.1f}%" if not pacing_series.empty else "N/A")
+    else:
+        metric4.metric("Active Spend In Period", f"${active_df['ACTUAL_SPEND_IN_PERIOD'].sum():,.0f}")
+        metric5, metric6, metric7 = st.columns(3)
+        metric5.metric("Active Prorated Revenue In Period", f"${active_df['PRORATED_REVENUE_IN_PERIOD'].sum():,.0f}")
+        metric6.metric("Active Margin In Period", f"${active_df['MARGIN_IN_PERIOD'].sum():,.0f}")
+        margin_pct_series = active_df["MARGIN_PCT_IN_PERIOD"].dropna()
+        metric7.metric(
+            "Active Average Margin % In Period",
+            f"{(margin_pct_series.mean() * 100):.1f}%" if not margin_pct_series.empty else "N/A",
+        )
 
     def _prepare_margin_display(df: pd.DataFrame) -> pd.DataFrame:
         display_df = df.copy()
-        for col in ["PACING_RATIO", "MARGIN_PCT", "SPEND_VS_BUDGET_RATIO"]:
+        for col in [
+            "PACING_RATIO",
+            "MARGIN_PCT",
+            "SPEND_VS_BUDGET_RATIO",
+            "MARGIN_PCT_IN_PERIOD",
+        ]:
             if col in display_df.columns:
                 display_df[col] = display_df[col].apply(lambda v: None if pd.isna(v) else round(float(v) * 100, 2))
         if "SNOOZE_STATUS" in display_df.columns and "SNOOZE_END_DATE" in display_df.columns:
@@ -1299,11 +1558,15 @@ def _render_margin_dashboard() -> bool:
         "PACING_RATIO": st.column_config.NumberColumn("PACING_RATIO (%)", format="%.2f"),
         "MARGIN_PCT": st.column_config.NumberColumn("MARGIN_PCT (%)", format="%.2f"),
         "SPEND_VS_BUDGET_RATIO": st.column_config.NumberColumn("SPEND_VS_BUDGET_RATIO (%)", format="%.2f"),
+        "MARGIN_PCT_IN_PERIOD": st.column_config.NumberColumn("MARGIN_PCT_IN_PERIOD (%)", format="%.2f"),
         "BUDGET": st.column_config.NumberColumn("BUDGET", format="$%.2f"),
         "BOOKED_NETT_COST": st.column_config.NumberColumn("BOOKED_NETT_COST", format="$%.2f"),
         "ACTUAL_NETT_SPEND": st.column_config.NumberColumn("ACTUAL_NETT_SPEND", format="$%.2f"),
         "EXPECTED_GROSS_SPEND_TO_DATE": st.column_config.NumberColumn("EXPECTED_GROSS_SPEND_TO_DATE", format="$%.2f"),
         "MARGIN_AMOUNT": st.column_config.NumberColumn("MARGIN_AMOUNT", format="$%.2f"),
+        "ACTUAL_SPEND_IN_PERIOD": st.column_config.NumberColumn("ACTUAL_SPEND_IN_PERIOD", format="$%.2f"),
+        "PRORATED_REVENUE_IN_PERIOD": st.column_config.NumberColumn("PRORATED_REVENUE_IN_PERIOD", format="$%.2f"),
+        "MARGIN_IN_PERIOD": st.column_config.NumberColumn("MARGIN_IN_PERIOD", format="$%.2f"),
     }
 
     tab_active, tab_snoozed = st.tabs(["Active Rows", "Snoozed"])
