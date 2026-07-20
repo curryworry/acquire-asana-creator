@@ -129,6 +129,10 @@ Rules (updated 2026-06-12):
 - Stopped condition:
   - `0 impressions` on the latest delivery date
   - `0 impressions` on the previous delivery date
+- Output fields for stopped-impressions alerts:
+  - `LATEST_DELIVERY_DATE`: global freshest `DATE` present in `BLEND_BLEND_5_1_2`
+  - `LAST_SEEN_DELIVERY_DATE`: last delivery `DATE` seen for that specific campaign
+  - `LAST_NONZERO_IMPRESSIONS_DATE`: last `DATE` where that campaign had impressions greater than zero
 
 Data recency check on 2026-06-02:
 - `BLEND_BLEND_5_1_2` latest `DATE` = `2026-06-01`

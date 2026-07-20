@@ -169,6 +169,7 @@ CREATE TABLE IF NOT EXISTS {snapshots_table_fqn()} (
   account STRING,
   first_missing_date DATE,
   last_missing_date DATE,
+  last_nonzero_impressions_date DATE,
   total_impressions FLOAT64,
   total_clicks FLOAT64,
   total_cost FLOAT64,
@@ -183,6 +184,7 @@ CREATE TABLE IF NOT EXISTS {snapshots_table_fqn()} (
     client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS account STRING").result()
     client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS first_missing_date DATE").result()
     client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS last_missing_date DATE").result()
+    client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS last_nonzero_impressions_date DATE").result()
     client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS total_impressions FLOAT64").result()
     client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS total_clicks FLOAT64").result()
     client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS total_cost FLOAT64").result()
@@ -206,6 +208,7 @@ class AlertRow:
     account: str = ""
     first_missing_date: str = ""
     last_missing_date: str = ""
+    last_nonzero_impressions_date: str = ""
     total_impressions: float = 0.0
     total_clicks: float = 0.0
     total_cost: float = 0.0
@@ -497,6 +500,8 @@ SELECT
   m.PROPERTY_NAME,
   m.BOOKING_STATUS,
   l.LATEST_DELIVERY_DATE,
+  MAX(d.DATE) AS LAST_SEEN_DELIVERY_DATE,
+  MAX(CASE WHEN d.IMPRESSIONS > 0 THEN d.DATE ELSE NULL END) AS LAST_NONZERO_IMPRESSIONS_DATE,
   SUM(
     CASE
       WHEN d.DATE BETWEEN DATE_SUB(l.LATEST_DELIVERY_DATE, INTERVAL 7 DAY)
@@ -584,7 +589,8 @@ ORDER BY PRIOR_7D_IMPRESSIONS DESC, m.OUR_REF
                 property_name=str(row["PROPERTY_NAME"] or "").strip(),
                 booking_status=str(row["BOOKING_STATUS"] or "").strip(),
                 first_missing_date=str(row["LATEST_DELIVERY_DATE"] or "").strip(),
-                last_missing_date=str(row["LATEST_DELIVERY_DATE"] or "").strip(),
+                last_missing_date=str(row["LAST_SEEN_DELIVERY_DATE"] or "").strip(),
+                last_nonzero_impressions_date=str(row["LAST_NONZERO_IMPRESSIONS_DATE"] or "").strip(),
                 total_impressions=float(row["PRIOR_7D_IMPRESSIONS"] or 0),
                 total_clicks=float(row["PRIOR_7D_CLICKS"] or 0),
                 total_cost=float(row["PRIOR_7D_COST"] or 0),
@@ -701,6 +707,7 @@ def store_snapshot_rows(client: bigquery.Client, rows: List[AlertRow], run_id: s
                 "account": row.account,
                 "first_missing_date": _nullable_date(row.first_missing_date),
                 "last_missing_date": _nullable_date(row.last_missing_date),
+                "last_nonzero_impressions_date": _nullable_date(row.last_nonzero_impressions_date),
                 "total_impressions": row.total_impressions,
                 "total_clicks": row.total_clicks,
                 "total_cost": row.total_cost,
@@ -733,6 +740,7 @@ def build_csv_all(rows: List[AlertRow]) -> bytes:
             "ACCOUNT",
             "FIRST_MISSING_DATE",
             "LAST_MISSING_DATE",
+            "LAST_NONZERO_IMPRESSIONS_DATE",
             "TOTAL_IMPRESSIONS",
             "TOTAL_CLICKS",
             "TOTAL_COST",
@@ -757,6 +765,7 @@ def build_csv_all(rows: List[AlertRow]) -> bytes:
                 row.account,
                 row.first_missing_date,
                 row.last_missing_date,
+                row.last_nonzero_impressions_date,
                 row.total_impressions,
                 row.total_clicks,
                 row.total_cost,
@@ -894,6 +903,8 @@ def build_csv_stopped_impressions(rows: List[AlertRow]) -> bytes:
             "PROPERTYNAME",
             "BOOKINGSTATUS",
             "LATEST_DELIVERY_DATE",
+            "LAST_SEEN_DELIVERY_DATE",
+            "LAST_NONZERO_IMPRESSIONS_DATE",
             "PRIOR_7D_IMPRESSIONS",
             "PRIOR_7D_CLICKS",
             "PRIOR_7D_COST",
@@ -913,6 +924,8 @@ def build_csv_stopped_impressions(rows: List[AlertRow]) -> bytes:
                 row.property_name,
                 row.booking_status,
                 row.first_missing_date,
+                row.last_missing_date,
+                row.last_nonzero_impressions_date,
                 row.total_impressions,
                 row.total_clicks,
                 row.total_cost,
