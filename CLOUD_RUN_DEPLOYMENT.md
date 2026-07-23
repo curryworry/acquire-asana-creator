@@ -162,6 +162,8 @@ Deploys are automatic on pushes to `main` via:
 
 The workflow uses GitHub OIDC / Google Workload Identity Federation, not a long-lived service account key.
 
+The workflow does not pass `--allow-unauthenticated`. Public access is a service-level IAM setting that was applied during the first manual deploy. Future automated deploys only create new revisions and route traffic.
+
 Google identity used by GitHub Actions:
 
 ```text
