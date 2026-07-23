@@ -13,6 +13,10 @@ from api.config import get_auth_users, get_secret
 TOKEN_TTL_SECONDS = 60 * 60 * 12
 
 
+def auth_required() -> bool:
+    return get_secret("REQUIRE_AUTH", "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def auth_enabled() -> bool:
     return bool(get_auth_users())
 
@@ -79,10 +83,11 @@ def decode_token(token: str) -> dict[str, str]:
 
 def current_user(authorization: Annotated[str | None, Header()] = None) -> dict[str, str]:
     if not auth_enabled():
+        if auth_required():
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Auth is required but no users are configured.")
         return {"username": "local", "display_name": "Local User"}
 
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token.")
 
     return decode_token(authorization.removeprefix("Bearer ").strip())
-

@@ -10,6 +10,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 @lru_cache(maxsize=1)
 def _streamlit_secrets() -> dict[str, Any]:
+    env_toml = os.environ.get("STREAMLIT_SECRETS_TOML", "").strip()
+    if env_toml:
+        try:
+            return tomllib.loads(env_toml)
+        except Exception:
+            return {}
+
     secrets_path = REPO_ROOT / ".streamlit" / "secrets.toml"
     if not secrets_path.exists():
         return {}
@@ -50,4 +57,3 @@ def get_auth_users() -> dict[str, dict[str, str]]:
             "password": password,
         }
     return out
-

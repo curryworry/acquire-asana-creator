@@ -1,0 +1,10 @@
+.git
+.venv
+__pycache__
+*.pyc
+.streamlit/secrets.toml
+frontend/node_modules
+frontend/dist
+frontend/.vite
+.playwright-cli
+output

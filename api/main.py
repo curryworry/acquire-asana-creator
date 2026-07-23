@@ -4,7 +4,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.auth import auth_enabled, create_token, current_user, verify_password
+from api.auth import auth_enabled, auth_required, create_token, current_user, verify_password
 from api.config import REPO_ROOT, get_auth_users, get_secret
 from api.dashboard_service import alerts_dashboard, margin_dashboard, write_snooze_action
 from api.schemas import DismissActionRequest, LoginRequest, LoginResponse, SnoozeActionRequest, UserResponse
@@ -44,6 +44,8 @@ def me(user: dict[str, str] = Depends(current_user)) -> UserResponse:
 def login(payload: LoginRequest) -> LoginResponse:
     users = get_auth_users()
     if not users:
+        if auth_required():
+            raise HTTPException(status_code=500, detail="Auth is required but no users are configured.")
         token = create_token("local", "Local User")
         return LoginResponse(token=token, username="local", display_name="Local User")
 
