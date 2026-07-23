@@ -1,0 +1,44 @@
+name: Deploy Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cloud-run-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/679417827301/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: github-actions-deployer@ops-control-center-503319.iam.gserviceaccount.com
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy acquire-ops \
+            --project ops-control-center-503319 \
+            --region australia-southeast1 \
+            --source . \
+            --service-account acquire-ops-runner@ops-control-center-503319.iam.gserviceaccount.com \
+            --allow-unauthenticated \
+            --set-env-vars REQUIRE_AUTH=true,BQ_PROJECT_ID=sm-test-391201,BQ_DATASET=supermetrics_data \
+            --set-secrets STREAMLIT_SECRETS_TOML=streamlit-secrets-toml:latest \
+            --quiet

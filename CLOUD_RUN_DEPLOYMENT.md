@@ -154,7 +154,27 @@ printf 'PASTE_ADMIN_PASSWORD_HERE' | gcloud secrets create admin-pass \
 
 ## Deploy
 
-Deploy from the repo root:
+Deploys are automatic on pushes to `main` via:
+
+```text
+.github/workflows/deploy_cloud_run.yml
+```
+
+The workflow uses GitHub OIDC / Google Workload Identity Federation, not a long-lived service account key.
+
+Google identity used by GitHub Actions:
+
+```text
+github-actions-deployer@ops-control-center-503319.iam.gserviceaccount.com
+```
+
+Workload identity provider:
+
+```text
+projects/679417827301/locations/global/workloadIdentityPools/github-actions/providers/github
+```
+
+Manual fallback deploy from the repo root:
 
 ```bash
 gcloud run deploy acquire-ops \
