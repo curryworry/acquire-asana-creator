@@ -518,6 +518,13 @@ tr.selected td {
   white-space: nowrap;
 }
 
+.dock-error {
+  color: #ffd9d3;
+  font-size: 0.82rem;
+  font-weight: 700;
+  max-width: 420px;
+}
+
 .login-screen {
   min-height: 100vh;
   display: grid;

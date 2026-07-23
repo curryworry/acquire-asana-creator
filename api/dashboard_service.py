@@ -6,6 +6,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+from google.api_core.exceptions import BadRequest
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
@@ -20,6 +21,10 @@ ALERT_TYPE_STOPPED_IMPRESSIONS = "STOPPED_IMPRESSIONS"
 ALERT_TYPE_MISSING_OUR_REF = "MISSING_OUR_REF"
 ALERT_TYPE_ENDED_BUT_IMPRESSIONS = "ENDED_BUT_IMPRESSIONS"
 MARGIN_SNOOZE_TYPE = "MARGIN_DASHBOARD"
+
+
+class AlertConflictError(Exception):
+    pass
 
 
 def sanitize_id(value: str, field_name: str) -> str:
@@ -144,6 +149,16 @@ def alert_counts(df: pd.DataFrame) -> dict[str, int]:
     return counts
 
 
+def alert_state_counts(df: pd.DataFrame) -> tuple[int, int, int]:
+    if df.empty:
+        return 0, 0, 0
+    return (
+        int((df["LIVE_ALERT_STATE"] == "OPEN").sum()),
+        int((df["LIVE_ALERT_STATE"] == "ACTIVE").sum()),
+        int((df["LIVE_ALERT_STATE"] == "DISMISSED").sum()),
+    )
+
+
 def alert_meta(
     project_id: str,
     dataset: str,
@@ -158,7 +173,7 @@ def alert_meta(
     latest_run: str = "",
 ) -> dict[str, str]:
     return {
-        "alert_api_version": "2",
+        "alert_api_version": "3",
         "project_id": project_id,
         "dataset": dataset,
         "latest_run": latest_run,
@@ -425,19 +440,14 @@ ORDER BY margin_amount ASC, our_ref
         end_date = pd.to_datetime(end_date_raw, errors="coerce")
         states.append("ACTIVE" if status == "ACTIVE" and (not end_date_raw or (not pd.isna(end_date) and end_date.date() >= today)) else "OPEN")
     df["MARGIN_SNOOZE_STATE"] = states
+    df["STATE_VERSION"] = df["UPDATED_AT"].fillna("").astype(str)
     return {
         "rows": records_from_rows(df.fillna("").to_dict(orient="records")),
         "meta": {"project_id": project_id, "dataset": dataset, "view": MARGIN_VIEW_NAME},
     }
 
 
-def alerts_dashboard(
-    alert_type: str | None = None,
-    state: str = "OPEN",
-    query_text: str = "",
-    page: int = 1,
-    page_size: int = 100,
-) -> dict[str, Any]:
+def alerts_dataset() -> tuple[pd.DataFrame, dict[str, str]]:
     client, project_id, dataset = bq_context()
     ensure_control_tables(client, project_id, dataset)
     global_snooze_df = global_latest_snoozes(client, project_id, dataset)
@@ -491,13 +501,20 @@ ORDER BY s.run_timestamp_utc DESC, s.alert_type, s.our_ref
     ]
     df = pd.DataFrame(data)
     if df.empty:
-        counts = alert_counts(global_snooze_df) if not global_snooze_df.empty else alert_counts(pd.DataFrame())
-        return {
-            "rows": records_from_rows(global_snooze_df.fillna("").to_dict(orient="records"))
-            if not global_snooze_df.empty
-            else [],
-            "meta": alert_meta(project_id, dataset, counts),
-        }
+        visible_df = global_snooze_df.copy()
+        counts = alert_counts(visible_df) if not visible_df.empty else alert_counts(pd.DataFrame())
+        open_count, snoozed_count, dismissed_count = alert_state_counts(visible_df)
+        if not visible_df.empty:
+            visible_df["STATE_VERSION"] = visible_df["UPDATED_AT"].fillna("").astype(str)
+        return visible_df, alert_meta(
+            project_id=project_id,
+            dataset=dataset,
+            counts=counts,
+            total_rows=len(visible_df.index),
+            open_count=open_count,
+            snoozed_count=snoozed_count,
+            dismissed_count=dismissed_count,
+        )
 
     snooze_df = latest_snoozes(
         client,
@@ -528,14 +545,55 @@ ORDER BY s.run_timestamp_utc DESC, s.alert_type, s.our_ref
     df["LIVE_ALERT_STATE"] = states
     df["SOURCE_VIEW"] = "LATEST_RUN"
 
-    # Match the Streamlit behavior: active table is latest-run open alerts, while
-    # snoozed/dismissed data comes from the global latest snooze table.
     visible_df = df[df["LIVE_ALERT_STATE"] == "OPEN"].copy()
     if not global_snooze_df.empty:
         visible_df = pd.concat([visible_df, global_snooze_df], ignore_index=True, sort=False)
+    visible_df["STATE_VERSION"] = visible_df["UPDATED_AT"].fillna("").astype(str)
     counts = alert_counts(visible_df)
+    open_count, snoozed_count, dismissed_count = alert_state_counts(visible_df)
+    return visible_df, alert_meta(
+        project_id=project_id,
+        dataset=dataset,
+        counts=counts,
+        total_rows=len(visible_df.index),
+        open_count=open_count,
+        snoozed_count=snoozed_count,
+        dismissed_count=dismissed_count,
+        latest_run=str(visible_df.iloc[0]["RUN_TS_UTC"]) if not visible_df.empty else "",
+    )
 
+
+def alerts_bootstrap() -> dict[str, Any]:
+    visible_df, meta = alerts_dataset()
+    return {"rows": records_from_rows(visible_df.fillna("").to_dict(orient="records")), "meta": meta}
+
+
+def alerts_dashboard(
+    alert_type: str | None = None,
+    state: str = "OPEN",
+    query_text: str = "",
+    page: int = 1,
+    page_size: int = 100,
+) -> dict[str, Any]:
+    visible_df, meta = alerts_dataset()
     scoped_df = visible_df.copy()
+    if scoped_df.empty:
+        return {
+            "rows": [],
+            "meta": alert_meta(
+                project_id=meta["project_id"],
+                dataset=meta["dataset"],
+                counts={
+                    ALERT_TYPE_NOT_LIVE: int(meta["count_not_live"]),
+                    ALERT_TYPE_STOPPED_IMPRESSIONS: int(meta["count_stopped_impressions"]),
+                    ALERT_TYPE_MISSING_OUR_REF: int(meta["count_missing_our_ref"]),
+                    ALERT_TYPE_ENDED_BUT_IMPRESSIONS: int(meta["count_ended_but_impressions"]),
+                },
+                page=1,
+                page_size=page_size,
+                latest_run=meta["latest_run"],
+            ),
+        }
     if alert_type:
         scoped_df = scoped_df[scoped_df["ALERT_TYPE"] == alert_type].copy()
 
@@ -575,9 +633,14 @@ ORDER BY s.run_timestamp_utc DESC, s.alert_type, s.our_ref
     return {
         "rows": records_from_rows(scoped_df.fillna("").to_dict(orient="records")),
         "meta": alert_meta(
-            project_id=project_id,
-            dataset=dataset,
-            counts=counts,
+            project_id=meta["project_id"],
+            dataset=meta["dataset"],
+            counts={
+                ALERT_TYPE_NOT_LIVE: int(meta["count_not_live"]),
+                ALERT_TYPE_STOPPED_IMPRESSIONS: int(meta["count_stopped_impressions"]),
+                ALERT_TYPE_MISSING_OUR_REF: int(meta["count_missing_our_ref"]),
+                ALERT_TYPE_ENDED_BUT_IMPRESSIONS: int(meta["count_ended_but_impressions"]),
+            },
             page=page,
             page_size=page_size,
             total_rows=total_rows,
@@ -585,7 +648,7 @@ ORDER BY s.run_timestamp_utc DESC, s.alert_type, s.our_ref
             open_count=scoped_open,
             snoozed_count=scoped_snoozed,
             dismissed_count=scoped_dismissed,
-            latest_run=str(visible_df.iloc[0]["RUN_TS_UTC"]) if not visible_df.empty else "",
+            latest_run=meta["latest_run"],
         ),
     }
 
@@ -599,6 +662,7 @@ def write_snooze_action(action: str, alerts: list[dict[str, str]], user: str, re
     our_refs = [str(a.get("our_ref", "") or "") for a in alerts]
     alert_keys = [str(a.get("alert_key", "") or "") for a in alerts]
     alert_types = [str(a.get("alert_type", "") or "") for a in alerts]
+    expected_versions = [str(a.get("state_version", a.get("expected_updated_at", "")) or "") for a in alerts]
 
     if action == "snooze":
         set_clause = """
@@ -651,6 +715,37 @@ def write_snooze_action(action: str, alerts: list[dict[str, str]], user: str, re
         raise ValueError(f"Unknown action: {action}")
 
     query = f"""
+BEGIN TRANSACTION;
+
+ASSERT (
+  WITH source AS (
+    SELECT
+      refs[OFFSET(i)] AS our_ref,
+      keys[OFFSET(i)] AS alert_key,
+      types[OFFSET(i)] AS alert_type,
+      expected_versions[OFFSET(i)] AS expected_version
+    FROM (SELECT @our_refs AS refs, @alert_keys AS keys, @alert_types AS types, @expected_versions AS expected_versions),
+    UNNEST(GENERATE_ARRAY(0, ARRAY_LENGTH(refs) - 1)) AS i
+  ),
+  latest AS (
+    SELECT
+      COALESCE(alert_key, our_ref) AS alert_key,
+      snooze_type,
+      updated_at,
+      ROW_NUMBER() OVER (PARTITION BY COALESCE(alert_key, our_ref), snooze_type ORDER BY updated_at DESC) AS rn
+    FROM {table_fqn(project_id, dataset, "snoozes")}
+    WHERE COALESCE(alert_key, our_ref) IN UNNEST(@alert_keys)
+      AND snooze_type IN UNNEST(@alert_types)
+  )
+  SELECT COUNT(*) = 0
+  FROM source S
+  LEFT JOIN latest L
+    ON L.alert_key = S.alert_key
+   AND L.snooze_type = S.alert_type
+   AND L.rn = 1
+  WHERE COALESCE(FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%E6S%Ez', L.updated_at), '') != S.expected_version
+) AS 'Alert state changed before your action was saved. Refresh and try again.';
+
 MERGE {table_fqn(project_id, dataset, "snoozes")} T
 USING (
   SELECT
@@ -670,7 +765,9 @@ WHEN NOT MATCHED THEN
   )
   VALUES (
 {values_clause}
-  )
+  );
+
+COMMIT TRANSACTION;
 """
     parsed_end_date = end_date or None
     job_config = bigquery.QueryJobConfig(
@@ -678,6 +775,7 @@ WHEN NOT MATCHED THEN
             bigquery.ArrayQueryParameter("our_refs", "STRING", our_refs),
             bigquery.ArrayQueryParameter("alert_keys", "STRING", alert_keys),
             bigquery.ArrayQueryParameter("alert_types", "STRING", alert_types),
+            bigquery.ArrayQueryParameter("expected_versions", "STRING", expected_versions),
             bigquery.ScalarQueryParameter("reason", "STRING", reason),
             bigquery.ScalarQueryParameter("start_date", "DATE", today_nz().isoformat()),
             bigquery.ScalarQueryParameter("end_date", "DATE", parsed_end_date),
@@ -685,4 +783,9 @@ WHEN NOT MATCHED THEN
             bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
         ]
     )
-    client.query(query, job_config=job_config).result()
+    try:
+        client.query(query, job_config=job_config).result()
+    except BadRequest as exc:
+        if "Alert state changed" in str(exc):
+            raise AlertConflictError("Alert state changed before your action was saved. Refresh and try again.") from exc
+        raise

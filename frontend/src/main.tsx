@@ -28,6 +28,7 @@ type AlertSection = "NOT_LIVE" | "STOPPED_IMPRESSIONS" | "MISSING_OUR_REF" | "EN
 type Page = "margin" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "trafficking" | "automation";
 type ApiEnvelope<T> = { rows: T[]; meta: Record<string, string> };
 type AnyRow = Record<string, string | number | null>;
+type ApiRefreshOptions = { silent?: boolean };
 
 const TOKEN_KEY = "acquire_ops_token";
 const ALERT_SECTIONS: Array<{ key: AlertSection; page: Page; label: string }> = [
@@ -44,6 +45,15 @@ const EMPTY_ALERT_COUNTS: Record<AlertSection, number> = {
   ENDED_BUT_IMPRESSIONS: 0
 };
 const API_CACHE = new Map<string, ApiEnvelope<AnyRow>>();
+
+class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
 
 function currency(value: unknown) {
   const number = Number(value || 0);
@@ -95,7 +105,7 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
   const response = await fetch(path, { ...options, headers });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(body.detail || `Request failed: ${response.status}`);
+    throw new ApiError(body.detail || `Request failed: ${response.status}`, response.status);
   }
   return response.json() as Promise<T>;
 }
@@ -174,6 +184,72 @@ function useApiRows<T extends AnyRow>(path: string, enabled = true) {
   return { rows, meta, loading, error, refresh };
 }
 
+function useAlertsBootstrap(enabled: boolean) {
+  const [rows, setRows] = React.useState<AnyRow[]>([]);
+  const [meta, setMeta] = React.useState<Record<string, string>>({});
+  const [loading, setLoading] = React.useState(enabled);
+  const [error, setError] = React.useState("");
+  const [lastLoadedAt, setLastLoadedAt] = React.useState("");
+
+  const refresh = React.useCallback(async (options: ApiRefreshOptions = {}) => {
+    if (!enabled) {
+      setRows([]);
+      setMeta({});
+      setLoading(false);
+      setError("");
+      setLastLoadedAt("");
+      return;
+    }
+    if (!options.silent) setLoading(true);
+    setError("");
+    try {
+      const data = await apiFetch<ApiEnvelope<AnyRow>>("/api/alerts/bootstrap");
+      setRows(data.rows);
+      setMeta(data.meta || {});
+      setLastLoadedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      if (!options.silent) setLoading(false);
+    }
+  }, [enabled]);
+
+  React.useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  React.useEffect(() => {
+    if (!enabled) return undefined;
+    const interval = window.setInterval(() => {
+      void refresh({ silent: true });
+    }, 120_000);
+    return () => window.clearInterval(interval);
+  }, [enabled, refresh]);
+
+  return { rows, meta, loading, error, refresh, lastLoadedAt };
+}
+
+function normalizeAlertStatus(status: string) {
+  return status === "SNOOZED" ? "ACTIVE" : status;
+}
+
+function openAlertCounts(rows: AnyRow[]) {
+  const counts: Record<AlertSection, number> = { ...EMPTY_ALERT_COUNTS };
+  for (const row of rows) {
+    const type = String(row.ALERT_TYPE || "") as AlertSection;
+    if (type in counts && row.LIVE_ALERT_STATE === "OPEN") counts[type] += 1;
+  }
+  return counts;
+}
+
+function alertStateCounts(rows: AnyRow[]) {
+  return {
+    open: rows.filter((row) => row.LIVE_ALERT_STATE === "OPEN").length,
+    snoozed: rows.filter((row) => row.LIVE_ALERT_STATE === "ACTIVE").length,
+    dismissed: rows.filter((row) => row.LIVE_ALERT_STATE === "DISMISSED").length
+  };
+}
+
 function App() {
   const [page, setPage] = React.useState<Page>("alerts:not_live");
   const [token, setToken] = React.useState(localStorage.getItem(TOKEN_KEY) || "");
@@ -185,9 +261,8 @@ function App() {
   const [alertStatus, setAlertStatus] = React.useState("OPEN");
   const [alertPage, setAlertPage] = React.useState(1);
   const deferredAlertQuery = React.useDeferredValue(alertQuery);
-  const alertsPath = activeAlertType ? buildAlertsPath(activeAlertType, alertStatus, deferredAlertQuery, alertPage) : "";
-  const alertsData = useApiRows<AnyRow>(alertsPath, Boolean(token && activeAlertType));
-  const [alertCounts, setAlertCounts] = React.useState<Record<AlertSection, number>>(EMPTY_ALERT_COUNTS);
+  const alertsData = useAlertsBootstrap(Boolean(token && alertsActive));
+  const alertCounts = React.useMemo(() => openAlertCounts(alertsData.rows), [alertsData.rows]);
 
   React.useEffect(() => {
     if (!token) return;
@@ -202,16 +277,6 @@ function App() {
   React.useEffect(() => {
     setAlertPage(1);
   }, [activeAlertType, alertStatus, deferredAlertQuery]);
-
-  React.useEffect(() => {
-    if (!("count_not_live" in alertsData.meta)) return;
-    setAlertCounts({
-      NOT_LIVE: Number(alertsData.meta.count_not_live || 0),
-      STOPPED_IMPRESSIONS: Number(alertsData.meta.count_stopped_impressions || 0),
-      MISSING_OUR_REF: Number(alertsData.meta.count_missing_our_ref || 0),
-      ENDED_BUT_IMPRESSIONS: Number(alertsData.meta.count_ended_but_impressions || 0)
-    });
-  }, [alertsData.meta]);
 
   if (!token) {
     return <Login onLogin={(nextToken, displayName) => {
@@ -390,7 +455,12 @@ function MarginPage() {
   const active = rows.filter((row) => row.MARGIN_SNOOZE_STATE === "OPEN");
   const selectedAlerts = rows
     .filter((row) => selected.has(String(row.OUR_REF)))
-    .map((row) => ({ alert_type: "MARGIN_DASHBOARD", alert_key: String(row.OUR_REF), our_ref: String(row.OUR_REF) }));
+    .map((row) => ({
+      alert_type: "MARGIN_DASHBOARD",
+      alert_key: String(row.OUR_REF),
+      our_ref: String(row.OUR_REF),
+      state_version: String(row.STATE_VERSION || "")
+    }));
 
   return (
     <>
@@ -447,7 +517,8 @@ function AlertsPage(props: {
   meta: Record<string, string>;
   loading: boolean;
   error: string;
-  refresh: () => Promise<void>;
+  refresh: (options?: ApiRefreshOptions) => Promise<void>;
+  lastLoadedAt: string;
   query: string;
   setQuery: (value: string) => void;
   status: string;
@@ -457,6 +528,7 @@ function AlertsPage(props: {
 }) {
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [adminPass, setAdminPass] = React.useState("");
+  const [actionError, setActionError] = React.useState("");
   const sectionMeta = ALERT_SECTIONS.find((section) => section.key === props.alertType)!;
   const snoozeDetailColumns: Array<[string, string]> = [
     ["ALERT_KEY", "ALERT_KEY"],
@@ -496,28 +568,76 @@ function AlertsPage(props: {
   ];
   const alertColumns = props.alertType === "NOT_LIVE" ? baseAlertColumns : [...baseAlertColumns, ...deliveryAlertColumns];
   const isSnoozeDetailView = props.status === "SNOOZED" || props.status === "DISMISSED";
-  const apiSupportsFilteredAlerts = props.meta.alert_api_version === "2";
+  const apiSupportsFilteredAlerts = Number(props.meta.alert_api_version || 0) >= 3;
 
   React.useEffect(() => {
     setSelected(new Set());
+    setActionError("");
   }, [props.status, props.alertType, props.page]);
 
-  const filtered = React.useMemo<AnyRow[]>(
-    () => props.rows.map((row, index) => ({ ...row, __row_id: `${row.ALERT_TYPE}:${row.ALERT_KEY}:${props.page}:${index}` })),
-    [props.page, props.rows]
+  const scopedRows = React.useMemo(
+    () => props.rows.filter((row) => row.ALERT_TYPE === props.alertType),
+    [props.alertType, props.rows]
   );
-  const totalRows = Number(props.meta.total_rows || 0);
-  const totalPages = Number(props.meta.total_pages || 1);
+  const scopedCounts = React.useMemo(() => alertStateCounts(scopedRows), [scopedRows]);
+  const filtered = React.useMemo<AnyRow[]>(() => {
+    const normalizedStatus = normalizeAlertStatus(props.status);
+    let nextRows = scopedRows;
+    if (normalizedStatus !== "ALL") {
+      nextRows = nextRows.filter((row) => row.LIVE_ALERT_STATE === normalizedStatus);
+    }
+    if (props.query.trim()) {
+      const q = props.query.trim().toLowerCase();
+      nextRows = nextRows.filter((row) => {
+        const haystack = [
+          row.ALERT_TYPE,
+          row.ALERT_KEY,
+          row.OUR_REF,
+          row.JOB_NUMBER,
+          row.ADVERTISER,
+          row.CAMPAIGN,
+          row.SNOOZE_REASON,
+          row.SNOOZED_BY,
+          row.DISMISSED_BY
+        ].join(" ").toLowerCase();
+        return haystack.includes(q);
+      });
+    }
+    return nextRows.map((row, index) => ({ ...row, __row_id: `${row.ALERT_TYPE}:${row.ALERT_KEY}:${row.SOURCE_VIEW || "ROW"}:${index}` }));
+  }, [props.query, props.status, scopedRows]);
+  const totalRows = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(totalRows / ALERT_PAGE_SIZE));
+  const safePage = Math.min(props.page, totalPages);
+  const pageRows = React.useMemo(() => {
+    const start = (safePage - 1) * ALERT_PAGE_SIZE;
+    return filtered.slice(start, start + ALERT_PAGE_SIZE);
+  }, [filtered, safePage]);
 
-  const selectedAlerts = filtered
+  React.useEffect(() => {
+    if (props.page !== safePage) props.setPage(safePage);
+  }, [props.page, props.setPage, safePage]);
+
+  const selectedAlerts = pageRows
     .filter((row) => selected.has(String(row.__row_id)))
-    .map((row) => ({ alert_type: String(row.ALERT_TYPE), alert_key: String(row.ALERT_KEY), our_ref: String(row.OUR_REF) }));
+    .map((row) => ({
+      alert_type: String(row.ALERT_TYPE),
+      alert_key: String(row.ALERT_KEY),
+      our_ref: String(row.OUR_REF),
+      state_version: String(row.STATE_VERSION || "")
+    }));
 
   async function postAction(path: string, body: Record<string, unknown>) {
-    await apiFetch(path, { method: "POST", body: JSON.stringify(body) });
-    invalidateApiCache("/api/alerts");
-    setSelected(new Set());
-    await props.refresh();
+    setActionError("");
+    try {
+      await apiFetch(path, { method: "POST", body: JSON.stringify(body) });
+      invalidateApiCache("/api/alerts");
+      setSelected(new Set());
+      await props.refresh();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Action failed";
+      setActionError(message);
+      if (err instanceof ApiError && err.status === 409) await props.refresh();
+    }
   }
 
   return (
@@ -534,16 +654,16 @@ function AlertsPage(props: {
         onDownload={() => downloadCsv(`${sectionMeta.label.toLowerCase().replaceAll(" ", "-")}-alerts.csv`, filtered)}
       />
       <MetricStrip metrics={[
-        { label: "Open", value: num(props.meta.open_count || 0) },
-        { label: "Snoozed", value: num(props.meta.snoozed_count || 0) },
-        { label: "Dismissed", value: num(props.meta.dismissed_count || 0) },
-        { label: "Latest run", value: String(props.meta.latest_run || "N/A") }
+        { label: "Open", value: num(scopedCounts.open) },
+        { label: "Snoozed", value: num(scopedCounts.snoozed) },
+        { label: "Dismissed", value: num(scopedCounts.dismissed) },
+        { label: "Latest run", value: props.lastLoadedAt ? `${props.meta.latest_run || "N/A"} · refreshed ${props.lastLoadedAt}` : String(props.meta.latest_run || "N/A") }
       ]} />
       <Toolbar query={props.query} setQuery={props.setQuery} status={props.status} setStatus={(value) => { props.setStatus(value); props.setPage(1); }} statuses={["OPEN", "SNOOZED", "DISMISSED", "ALL"]} selectedCount={selected.size} />
-      <DataState loading={props.loading} error={apiSupportsFilteredAlerts ? props.error : "The API server needs to be restarted to load filtered alert tables."} empty={!filtered.length}>
+      <DataState loading={props.loading} error={apiSupportsFilteredAlerts ? props.error : "The API server needs to be restarted to load filtered alert tables."} empty={!pageRows.length}>
         <>
           <DataTable
-            rows={filtered}
+            rows={pageRows}
             selected={selected}
             setSelected={setSelected}
             idKey="__row_id"
@@ -554,15 +674,28 @@ function AlertsPage(props: {
               return String(value ?? "");
             }}
           />
-          <TablePagination page={props.page} totalPages={totalPages} totalRows={totalRows} pageSize={Number(props.meta.page_size || ALERT_PAGE_SIZE)} onPageChange={props.setPage} />
+          <TablePagination page={safePage} totalPages={totalPages} totalRows={totalRows} pageSize={ALERT_PAGE_SIZE} onPageChange={props.setPage} />
         </>
       </DataState>
       <ActionDock selectedCount={selected.size} onClear={() => setSelected(new Set())}>
         {props.status === "OPEN" ? (
-          <SnoozeButton endpoint="/api/alerts/snooze" alerts={selectedAlerts} onDone={() => { setSelected(new Set()); invalidateApiCache("/api/alerts"); void props.refresh(); }} inline />
+          <SnoozeButton
+            endpoint="/api/alerts/snooze"
+            alerts={selectedAlerts}
+            onDone={() => { setSelected(new Set()); invalidateApiCache("/api/alerts"); void props.refresh(); }}
+            onError={(message) => setActionError(message)}
+            onConflict={() => void props.refresh()}
+            inline
+          />
         ) : (
           <>
-            <SnoozeButton endpoint="/api/alerts/snooze" alerts={selectedAlerts} onDone={() => { invalidateApiCache("/api/alerts"); void props.refresh(); }} />
+            <SnoozeButton
+              endpoint="/api/alerts/snooze"
+              alerts={selectedAlerts}
+              onDone={() => { invalidateApiCache("/api/alerts"); void props.refresh(); }}
+              onError={(message) => setActionError(message)}
+              onConflict={() => void props.refresh()}
+            />
             <button className="dock-button" disabled={!selected.size} onClick={() => void postAction("/api/alerts/unsnooze", { alerts: selectedAlerts })}>
               <Check size={15} /> Unsnooze
             </button>
@@ -572,6 +705,7 @@ function AlertsPage(props: {
             </button>
           </>
         )}
+        {actionError && <span className="dock-error">{actionError}</span>}
       </ActionDock>
     </>
   );
@@ -662,7 +796,14 @@ function DataState(props: { loading: boolean; error: string; empty: boolean; chi
   return <>{props.children}</>;
 }
 
-function SnoozeButton(props: { endpoint: string; alerts: Array<Record<string, string>>; onDone: () => void; inline?: boolean }) {
+function SnoozeButton(props: {
+  endpoint: string;
+  alerts: Array<Record<string, string>>;
+  onDone: () => void;
+  onError?: (message: string) => void;
+  onConflict?: () => void;
+  inline?: boolean;
+}) {
   const [open, setOpen] = React.useState(Boolean(props.inline));
   const [reason, setReason] = React.useState("");
   const [endDate, setEndDate] = React.useState(new Date().toISOString().slice(0, 10));
@@ -685,6 +826,10 @@ function SnoozeButton(props: { endpoint: string; alerts: Array<Record<string, st
       setEndDate(new Date().toISOString().slice(0, 10));
       setPermanent(false);
       props.onDone();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Snooze failed";
+      props.onError?.(message);
+      if (err instanceof ApiError && err.status === 409) props.onConflict?.();
     } finally {
       setLoading(false);
     }
