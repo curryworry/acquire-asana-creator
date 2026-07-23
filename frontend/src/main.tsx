@@ -472,7 +472,7 @@ function AlertsPage(props: {
     ["ADVERTISER", "ADVERTISER"],
     ["CAMPAIGN", "CAMPAIGN"]
   ];
-  const alertColumns: Array<[string, string]> = [
+  const baseAlertColumns: Array<[string, string]> = [
     ["ALERT_TYPE", "ALERT_TYPE"],
     ["OUR_REF", "OUR_REF"],
     ["JOB_NUMBER", "JOB_NUMBER"],
@@ -482,7 +482,9 @@ function AlertsPage(props: {
     ["CAMPAIGN", "CAMPAIGN"],
     ["LOCATIONTEXT", "LOCATIONTEXT"],
     ["PROPERTYNAME", "PROPERTYNAME"],
-    ["BOOKINGSTATUS", "BOOKINGSTATUS"],
+    ["BOOKINGSTATUS", "BOOKINGSTATUS"]
+  ];
+  const deliveryAlertColumns: Array<[string, string]> = [
     ["DATASOURCE", "DATASOURCE"],
     ["ACCOUNT", "ACCOUNT"],
     ["FIRST_MISSING_DATE", "FIRST_MISSING_DATE"],
@@ -492,6 +494,7 @@ function AlertsPage(props: {
     ["TOTAL_COST", "TOTAL_COST"],
     ["ROW_COUNT", "ROW_COUNT"]
   ];
+  const alertColumns = props.alertType === "NOT_LIVE" ? baseAlertColumns : [...baseAlertColumns, ...deliveryAlertColumns];
   const isSnoozeDetailView = props.status === "SNOOZED" || props.status === "DISMISSED";
   const apiSupportsFilteredAlerts = props.meta.alert_api_version === "2";
 
