@@ -159,6 +159,17 @@ def alert_state_counts(df: pd.DataFrame) -> tuple[int, int, int]:
     )
 
 
+def normalize_merged_our_ref(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    if "OUR_REF_x" in df.columns:
+        left_ref = df["OUR_REF_x"].fillna("").astype(str)
+        right_ref = df["OUR_REF_y"].fillna("").astype(str) if "OUR_REF_y" in df.columns else ""
+        df["OUR_REF"] = left_ref.where(left_ref.str.strip() != "", right_ref)
+        df = df.drop(columns=[col for col in ["OUR_REF_x", "OUR_REF_y"] if col in df.columns])
+    return df
+
+
 def alert_meta(
     project_id: str,
     dataset: str,
@@ -526,6 +537,7 @@ ORDER BY s.run_timestamp_utc DESC, s.alert_type, s.our_ref
     )
     if not snooze_df.empty:
         df = df.merge(snooze_df, on=["ALERT_TYPE", "ALERT_KEY"], how="left")
+        df = normalize_merged_our_ref(df)
     else:
         for col in ["SNOOZE_STATUS", "SNOOZE_REASON", "SNOOZE_START_DATE", "SNOOZE_END_DATE", "SNOOZED_BY", "DISMISSED_BY", "UPDATED_AT"]:
             df[col] = ""
