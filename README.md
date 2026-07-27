@@ -113,6 +113,7 @@ Required GitHub repository secrets:
 Optional secrets:
 - `GMAIL_USER` (default `me`)
 - `ALERT_EMAIL_SUBJECT`
+- `ALERT_NEW_UI_URL` (optional; defaults to the hosted Cloud Run React UI)
 - `ALERT_FORCE_RUN` (`true` to bypass NZ 6AM weekday guard, useful for manual tests)
 - `ALERT_LINK_TTL_DAYS` (default `7`)
 - `ADMIN_PASS` (required in Streamlit app for `Dismiss` action)

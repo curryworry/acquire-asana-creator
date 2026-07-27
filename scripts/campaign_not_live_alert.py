@@ -29,6 +29,7 @@ ALERT_TYPE_NOT_LIVE = "NOT_LIVE"
 ALERT_TYPE_MISSING_OUR_REF = "MISSING_OUR_REF"
 ALERT_TYPE_ENDED_BUT_IMPRESSIONS = "ENDED_BUT_IMPRESSIONS"
 ALERT_TYPE_STOPPED_IMPRESSIONS = "STOPPED_IMPRESSIONS"
+DEFAULT_NEW_UI_URL = "https://acquire-ops-roa7aw2wuq-ts.a.run.app"
 
 
 def env(name: str, default: str = "") -> str:
@@ -956,7 +957,7 @@ def build_signed_dashboard_link(base_url: str, user: str, run_id: str, ttl_days:
     return f"{normalized_base}{joiner}{query}"
 
 
-def build_email_body(link: str, rows: List[AlertRow]) -> str:
+def build_email_body(link: str, rows: List[AlertRow], new_ui_url: str = "") -> str:
     by_type: Dict[str, int] = {}
     for row in rows:
         by_type[row.alert_type] = by_type.get(row.alert_type, 0) + 1
@@ -969,6 +970,9 @@ def build_email_body(link: str, rows: List[AlertRow]) -> str:
     lines.append("Please check attachments and dashboard for details.")
     lines.append("")
     lines.append(f"Open dashboard: {link}")
+    if new_ui_url:
+        lines.append("")
+        lines.append(f"New UI: {new_ui_url}")
     return "\n".join(lines)
 
 
@@ -978,6 +982,7 @@ def send_digest(rows: List[AlertRow], run_id: str) -> str:
         raise RuntimeError("ALERT_EMAIL_TO is required.")
 
     dashboard_base_url = env("ALERT_DASHBOARD_BASE_URL", "")
+    new_ui_url = env("ALERT_NEW_UI_URL", DEFAULT_NEW_UI_URL)
     link_secret = env("LINK_SIGNING_SECRET", "")
     if not dashboard_base_url:
         raise RuntimeError("ALERT_DASHBOARD_BASE_URL is required for signed dashboard links.")
@@ -1024,7 +1029,7 @@ def send_digest(rows: List[AlertRow], run_id: str) -> str:
             ttl_days=link_ttl_days,
             secret=link_secret,
         )
-        body = build_email_body(link, rows)
+        body = build_email_body(link, rows, new_ui_url)
         msg_id = client.send_email(
             to_email=recipient,
             subject=subject,
