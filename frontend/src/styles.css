@@ -409,6 +409,33 @@ th {
   text-transform: uppercase;
 }
 
+.sort-header {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0;
+  text-align: left;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  font-size: inherit;
+  font-weight: 800;
+}
+
+.sort-header svg {
+  flex: 0 0 auto;
+  opacity: 0.42;
+}
+
+.sort-header:hover svg,
+.sort-header.active svg {
+  opacity: 1;
+}
+
 td {
   border-top: 1px solid #ece5d5;
   padding: 10px 12px;

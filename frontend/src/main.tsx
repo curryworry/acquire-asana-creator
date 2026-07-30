@@ -3,7 +3,9 @@ import ReactDOM from "react-dom/client";
 import {
   Activity,
   AlertTriangle,
+  ArrowDown,
   ArrowDownUp,
+  ArrowUp,
   Bell,
   Check,
   ChevronDown,
@@ -30,6 +32,8 @@ type ApiEnvelope<T> = { rows: T[]; meta: Record<string, string> };
 type AnyRow = Record<string, string | number | null>;
 type ApiRefreshOptions = { silent?: boolean };
 type RowUpdater = (rows: AnyRow[]) => AnyRow[];
+type SortDirection = "asc" | "desc";
+type SortState = { key: string; direction: SortDirection } | null;
 
 const TOKEN_KEY = "acquire_ops_token";
 const ALERT_SECTIONS: Array<{ key: AlertSection; page: Page; label: string }> = [
@@ -254,6 +258,65 @@ function normalizeAlertStatus(status: string) {
   return status === "SNOOZED" ? "ACTIVE" : status;
 }
 
+function isBlankSortValue(value: unknown) {
+  return value === null || value === undefined || String(value).trim() === "";
+}
+
+function parseSortNumber(value: unknown) {
+  const text = String(value).trim();
+  if (!/^-?[$]?\d[\d,]*(\.\d+)?%?$/.test(text)) return null;
+  const number = Number(text.replace(/[$,%]/g, ""));
+  return Number.isFinite(number) ? number : null;
+}
+
+function parseSortDate(value: unknown) {
+  const text = String(value).trim();
+  if (!/^\d{4}-\d{2}-\d{2}/.test(text)) return null;
+  const time = Date.parse(text);
+  return Number.isFinite(time) ? time : null;
+}
+
+function compareSortValues(left: unknown, right: unknown) {
+  const leftBlank = isBlankSortValue(left);
+  const rightBlank = isBlankSortValue(right);
+  if (leftBlank && rightBlank) return 0;
+  if (leftBlank) return 1;
+  if (rightBlank) return -1;
+
+  const leftNumber = parseSortNumber(left);
+  const rightNumber = parseSortNumber(right);
+  if (leftNumber !== null && rightNumber !== null) return leftNumber - rightNumber;
+
+  const leftDate = parseSortDate(left);
+  const rightDate = parseSortDate(right);
+  if (leftDate !== null && rightDate !== null) return leftDate - rightDate;
+
+  return String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: "base" });
+}
+
+function sortRows(rows: AnyRow[], sort: SortState) {
+  if (!sort) return rows;
+  const direction = sort.direction === "asc" ? 1 : -1;
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((left, right) => {
+      const leftBlank = isBlankSortValue(left.row[sort.key]);
+      const rightBlank = isBlankSortValue(right.row[sort.key]);
+      if (leftBlank && rightBlank) return left.index - right.index;
+      if (leftBlank) return 1;
+      if (rightBlank) return -1;
+      const comparison = compareSortValues(left.row[sort.key], right.row[sort.key]);
+      if (comparison !== 0) return comparison * direction;
+      return left.index - right.index;
+    })
+    .map(({ row }) => row);
+}
+
+function nextSort(current: SortState, key: string): SortState {
+  if (current?.key !== key) return { key, direction: "asc" };
+  return { key, direction: current.direction === "asc" ? "desc" : "asc" };
+}
+
 function openAlertCounts(rows: AnyRow[]) {
   const counts: Record<AlertSection, number> = { ...EMPTY_ALERT_COUNTS };
   for (const row of rows) {
@@ -466,12 +529,14 @@ function MarginPage() {
   const [query, setQuery] = React.useState("");
   const [status, setStatus] = React.useState("OPEN");
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
+  const [sort, setSort] = React.useState<SortState>(null);
 
   const filtered = React.useMemo(() => rows.filter((row) => {
     const text = `${row.OUR_REF} ${row.JOB_NUMBER} ${row.CAMPAIGN_NAME} ${row.ADVERTISER_NAME}`.toLowerCase();
     const stateMatch = status === "ALL" || row.MARGIN_SNOOZE_STATE === status;
     return stateMatch && text.includes(query.toLowerCase());
   }), [rows, query, status]);
+  const sortedRows = React.useMemo(() => sortRows(filtered, sort), [filtered, sort]);
 
   const active = rows.filter((row) => row.MARGIN_SNOOZE_STATE === "OPEN");
   const selectedAlerts = rows
@@ -491,7 +556,7 @@ function MarginPage() {
         subtitle="Live margin, pacing, budget, and snooze state at OUR REF level."
         loading={loading}
         onRefresh={refresh}
-        onDownload={() => downloadCsv("margin-dashboard.csv", filtered)}
+        onDownload={() => downloadCsv("margin-dashboard.csv", sortedRows)}
       />
       <MetricStrip metrics={[
         { label: "Active rows", value: num(active.length) },
@@ -502,10 +567,12 @@ function MarginPage() {
       <Toolbar query={query} setQuery={setQuery} status={status} setStatus={setStatus} statuses={["OPEN", "ACTIVE", "ALL"]} selectedCount={selected.size} />
       <DataState loading={loading && !hasLoaded} error={error} empty={!filtered.length}>
         <DataTable
-          rows={filtered}
+          rows={sortedRows}
           selected={selected}
           setSelected={setSelected}
           idKey="OUR_REF"
+          sort={sort}
+          onSort={(key) => setSort((current) => nextSort(current, key))}
           columns={[
             ["OUR_REF", "OUR REF"],
             ["ADVERTISER_NAME", "Advertiser"],
@@ -552,6 +619,7 @@ function AlertsPage(props: {
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [adminPass, setAdminPass] = React.useState("");
   const [actionError, setActionError] = React.useState("");
+  const [sort, setSort] = React.useState<SortState>(null);
   const sectionMeta = ALERT_SECTIONS.find((section) => section.key === props.alertType)!;
   const snoozeDetailColumns: Array<[string, string]> = [
     ["ALERT_KEY", "ALERT_KEY"],
@@ -628,13 +696,14 @@ function AlertsPage(props: {
     }
     return nextRows.map((row, index) => ({ ...row, __row_id: `${row.ALERT_TYPE}:${row.ALERT_KEY}:${row.SOURCE_VIEW || "ROW"}:${index}` }));
   }, [props.query, props.status, scopedRows]);
-  const totalRows = filtered.length;
+  const sortedRows = React.useMemo(() => sortRows(filtered, sort), [filtered, sort]);
+  const totalRows = sortedRows.length;
   const totalPages = Math.max(1, Math.ceil(totalRows / ALERT_PAGE_SIZE));
   const safePage = Math.min(props.page, totalPages);
   const pageRows = React.useMemo(() => {
     const start = (safePage - 1) * ALERT_PAGE_SIZE;
-    return filtered.slice(start, start + ALERT_PAGE_SIZE);
-  }, [filtered, safePage]);
+    return sortedRows.slice(start, start + ALERT_PAGE_SIZE);
+  }, [sortedRows, safePage]);
 
   React.useEffect(() => {
     if (props.page !== safePage) props.setPage(safePage);
@@ -694,7 +763,7 @@ function AlertsPage(props: {
           invalidateApiCache("/api/alerts");
           return props.refresh();
         }}
-        onDownload={() => downloadCsv(`${sectionMeta.label.toLowerCase().replaceAll(" ", "-")}-alerts.csv`, filtered)}
+        onDownload={() => downloadCsv(`${sectionMeta.label.toLowerCase().replaceAll(" ", "-")}-alerts.csv`, sortedRows)}
       />
       <MetricStrip metrics={[
         { label: "Open", value: num(scopedCounts.open) },
@@ -710,6 +779,11 @@ function AlertsPage(props: {
             selected={selected}
             setSelected={setSelected}
             idKey="__row_id"
+            sort={sort}
+            onSort={(key) => {
+              setSort((current) => nextSort(current, key));
+              props.setPage(1);
+            }}
             columns={isSnoozeDetailView ? snoozeDetailColumns : alertColumns}
             format={(key, value, row) => {
               if (["TOTAL_IMPRESSIONS", "TOTAL_CLICKS"].includes(key)) return num(value);
@@ -808,6 +882,8 @@ function DataTable(props: {
   selected: Set<string>;
   setSelected: (selected: Set<string>) => void;
   idKey: string;
+  sort: SortState;
+  onSort: (key: string) => void;
   columns: Array<[string, string]>;
   format: (key: string, value: unknown, row: AnyRow) => string;
 }) {
@@ -817,7 +893,26 @@ function DataTable(props: {
         <thead>
           <tr>
             <th className="select-col"><ArrowDownUp size={14} /></th>
-            {props.columns.map(([key, label]) => <th key={key}>{label}</th>)}
+            {props.columns.map(([key, label]) => {
+              const active = props.sort?.key === key;
+              return (
+                <th key={key}>
+                  <button
+                    className={`sort-header ${active ? "active" : ""}`}
+                    type="button"
+                    onClick={() => props.onSort(key)}
+                    aria-sort={active ? (props.sort?.direction === "asc" ? "ascending" : "descending") : "none"}
+                  >
+                    <span>{label}</span>
+                    {active ? (
+                      props.sort?.direction === "asc" ? <ArrowUp size={13} /> : <ArrowDown size={13} />
+                    ) : (
+                      <ArrowDownUp size={13} />
+                    )}
+                  </button>
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>
