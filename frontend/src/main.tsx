@@ -699,7 +699,15 @@ function AlertsPage(props: {
             <button className="dock-button" disabled={!selected.size} onClick={() => void postAction("/api/alerts/unsnooze", { alerts: selectedAlerts })}>
               <Check size={15} /> Unsnooze
             </button>
-            <input className="dock-input" placeholder="Admin pass" type="password" value={adminPass} onChange={(event) => setAdminPass(event.target.value)} />
+            <input
+              className="dock-input"
+              name="admin-action-pass"
+              placeholder="Admin pass"
+              type="password"
+              autoComplete="new-password"
+              value={adminPass}
+              onChange={(event) => setAdminPass(event.target.value)}
+            />
             <button className="dock-button danger" disabled={!selected.size || !adminPass} onClick={() => void postAction("/api/alerts/dismiss", { alerts: selectedAlerts, reason: "Dismissed in React dashboard", admin_pass: adminPass })}>
               <X size={15} /> Dismiss
             </button>
@@ -732,7 +740,13 @@ function Toolbar(props: { query: string; setQuery: (value: string) => void; stat
     <section className="toolbar">
       <div className="searchbox">
         <Search size={16} />
-        <input placeholder="Search refs, campaigns, advertisers..." value={props.query} onChange={(event) => props.setQuery(event.target.value)} />
+        <input
+          name="alerts-table-search"
+          placeholder="Search refs, campaigns, advertisers..."
+          autoComplete="off"
+          value={props.query}
+          onChange={(event) => props.setQuery(event.target.value)}
+        />
       </div>
       <div className="segmented">
         {props.statuses.map((status) => (
@@ -841,12 +855,28 @@ function SnoozeButton(props: {
 
   return (
     <>
-      <input className="dock-input wide" placeholder="Snooze reason" value={reason} onChange={(event) => setReason(event.target.value)} />
+      <input
+        className="dock-input wide"
+        name="snooze-reason"
+        placeholder="Snooze reason"
+        autoComplete="off"
+        value={reason}
+        onChange={(event) => setReason(event.target.value)}
+      />
       <label className="dock-check">
         <input type="checkbox" checked={permanent} onChange={(event) => setPermanent(event.target.checked)} />
         Permanent
       </label>
-      {!permanent && <input className="dock-input" type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />}
+      {!permanent && (
+        <input
+          className="dock-input"
+          name="snooze-end-date"
+          type="date"
+          autoComplete="off"
+          value={endDate}
+          onChange={(event) => setEndDate(event.target.value)}
+        />
+      )}
       <button className="dock-button" disabled={!reason || (!permanent && !endDate) || loading} onClick={() => void submit()}>
         {loading ? <Loader2 className="spin" size={15} /> : <Clock3 size={15} />} Snooze
       </button>
