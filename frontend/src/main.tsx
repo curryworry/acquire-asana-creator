@@ -347,6 +347,10 @@ function App() {
   const deferredAlertQuery = React.useDeferredValue(alertQuery);
   const alertsData = useAlertsBootstrap(Boolean(token && alertsActive));
   const alertCounts = React.useMemo(() => openAlertCounts(alertsData.rows), [alertsData.rows]);
+  const totalOpenAlerts = React.useMemo(
+    () => ALERT_SECTIONS.reduce((total, section) => total + (alertCounts[section.key] || 0), 0),
+    [alertCounts]
+  );
 
   React.useEffect(() => {
     if (!token) return;
@@ -392,6 +396,7 @@ function App() {
             >
               <Bell size={18} />
               <span>Alerts</span>
+              <span className="nav-count nav-count-parent">{num(totalOpenAlerts)}</span>
               <ChevronDown className={`nav-chevron ${alertsExpanded ? "open" : ""}`} size={16} />
             </button>
             {alertsExpanded && (
