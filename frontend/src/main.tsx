@@ -140,22 +140,28 @@ function useApiRows<T extends AnyRow>(path: string, enabled = true) {
   const [rows, setRows] = React.useState<T[]>([]);
   const [meta, setMeta] = React.useState<Record<string, string>>({});
   const [loading, setLoading] = React.useState(enabled);
+  const [hasLoaded, setHasLoaded] = React.useState(false);
+  const hasLoadedRef = React.useRef(false);
   const [error, setError] = React.useState("");
   const refresh = React.useCallback(async () => {
     if (!enabled) {
       setRows([]);
       setMeta({});
       setLoading(false);
+      hasLoadedRef.current = false;
+      setHasLoaded(false);
       setError("");
       return;
     }
-    setLoading(true);
+    setLoading(!hasLoadedRef.current);
     setError("");
     try {
       const data = await apiFetch<ApiEnvelope<T>>(path);
       API_CACHE.set(path, data as ApiEnvelope<AnyRow>);
       setRows(data.rows);
       setMeta(data.meta || {});
+      hasLoadedRef.current = true;
+      setHasLoaded(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
     } finally {
@@ -168,6 +174,8 @@ function useApiRows<T extends AnyRow>(path: string, enabled = true) {
       setRows([]);
       setMeta({});
       setLoading(false);
+      hasLoadedRef.current = false;
+      setHasLoaded(false);
       setError("");
       return;
     }
@@ -176,19 +184,23 @@ function useApiRows<T extends AnyRow>(path: string, enabled = true) {
       setRows(cached.rows);
       setMeta(cached.meta || {});
       setLoading(false);
+      hasLoadedRef.current = true;
+      setHasLoaded(true);
       setError("");
       return;
     }
     void refresh();
   }, [enabled, path, refresh]);
 
-  return { rows, meta, loading, error, refresh };
+  return { rows, meta, loading, hasLoaded, error, refresh };
 }
 
 function useAlertsBootstrap(enabled: boolean) {
   const [rows, setRows] = React.useState<AnyRow[]>([]);
   const [meta, setMeta] = React.useState<Record<string, string>>({});
   const [loading, setLoading] = React.useState(enabled);
+  const [hasLoaded, setHasLoaded] = React.useState(false);
+  const hasLoadedRef = React.useRef(false);
   const [error, setError] = React.useState("");
   const [lastLoadedAt, setLastLoadedAt] = React.useState("");
 
@@ -197,16 +209,20 @@ function useAlertsBootstrap(enabled: boolean) {
       setRows([]);
       setMeta({});
       setLoading(false);
+      hasLoadedRef.current = false;
+      setHasLoaded(false);
       setError("");
       setLastLoadedAt("");
       return;
     }
-    if (!options.silent) setLoading(true);
+    if (!options.silent) setLoading(!hasLoadedRef.current);
     setError("");
     try {
       const data = await apiFetch<ApiEnvelope<AnyRow>>("/api/alerts/bootstrap");
       setRows(data.rows);
       setMeta(data.meta || {});
+      hasLoadedRef.current = true;
+      setHasLoaded(true);
       setLastLoadedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
@@ -231,7 +247,7 @@ function useAlertsBootstrap(enabled: boolean) {
     setRows((currentRows) => updater(currentRows));
   }, []);
 
-  return { rows, meta, loading, error, refresh, updateRows, lastLoadedAt };
+  return { rows, meta, loading, hasLoaded, error, refresh, updateRows, lastLoadedAt };
 }
 
 function normalizeAlertStatus(status: string) {
@@ -446,7 +462,7 @@ function MetricStrip({ metrics }: { metrics: Array<{ label: string; value: strin
 }
 
 function MarginPage() {
-  const { rows, meta, loading, error, refresh } = useApiRows<AnyRow>("/api/margin");
+  const { rows, meta, loading, hasLoaded, error, refresh } = useApiRows<AnyRow>("/api/margin");
   const [query, setQuery] = React.useState("");
   const [status, setStatus] = React.useState("OPEN");
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
@@ -484,7 +500,7 @@ function MarginPage() {
         { label: "Avg margin", value: pct(avg(active.map((row) => Number(row.MARGIN_PCT || 0)))) }
       ]} />
       <Toolbar query={query} setQuery={setQuery} status={status} setStatus={setStatus} statuses={["OPEN", "ACTIVE", "ALL"]} selectedCount={selected.size} />
-      <DataState loading={loading} error={error} empty={!filtered.length}>
+      <DataState loading={loading && !hasLoaded} error={error} empty={!filtered.length}>
         <DataTable
           rows={filtered}
           selected={selected}
@@ -521,6 +537,7 @@ function AlertsPage(props: {
   rows: AnyRow[];
   meta: Record<string, string>;
   loading: boolean;
+  hasLoaded: boolean;
   error: string;
   refresh: (options?: ApiRefreshOptions) => Promise<void>;
   updateRows: (updater: RowUpdater) => void;
@@ -686,7 +703,7 @@ function AlertsPage(props: {
         { label: "Latest run", value: props.lastLoadedAt ? `${props.meta.latest_run || "N/A"} · refreshed ${props.lastLoadedAt}` : String(props.meta.latest_run || "N/A") }
       ]} />
       <Toolbar query={props.query} setQuery={props.setQuery} status={props.status} setStatus={(value) => { props.setStatus(value); props.setPage(1); }} statuses={["OPEN", "SNOOZED", "DISMISSED", "ALL"]} selectedCount={selected.size} />
-      <DataState loading={props.loading} error={apiSupportsFilteredAlerts ? props.error : "The API server needs to be restarted to load filtered alert tables."} empty={!pageRows.length}>
+      <DataState loading={props.loading && !props.hasLoaded} error={apiSupportsFilteredAlerts ? props.error : "The API server needs to be restarted to load filtered alert tables."} empty={!pageRows.length}>
         <>
           <DataTable
             rows={pageRows}
@@ -711,7 +728,7 @@ function AlertsPage(props: {
             onSubmitStart={(alerts, reason, endDate) => applyOptimisticSnooze(alerts, reason, endDate)}
             onDone={() => { invalidateApiCache("/api/alerts"); void props.refresh({ silent: true }); }}
             onError={(message) => { setActionError(message); void props.refresh({ silent: true }); }}
-            onConflict={() => void props.refresh()}
+            onConflict={() => void props.refresh({ silent: true })}
             inline
           />
         ) : (
@@ -722,7 +739,7 @@ function AlertsPage(props: {
               onSubmitStart={(alerts, reason, endDate) => applyOptimisticSnooze(alerts, reason, endDate)}
               onDone={() => { invalidateApiCache("/api/alerts"); void props.refresh({ silent: true }); }}
               onError={(message) => { setActionError(message); void props.refresh({ silent: true }); }}
-              onConflict={() => void props.refresh()}
+              onConflict={() => void props.refresh({ silent: true })}
             />
             <button className="dock-button" disabled={!selected.size} onClick={() => void postAction("/api/alerts/unsnooze", { alerts: selectedAlerts })}>
               <Check size={15} /> Unsnooze
