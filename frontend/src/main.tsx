@@ -29,6 +29,7 @@ type Page = "margin" | "alerts:not_live" | "alerts:stopped_impressions" | "alert
 type ApiEnvelope<T> = { rows: T[]; meta: Record<string, string> };
 type AnyRow = Record<string, string | number | null>;
 type ApiRefreshOptions = { silent?: boolean };
+type RowUpdater = (rows: AnyRow[]) => AnyRow[];
 
 const TOKEN_KEY = "acquire_ops_token";
 const ALERT_SECTIONS: Array<{ key: AlertSection; page: Page; label: string }> = [
@@ -226,7 +227,11 @@ function useAlertsBootstrap(enabled: boolean) {
     return () => window.clearInterval(interval);
   }, [enabled, refresh]);
 
-  return { rows, meta, loading, error, refresh, lastLoadedAt };
+  const updateRows = React.useCallback((updater: RowUpdater) => {
+    setRows((currentRows) => updater(currentRows));
+  }, []);
+
+  return { rows, meta, loading, error, refresh, updateRows, lastLoadedAt };
 }
 
 function normalizeAlertStatus(status: string) {
@@ -518,6 +523,7 @@ function AlertsPage(props: {
   loading: boolean;
   error: string;
   refresh: (options?: ApiRefreshOptions) => Promise<void>;
+  updateRows: (updater: RowUpdater) => void;
   lastLoadedAt: string;
   query: string;
   setQuery: (value: string) => void;
@@ -640,6 +646,26 @@ function AlertsPage(props: {
     }
   }
 
+  function applyOptimisticSnooze(alerts: Array<Record<string, string>>, reason: string, endDate: string | null) {
+    const selectedKeys = new Set(alerts.map((alert) => `${alert.alert_type}::${alert.alert_key}`));
+    const today = new Date().toISOString().slice(0, 10);
+    props.updateRows((rows) => rows.map((row) => {
+      const key = `${row.ALERT_TYPE}::${row.ALERT_KEY}`;
+      if (!selectedKeys.has(key)) return row;
+      return {
+        ...row,
+        LIVE_ALERT_STATE: "ACTIVE",
+        SNOOZE_STATUS: "ACTIVE",
+        SNOOZE_REASON: reason,
+        SNOOZE_START_DATE: today,
+        SNOOZE_END_DATE: endDate || "",
+        SNOOZED_BY: "Saving...",
+        UPDATED_AT: "Saving..."
+      };
+    }));
+    setSelected(new Set());
+  }
+
   return (
     <>
       <PageHeader
@@ -682,8 +708,9 @@ function AlertsPage(props: {
           <SnoozeButton
             endpoint="/api/alerts/snooze"
             alerts={selectedAlerts}
-            onDone={() => { setSelected(new Set()); invalidateApiCache("/api/alerts"); void props.refresh(); }}
-            onError={(message) => setActionError(message)}
+            onSubmitStart={(alerts, reason, endDate) => applyOptimisticSnooze(alerts, reason, endDate)}
+            onDone={() => { invalidateApiCache("/api/alerts"); void props.refresh({ silent: true }); }}
+            onError={(message) => { setActionError(message); void props.refresh({ silent: true }); }}
             onConflict={() => void props.refresh()}
             inline
           />
@@ -692,8 +719,9 @@ function AlertsPage(props: {
             <SnoozeButton
               endpoint="/api/alerts/snooze"
               alerts={selectedAlerts}
-              onDone={() => { invalidateApiCache("/api/alerts"); void props.refresh(); }}
-              onError={(message) => setActionError(message)}
+              onSubmitStart={(alerts, reason, endDate) => applyOptimisticSnooze(alerts, reason, endDate)}
+              onDone={() => { invalidateApiCache("/api/alerts"); void props.refresh({ silent: true }); }}
+              onError={(message) => { setActionError(message); void props.refresh({ silent: true }); }}
               onConflict={() => void props.refresh()}
             />
             <button className="dock-button" disabled={!selected.size} onClick={() => void postAction("/api/alerts/unsnooze", { alerts: selectedAlerts })}>
@@ -814,6 +842,7 @@ function SnoozeButton(props: {
   endpoint: string;
   alerts: Array<Record<string, string>>;
   onDone: () => void;
+  onSubmitStart?: (alerts: Array<Record<string, string>>, reason: string, endDate: string | null) => void;
   onError?: (message: string) => void;
   onConflict?: () => void;
   inline?: boolean;
@@ -830,10 +859,12 @@ function SnoozeButton(props: {
 
   async function submit() {
     setLoading(true);
+    const nextEndDate = permanent ? null : endDate || new Date().toISOString().slice(0, 10);
+    props.onSubmitStart?.(props.alerts, reason, nextEndDate);
     try {
       await apiFetch(props.endpoint, {
         method: "POST",
-        body: JSON.stringify({ alerts: props.alerts, reason, end_date: permanent ? null : endDate || new Date().toISOString().slice(0, 10) })
+        body: JSON.stringify({ alerts: props.alerts, reason, end_date: nextEndDate })
       });
       setOpen(Boolean(props.inline));
       setReason("");
