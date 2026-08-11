@@ -18,6 +18,7 @@ import {
   LogOut,
   RefreshCcw,
   Search,
+  Settings,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
@@ -27,15 +28,37 @@ import {
 import "./styles.css";
 
 type AlertSection = "NOT_LIVE" | "STOPPED_IMPRESSIONS" | "MISSING_OUR_REF" | "ENDED_BUT_IMPRESSIONS";
-type Page = "margin" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "trafficking" | "automation";
+type Page = "margin" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "trafficking" | "automation" | "admin";
 type ApiEnvelope<T> = { rows: T[]; meta: Record<string, string> };
 type AnyRow = Record<string, string | number | null>;
 type ApiRefreshOptions = { silent?: boolean };
 type RowUpdater = (rows: AnyRow[]) => AnyRow[];
 type SortDirection = "asc" | "desc";
 type SortState = { key: string; direction: SortDirection } | null;
+type UserInfo = { username: string; displayName: string };
+type AutomationDefaults = {
+  campaign_alert: {
+    recipients: string;
+    subject: string;
+    dashboard_base_url: string;
+    script: string;
+  };
+  daily_trafficking: {
+    report_email_to: string;
+    dry_run_mode: string;
+    script: string;
+  };
+};
+type AutomationResult = {
+  status: string;
+  exit_code: number;
+  output: string;
+  started_at: string;
+  finished_at: string;
+};
 
 const TOKEN_KEY = "acquire_ops_token";
+const ADMIN_USERNAME = "ashwin@acquirenz.com";
 const ALERT_SECTIONS: Array<{ key: AlertSection; page: Page; label: string }> = [
   { key: "NOT_LIVE", page: "alerts:not_live", label: "Not live" },
   { key: "STOPPED_IMPRESSIONS", page: "alerts:stopped_impressions", label: "Stopped impressions" },
@@ -337,7 +360,7 @@ function alertStateCounts(rows: AnyRow[]) {
 function App() {
   const [page, setPage] = React.useState<Page>("alerts:not_live");
   const [token, setToken] = React.useState(localStorage.getItem(TOKEN_KEY) || "");
-  const [user, setUser] = React.useState("");
+  const [user, setUser] = React.useState<UserInfo | null>(null);
   const [alertsExpanded, setAlertsExpanded] = React.useState(true);
   const alertsActive = page.startsWith("alerts:");
   const activeAlertType = pageToAlertType(page);
@@ -351,14 +374,19 @@ function App() {
     () => ALERT_SECTIONS.reduce((total, section) => total + (alertCounts[section.key] || 0), 0),
     [alertCounts]
   );
+  const isAdmin = user?.username.toLowerCase() === ADMIN_USERNAME;
 
   React.useEffect(() => {
     if (!token) return;
     apiFetch<{ display_name?: string; username?: string }>("/api/auth/me")
-      .then((me) => setUser(me.display_name || me.username || "User"))
+      .then((me) => {
+        const username = me.username || "";
+        setUser({ username, displayName: me.display_name || username || "User" });
+      })
       .catch(() => {
         localStorage.removeItem(TOKEN_KEY);
         setToken("");
+        setUser(null);
       });
   }, [token]);
 
@@ -367,10 +395,10 @@ function App() {
   }, [activeAlertType, alertStatus, deferredAlertQuery]);
 
   if (!token) {
-    return <Login onLogin={(nextToken, displayName) => {
+    return <Login onLogin={(nextToken, nextUser) => {
       localStorage.setItem(TOKEN_KEY, nextToken);
       setToken(nextToken);
-      setUser(displayName);
+      setUser(nextUser);
     }} />;
   }
 
@@ -416,13 +444,15 @@ function App() {
           </div>
           <NavButton active={page === "trafficking"} icon={<Table2 size={18} />} label="Trafficking" onClick={() => setPage("trafficking")} />
           <NavButton active={page === "automation"} icon={<Activity size={18} />} label="Automation" onClick={() => setPage("automation")} />
+          {isAdmin && <NavButton active={page === "admin"} icon={<Settings size={18} />} label="Admin" onClick={() => setPage("admin")} />}
         </nav>
         <div className="user-panel">
           <ShieldCheck size={16} />
-          <span>{user || "Signed in"}</span>
+          <span>{user?.displayName || "Signed in"}</span>
           <button className="icon-button" title="Sign out" onClick={() => {
             localStorage.removeItem(TOKEN_KEY);
             setToken("");
+            setUser(null);
           }}>
             <LogOut size={16} />
           </button>
@@ -436,12 +466,13 @@ function App() {
         {page === "alerts:ended_but_impressions" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
         {page === "trafficking" && <PlaceholderPage title="Trafficking to Asana" body="The next migration slice will bring the Gmail fetch, parse preview, Asana dedupe check, and dry-run downloads into this interface." />}
         {page === "automation" && <PlaceholderPage title="Automation Runs" body="Manual automation triggers should run as background jobs with live status and logs, instead of blocking the interface." />}
+        {page === "admin" && <AdminPage isAdmin={isAdmin} />}
       </main>
     </div>
   );
 }
 
-function Login({ onLogin }: { onLogin: (token: string, displayName: string) => void }) {
+function Login({ onLogin }: { onLogin: (token: string, user: UserInfo) => void }) {
   const [username, setUsername] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [error, setError] = React.useState("");
@@ -456,7 +487,10 @@ function Login({ onLogin }: { onLogin: (token: string, displayName: string) => v
         method: "POST",
         body: JSON.stringify({ username, password })
       });
-      onLogin(response.token, response.display_name || response.username);
+      onLogin(response.token, {
+        username: response.username,
+        displayName: response.display_name || response.username
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {
@@ -1038,6 +1072,149 @@ function ActionDock(props: { selectedCount: number; onClear: () => void; childre
       <span>{props.selectedCount} selected</span>
       {props.children}
       <button className="icon-button" title="Clear selection" onClick={props.onClear}><X size={15} /></button>
+    </div>
+  );
+}
+
+function AdminPage({ isAdmin }: { isAdmin: boolean }) {
+  const [defaults, setDefaults] = React.useState<AutomationDefaults | null>(null);
+  const [recipients, setRecipients] = React.useState("");
+  const [forceAlert, setForceAlert] = React.useState(true);
+  const [forceDryRun, setForceDryRun] = React.useState(true);
+  const [campaignResult, setCampaignResult] = React.useState<AutomationResult | null>(null);
+  const [dailyResult, setDailyResult] = React.useState<AutomationResult | null>(null);
+  const [loading, setLoading] = React.useState<"campaign" | "daily" | "defaults" | "">("defaults");
+  const [error, setError] = React.useState("");
+
+  React.useEffect(() => {
+    if (!isAdmin) return;
+    setLoading("defaults");
+    apiFetch<AutomationDefaults>("/api/admin/automations")
+      .then((data) => {
+        setDefaults(data);
+        setRecipients(data.campaign_alert.recipients || "");
+        setForceDryRun((data.daily_trafficking.dry_run_mode || "true").toLowerCase() !== "false");
+        setError("");
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load admin settings."))
+      .finally(() => setLoading(""));
+  }, [isAdmin]);
+
+  async function runCampaignAlert() {
+    setLoading("campaign");
+    setError("");
+    setCampaignResult(null);
+    try {
+      const result = await apiFetch<AutomationResult>("/api/admin/automations/campaign-alert", {
+        method: "POST",
+        body: JSON.stringify({ recipients, force_run: forceAlert })
+      });
+      setCampaignResult(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Campaign alert run failed.");
+    } finally {
+      setLoading("");
+    }
+  }
+
+  async function runDailyTrafficking() {
+    setLoading("daily");
+    setError("");
+    setDailyResult(null);
+    try {
+      const result = await apiFetch<AutomationResult>("/api/admin/automations/daily-trafficking", {
+        method: "POST",
+        body: JSON.stringify({ force_dry_run: forceDryRun })
+      });
+      setDailyResult(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Daily trafficking run failed.");
+    } finally {
+      setLoading("");
+    }
+  }
+
+  if (!isAdmin) {
+    return <PlaceholderPage title="Admin" body="Admin access is restricted." />;
+  }
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Ashwin only"
+        title="Admin"
+        subtitle="Manual controls for automation runs. These call the same scripts used by the existing scheduled workflows."
+        loading={loading === "defaults"}
+        onRefresh={() => apiFetch<AutomationDefaults>("/api/admin/automations").then((data) => {
+          setDefaults(data);
+          setRecipients(data.campaign_alert.recipients || "");
+        })}
+      />
+      {error && <div className="state-box error compact"><AlertTriangle /> {error}</div>}
+      <section className="admin-grid">
+        <article className="admin-card">
+          <div>
+            <span className="eyebrow">Email alert</span>
+            <h2>Campaign Not-Live Alert</h2>
+            <p>Runs the BigQuery alert check and sends the digest email if failures exist.</p>
+          </div>
+          <label>
+            Recipients
+            <input
+              name="admin-alert-recipients"
+              autoComplete="off"
+              value={recipients}
+              onChange={(event) => setRecipients(event.target.value)}
+              placeholder="ashwin@acquirenz.com,zane@acquirenz.com"
+            />
+          </label>
+          <label className="admin-check">
+            <input type="checkbox" checked={forceAlert} onChange={(event) => setForceAlert(event.target.checked)} />
+            Force run, ignoring the NZ 6AM weekday guard
+          </label>
+          <button className="primary-button" disabled={loading === "campaign" || !recipients.trim()} onClick={() => void runCampaignAlert()}>
+            {loading === "campaign" ? <Loader2 className="spin" size={16} /> : <Activity size={16} />}
+            Run Campaign Alert Now
+          </button>
+          <AutomationOutput result={campaignResult} />
+          {defaults?.campaign_alert.script && <p className="admin-note">Script: {defaults.campaign_alert.script}</p>}
+        </article>
+
+        <article className="admin-card">
+          <div>
+            <span className="eyebrow">Trafficking</span>
+            <h2>Daily Trafficking Dry Run</h2>
+            <p>Runs the Gmail-to-Asana dry-run script and emails the parent/subtask CSV outputs.</p>
+          </div>
+          <label className="admin-check">
+            <input type="checkbox" checked={forceDryRun} onChange={(event) => setForceDryRun(event.target.checked)} />
+            Force DRY_RUN_MODE=true
+          </label>
+          {!forceDryRun && (
+            <div className="warning-box">
+              If the backend secret `DRY_RUN_MODE` is false, this can create Asana tasks.
+            </div>
+          )}
+          <button className="primary-button" disabled={loading === "daily"} onClick={() => void runDailyTrafficking()}>
+            {loading === "daily" ? <Loader2 className="spin" size={16} /> : <Table2 size={16} />}
+            Run Daily Trafficking Script Now
+          </button>
+          <AutomationOutput result={dailyResult} />
+          {defaults?.daily_trafficking.script && <p className="admin-note">Script: {defaults.daily_trafficking.script}</p>}
+        </article>
+      </section>
+    </>
+  );
+}
+
+function AutomationOutput({ result }: { result: AutomationResult | null }) {
+  if (!result) return null;
+  const ok = result.status === "ok" && result.exit_code === 0;
+  return (
+    <div className={`admin-output ${ok ? "success" : "failure"}`}>
+      <strong>{ok ? "Completed" : `Finished with ${result.status}`} · exit {result.exit_code}</strong>
+      <span>{new Date(result.finished_at).toLocaleString()}</span>
+      {result.output && <pre>{result.output}</pre>}
     </div>
   );
 }

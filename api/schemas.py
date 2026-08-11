@@ -31,3 +31,19 @@ class DismissActionRequest(BaseModel):
     admin_pass: str
     run_id: str = ""
 
+
+class CampaignAlertRunRequest(BaseModel):
+    recipients: str
+    force_run: bool = True
+
+
+class DailyTraffickingRunRequest(BaseModel):
+    force_dry_run: bool = True
+
+
+class AutomationRunResponse(BaseModel):
+    status: str
+    exit_code: int
+    output: str
+    started_at: str
+    finished_at: str

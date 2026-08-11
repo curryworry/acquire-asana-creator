@@ -5,9 +5,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from api.auth import auth_enabled, auth_required, create_token, current_user, verify_password
+from api.automation_service import (
+    campaign_alert_defaults,
+    daily_trafficking_defaults,
+    is_admin_user,
+    run_campaign_alert,
+    run_daily_trafficking,
+)
 from api.config import REPO_ROOT, get_auth_users, get_secret
 from api.dashboard_service import AlertConflictError, alerts_bootstrap, alerts_dashboard, margin_dashboard, write_snooze_action
-from api.schemas import DismissActionRequest, LoginRequest, LoginResponse, SnoozeActionRequest, UserResponse
+from api.schemas import (
+    AutomationRunResponse,
+    CampaignAlertRunRequest,
+    DailyTraffickingRunRequest,
+    DismissActionRequest,
+    LoginRequest,
+    LoginResponse,
+    SnoozeActionRequest,
+    UserResponse,
+)
 
 
 app = FastAPI(title="Acquire Asana Creator API")
@@ -116,6 +132,43 @@ def alerts_dismiss(payload: DismissActionRequest, user: dict[str, str] = Depends
     except AlertConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"status": "ok"}
+
+
+def require_admin(user: dict[str, str]) -> dict[str, str]:
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access is restricted.")
+    return user
+
+
+@app.get("/api/admin/automations")
+def admin_automations(user: dict[str, str] = Depends(current_user)) -> dict:
+    require_admin(user)
+    return {
+        "admin": user.get("username"),
+        "campaign_alert": campaign_alert_defaults(),
+        "daily_trafficking": daily_trafficking_defaults(),
+    }
+
+
+@app.post("/api/admin/automations/campaign-alert", response_model=AutomationRunResponse)
+def admin_campaign_alert(
+    payload: CampaignAlertRunRequest,
+    user: dict[str, str] = Depends(current_user),
+) -> AutomationRunResponse:
+    require_admin(user)
+    recipients = payload.recipients.strip()
+    if not recipients:
+        raise HTTPException(status_code=400, detail="At least one recipient is required.")
+    return AutomationRunResponse(**run_campaign_alert(recipients=recipients, force_run=payload.force_run))
+
+
+@app.post("/api/admin/automations/daily-trafficking", response_model=AutomationRunResponse)
+def admin_daily_trafficking(
+    payload: DailyTraffickingRunRequest,
+    user: dict[str, str] = Depends(current_user),
+) -> AutomationRunResponse:
+    require_admin(user)
+    return AutomationRunResponse(**run_daily_trafficking(force_dry_run=payload.force_dry_run))
 
 
 if FRONTEND_DIST.exists():

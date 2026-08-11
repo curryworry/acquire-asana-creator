@@ -489,9 +489,112 @@ tr.selected td {
   text-align: center;
 }
 
+.state-box.compact {
+  min-height: auto;
+  margin: 12px 0;
+}
+
 .state-box.error,
 .error-line {
   color: #8f2f24;
+}
+
+.admin-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.admin-card {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  background: rgba(255, 253, 247, 0.9);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  padding: 20px;
+}
+
+.admin-card h2 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.admin-card p,
+.admin-note {
+  margin: 0;
+  color: var(--muted);
+}
+
+.admin-card label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.admin-card input[type="text"],
+.admin-card input:not([type]) {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 12px;
+  background: white;
+  color: var(--ink);
+}
+
+.admin-check {
+  display: flex !important;
+  grid-template-columns: none;
+  align-items: center;
+  gap: 9px !important;
+  color: var(--ink) !important;
+}
+
+.warning-box {
+  border: 1px solid rgba(216, 95, 69, 0.45);
+  background: rgba(216, 95, 69, 0.1);
+  color: #8f2f24;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-weight: 700;
+}
+
+.admin-output {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8f1df;
+}
+
+.admin-output.success {
+  border-color: #cfe0c7;
+  background: #edf5ee;
+}
+
+.admin-output.failure {
+  border-color: rgba(216, 95, 69, 0.45);
+  background: rgba(216, 95, 69, 0.08);
+}
+
+.admin-output span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.admin-output pre {
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  color: var(--ink);
+  background: rgba(255, 253, 247, 0.72);
+  border: 1px solid rgba(221, 214, 199, 0.8);
+  border-radius: 8px;
+  padding: 12px;
 }
 
 .action-dock {
@@ -631,6 +734,10 @@ tr.selected td {
 
   .table-wrap {
     max-height: 62vh;
+  }
+
+  .admin-grid {
+    grid-template-columns: 1fr;
   }
 }
 
