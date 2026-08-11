@@ -1155,8 +1155,8 @@ function AdminPage({ isAdmin }: { isAdmin: boolean }) {
         <article className="admin-card">
           <div>
             <span className="eyebrow">Email alert</span>
-            <h2>Campaign Not-Live Alert</h2>
-            <p>Runs the BigQuery alert check and sends the digest email if failures exist.</p>
+            <h2>Alert Digest Email</h2>
+            <p>Runs all alert checks and sends the digest email if open alerts exist.</p>
           </div>
           <label>
             Recipients
@@ -1174,7 +1174,7 @@ function AdminPage({ isAdmin }: { isAdmin: boolean }) {
           </label>
           <button className="primary-button" disabled={loading === "campaign" || !recipients.trim()} onClick={() => void runCampaignAlert()}>
             {loading === "campaign" ? <Loader2 className="spin" size={16} /> : <Activity size={16} />}
-            Run Campaign Alert Now
+            Send Alert Digest Now
           </button>
           <AutomationOutput result={campaignResult} />
           {defaults?.campaign_alert.script && <p className="admin-note">Script: {defaults.campaign_alert.script}</p>}

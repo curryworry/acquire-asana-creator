@@ -21,7 +21,7 @@ streamlit run app.py
 Manual trigger UI:
 - The app now includes an **Automation Control Panel** at the top.
 - Current manual triggers:
-  - Campaign not-live alert (`scripts/campaign_not_live_alert.py`)
+  - Alert digest email (`scripts/campaign_not_live_alert.py`)
   - Daily trafficking script (`scripts/daily_trafficking_dry_run.py`)
 - This panel is intended as the central place to add more one-click automation triggers over time.
 
@@ -66,9 +66,9 @@ Reporting / behavior:
 - `GMAIL_PROCESSED_LABEL` (default `processed`)
 - `TRAFFICKING_SKIP_TOP_ROWS` (default `0`)
 
-## 3b) Campaign not-live alert automation (BigQuery + Gmail)
+## 3b) Alert digest email automation (BigQuery + Gmail)
 
-This is separate from Asana creation and only sends alerts.
+This is separate from Asana creation and sends one digest email for open alert rows. Despite the legacy script name, it now covers all alert types: not live, stopped impressions, missing OUR_REF, and ended but impressions.
 
 Workflow file:
 - `.github/workflows/campaign_not_live_alert.yml`

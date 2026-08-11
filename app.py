@@ -2054,8 +2054,8 @@ def _manual_automation_panel() -> None:
     c1, c2 = st.columns(2)
 
     with c1:
-        st.markdown("**Campaign Not-Live Alert**")
-        st.caption("Runs BigQuery check and emails one digest if failures exist.")
+        st.markdown("**Alert Digest Email**")
+        st.caption("Runs all alert checks and emails one digest if open alerts exist.")
         alert_to_input = st.text_input(
             "Recipients (comma separated)",
             value=alert_to,
@@ -2063,7 +2063,7 @@ def _manual_automation_panel() -> None:
             placeholder="ashwin@acquirenz.com,zane@acquirenz.com",
         ).strip()
         force_alert = st.checkbox("Force run (ignore NZ 6AM weekday guard)", value=True, key="force_alert_run")
-        if st.button("Run Campaign Alert Now", type="primary"):
+        if st.button("Send Alert Digest Now", type="primary"):
             env_overrides = {
                 "BQ_PROJECT_ID": bq_project_id,
                 "BQ_DATASET": bq_dataset,
@@ -2080,12 +2080,12 @@ def _manual_automation_panel() -> None:
                 "LINK_SIGNING_SECRET": link_signing_secret,
                 "ALERT_LINK_TTL_DAYS": alert_link_ttl_days,
             }
-            with st.spinner("Running campaign alert..."):
+            with st.spinner("Running alert digest..."):
                 code, output = _run_script("scripts/campaign_not_live_alert.py", env_overrides=env_overrides)
             if code == 0:
-                st.success("Campaign alert run completed.")
+                st.success("Alert digest run completed.")
             else:
-                st.error(f"Campaign alert run failed (exit code {code}).")
+                st.error(f"Alert digest run failed (exit code {code}).")
             if output:
                 st.code(output, language="text")
 
