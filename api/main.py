@@ -13,7 +13,7 @@ from api.automation_service import (
     run_daily_trafficking,
 )
 from api.config import REPO_ROOT, get_auth_users, get_secret
-from api.dashboard_service import AlertConflictError, alerts_bootstrap, alerts_dashboard, margin_dashboard, write_snooze_action
+from api.dashboard_service import AlertConflictError, alerts_bootstrap, alerts_dashboard, margin_dashboard, pacing_dashboard, write_snooze_action
 from api.schemas import (
     AutomationRunResponse,
     CampaignAlertRunRequest,
@@ -76,6 +76,11 @@ def login(payload: LoginRequest) -> LoginResponse:
 @app.get("/api/margin")
 def margin(_: dict[str, str] = Depends(current_user)) -> dict:
     return margin_dashboard()
+
+
+@app.get("/api/pacing")
+def pacing(_: dict[str, str] = Depends(current_user)) -> dict:
+    return pacing_dashboard()
 
 
 @app.get("/api/alerts")

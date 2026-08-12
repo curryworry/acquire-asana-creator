@@ -28,7 +28,8 @@ import {
 import "./styles.css";
 
 type AlertSection = "NOT_LIVE" | "STOPPED_IMPRESSIONS" | "MISSING_OUR_REF" | "ENDED_BUT_IMPRESSIONS";
-type Page = "margin" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "trafficking" | "automation" | "admin";
+type PacingSection = "UNDERPACING";
+type Page = "margin" | "pacing:underpacing" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "trafficking" | "automation" | "admin";
 type ApiEnvelope<T> = { rows: T[]; meta: Record<string, string> };
 type AnyRow = Record<string, string | number | null>;
 type ApiRefreshOptions = { silent?: boolean };
@@ -64,6 +65,9 @@ const ALERT_SECTIONS: Array<{ key: AlertSection; page: Page; label: string }> = 
   { key: "STOPPED_IMPRESSIONS", page: "alerts:stopped_impressions", label: "Stopped impressions" },
   { key: "MISSING_OUR_REF", page: "alerts:missing_our_ref", label: "Missing OUR_REF" },
   { key: "ENDED_BUT_IMPRESSIONS", page: "alerts:ended_but_impressions", label: "Ended but impressions" }
+];
+const PACING_SECTIONS: Array<{ key: PacingSection; page: Page; label: string }> = [
+  { key: "UNDERPACING", page: "pacing:underpacing", label: "Underpacing" }
 ];
 const ALERT_PAGE_SIZE = 100;
 const EMPTY_ALERT_COUNTS: Record<AlertSection, number> = {
@@ -149,6 +153,11 @@ function pageToAlertType(page: Page): AlertSection | null {
   if (page === "alerts:stopped_impressions") return "STOPPED_IMPRESSIONS";
   if (page === "alerts:missing_our_ref") return "MISSING_OUR_REF";
   if (page === "alerts:ended_but_impressions") return "ENDED_BUT_IMPRESSIONS";
+  return null;
+}
+
+function pageToPacingType(page: Page): PacingSection | null {
+  if (page === "pacing:underpacing") return "UNDERPACING";
   return null;
 }
 
@@ -349,6 +358,12 @@ function openAlertCounts(rows: AnyRow[]) {
   return counts;
 }
 
+function underpacingCounts(rows: AnyRow[]) {
+  return {
+    UNDERPACING: rows.filter((row) => row.PACING_BUCKET === "UNDERPACING").length
+  };
+}
+
 function alertStateCounts(rows: AnyRow[]) {
   return {
     open: rows.filter((row) => row.LIVE_ALERT_STATE === "OPEN").length,
@@ -362,17 +377,26 @@ function App() {
   const [token, setToken] = React.useState(localStorage.getItem(TOKEN_KEY) || "");
   const [user, setUser] = React.useState<UserInfo | null>(null);
   const [alertsExpanded, setAlertsExpanded] = React.useState(true);
+  const [pacingExpanded, setPacingExpanded] = React.useState(true);
   const alertsActive = page.startsWith("alerts:");
+  const pacingActive = page.startsWith("pacing:");
   const activeAlertType = pageToAlertType(page);
+  const activePacingType = pageToPacingType(page);
   const [alertQuery, setAlertQuery] = React.useState("");
   const [alertStatus, setAlertStatus] = React.useState("OPEN");
   const [alertPage, setAlertPage] = React.useState(1);
   const deferredAlertQuery = React.useDeferredValue(alertQuery);
   const alertsData = useAlertsBootstrap(Boolean(token && alertsActive));
+  const pacingData = useApiRows<AnyRow>("/api/pacing", Boolean(token));
   const alertCounts = React.useMemo(() => openAlertCounts(alertsData.rows), [alertsData.rows]);
+  const pacingCounts = React.useMemo(() => underpacingCounts(pacingData.rows), [pacingData.rows]);
   const totalOpenAlerts = React.useMemo(
     () => ALERT_SECTIONS.reduce((total, section) => total + (alertCounts[section.key] || 0), 0),
     [alertCounts]
+  );
+  const totalUnderpacing = React.useMemo(
+    () => PACING_SECTIONS.reduce((total, section) => total + (pacingCounts[section.key] || 0), 0),
+    [pacingCounts]
   );
   const isAdmin = user?.username.toLowerCase() === ADMIN_USERNAME;
 
@@ -414,6 +438,34 @@ function App() {
         </div>
         <nav className="nav-stack">
           <NavButton active={page === "margin"} icon={<Gauge size={18} />} label="Margin" onClick={() => setPage("margin")} />
+          <div className={`nav-section ${pacingActive ? "active" : ""}`}>
+            <button
+              className={`nav-button nav-section-trigger ${pacingActive ? "active" : ""}`}
+              onClick={() => {
+                setPacingExpanded((current) => !current);
+                if (!pacingActive) setPage("pacing:underpacing");
+              }}
+            >
+              <Sparkles size={18} />
+              <span>Pacing</span>
+              <span className="nav-count nav-count-parent">{num(totalUnderpacing)}</span>
+              <ChevronDown className={`nav-chevron ${pacingExpanded ? "open" : ""}`} size={16} />
+            </button>
+            {pacingExpanded && (
+              <div className="nav-subsection">
+                {PACING_SECTIONS.map((section) => (
+                  <button
+                    key={section.key}
+                    className={`nav-subbutton ${page === section.page ? "active" : ""}`}
+                    onClick={() => setPage(section.page)}
+                  >
+                    <span>{section.label}</span>
+                    <span className="nav-count">{num(pacingCounts[section.key] || 0)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <div className={`nav-section ${alertsActive ? "active" : ""}`}>
             <button
               className={`nav-button nav-section-trigger ${alertsActive ? "active" : ""}`}
@@ -460,6 +512,7 @@ function App() {
       </aside>
       <main className="workspace">
         {page === "margin" && <MarginPage />}
+        {page === "pacing:underpacing" && activePacingType && <PacingPage pacingType={activePacingType} {...pacingData} />}
         {page === "alerts:not_live" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
         {page === "alerts:stopped_impressions" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
         {page === "alerts:missing_our_ref" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
@@ -634,6 +687,94 @@ function MarginPage() {
       <ActionDock selectedCount={selected.size} onClear={() => setSelected(new Set())}>
         <SnoozeButton endpoint="/api/margin/snooze" alerts={selectedAlerts} onDone={() => { setSelected(new Set()); void refresh(); }} />
       </ActionDock>
+    </>
+  );
+}
+
+function PacingPage(props: {
+  pacingType: PacingSection;
+  rows: AnyRow[];
+  meta: Record<string, string>;
+  loading: boolean;
+  hasLoaded: boolean;
+  error: string;
+  refresh: () => Promise<void>;
+}) {
+  const [query, setQuery] = React.useState("");
+  const [sort, setSort] = React.useState<SortState>({ key: "SPEND_VS_EXPECTED_RATIO", direction: "desc" });
+
+  const filtered = React.useMemo(() => props.rows.filter((row) => {
+    const text = `${row.OUR_REF} ${row.JOB_NUMBER} ${row.CAMPAIGN_NAME} ${row.ADVERTISER_NAME} ${row.ACCOUNT_MANAGER}`.toLowerCase();
+    return row.PACING_BUCKET === props.pacingType && text.includes(query.toLowerCase());
+  }), [props.pacingType, props.rows, query]);
+  const sortedRows = React.useMemo(() => sortRows(filtered, sort), [filtered, sort]);
+
+  const activeRows = filtered.filter((row) => Number(row.EXPECTED_SPEND_TO_DATE || 0) > 0);
+  const totalExpected = activeRows.reduce((sum, row) => sum + Number(row.EXPECTED_SPEND_TO_DATE || 0), 0);
+  const totalActual = activeRows.reduce((sum, row) => sum + Number(row.ACTUAL_NETT_SPEND || 0), 0);
+  const underCount = filtered.filter((row) => row.PACING_STATUS === "UNDER").length;
+  const blendedRatio = totalExpected > 0 ? totalActual / totalExpected : null;
+
+  return (
+    <>
+      <PageHeader
+        eyebrow={props.meta.source_table ? `${props.meta.project_id}.${props.meta.dataset}.${props.meta.source_table}` : "BigQuery pacing model"}
+        title="Underpacing"
+        subtitle="OUR_REF-level pacing, rolled up across data sources with one row per reference."
+        loading={props.loading}
+        onRefresh={props.refresh}
+        onDownload={() => downloadCsv("pacing-dashboard.csv", sortedRows)}
+      />
+      <MetricStrip metrics={[
+        { label: "Rows", value: num(filtered.length) },
+        { label: "Expected spend to date", value: currency(totalExpected) },
+        { label: "Actual nett spend", value: currency(totalActual) },
+        { label: "Spend vs expected", value: blendedRatio === null ? "N/A" : pct(blendedRatio) },
+        { label: "Underpacing refs", value: num(underCount), tone: "warn" }
+      ]} />
+      <section className="toolbar">
+        <div className="searchbox">
+          <Search size={16} />
+          <input
+            name="pacing-table-search"
+            placeholder="Search refs, jobs, campaigns, advertisers..."
+            autoComplete="off"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+        <div className="selected-chip"><SlidersHorizontal size={15} /> {filtered.length} rows</div>
+      </section>
+      <DataState loading={props.loading && !props.hasLoaded} error={props.error} empty={!filtered.length}>
+        <DataTable
+          rows={sortedRows}
+          selected={new Set()}
+          setSelected={() => {}}
+          idKey="OUR_REF"
+          sort={sort}
+          onSort={(key) => setSort((current) => nextSort(current, key))}
+          columns={[
+            ["OUR_REF", "OUR REF"],
+            ["DATASOURCE", "Datasource"],
+            ["ADVERTISER_NAME", "Advertiser"],
+            ["CAMPAIGN_NAME", "Campaign"],
+            ["ACCOUNT_MANAGER", "AM"],
+            ["START_DATE", "Start"],
+            ["END_DATE", "End"],
+            ["TIME_PROGRESS_RATIO", "Time progress"],
+            ["EXPECTED_SPEND_TO_DATE", "Expected spend"],
+            ["ACTUAL_NETT_SPEND", "Actual spend"],
+            ["PACING_DELTA", "Delta"],
+            ["SPEND_VS_EXPECTED_RATIO", "Spend vs expected"],
+            ["PACING_STATUS", "Status"]
+          ]}
+          format={(key, value) => {
+            if (["EXPECTED_SPEND_TO_DATE", "ACTUAL_NETT_SPEND", "PACING_DELTA"].includes(key)) return currency(value);
+            if (["TIME_PROGRESS_RATIO", "SPEND_VS_EXPECTED_RATIO"].includes(key)) return value === null || value === "" ? "N/A" : pct(value);
+            return String(value ?? "");
+          }}
+        />
+      </DataState>
     </>
   );
 }
