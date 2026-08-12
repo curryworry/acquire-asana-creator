@@ -471,18 +471,18 @@ WITH latest_delivery AS (
 line_items AS (
   SELECT
     TRIM(CAST(OURREF AS STRING)) AS our_ref,
-    STRING_AGG(DISTINCT NULLIF(TRIM(CAST(DATASOURCENAME AS STRING)), ''), ', ' ORDER BY NULLIF(TRIM(CAST(DATASOURCENAME AS STRING)), '')) AS datasources,
-    STRING_AGG(DISTINCT NULLIF(TRIM(CAST(JOBNUMBER AS STRING)), ''), ', ' ORDER BY NULLIF(TRIM(CAST(JOBNUMBER AS STRING)), '')) AS job_numbers,
-    STRING_AGG(DISTINCT NULLIF(TRIM(CAST(CAMPAIGNNAME AS STRING)), ''), ' | ' ORDER BY NULLIF(TRIM(CAST(CAMPAIGNNAME AS STRING)), '')) AS campaign_names,
-    STRING_AGG(DISTINCT NULLIF(TRIM(CAST(ADVERTISERNAME AS STRING)), ''), ', ' ORDER BY NULLIF(TRIM(CAST(ADVERTISERNAME AS STRING)), '')) AS advertiser_names,
-    STRING_AGG(DISTINCT NULLIF(TRIM(CAST(PROPERTYNAME AS STRING)), ''), ' | ' ORDER BY NULLIF(TRIM(CAST(PROPERTYNAME AS STRING)), '')) AS property_names,
-    STRING_AGG(DISTINCT NULLIF(TRIM(CAST(LOCATIONTEXT AS STRING)), ''), ' | ' ORDER BY NULLIF(TRIM(CAST(LOCATIONTEXT AS STRING)), '')) AS location_texts,
-    STRING_AGG(DISTINCT NULLIF(TRIM(CAST(ACCOUNTMANAGERNAME AS STRING)), ''), ', ' ORDER BY NULLIF(TRIM(CAST(ACCOUNTMANAGERNAME AS STRING)), '')) AS account_manager_names,
-    STRING_AGG(DISTINCT NULLIF(TRIM(CAST(TRAFFICKERNAME AS STRING)), ''), ', ' ORDER BY NULLIF(TRIM(CAST(TRAFFICKERNAME AS STRING)), '')) AS trafficker_names,
-    STRING_AGG(DISTINCT NULLIF(TRIM(CAST(CAMPAIGNLEAD AS STRING)), ''), ', ' ORDER BY NULLIF(TRIM(CAST(CAMPAIGNLEAD AS STRING)), '')) AS campaign_leads,
-    STRING_AGG(DISTINCT NULLIF(TRIM(CAST(BOOKINGSTATUS AS STRING)), ''), ', ' ORDER BY NULLIF(TRIM(CAST(BOOKINGSTATUS AS STRING)), '')) AS booking_statuses,
-    SUM(COALESCE(SAFE_CAST(ACTUALPRICE AS FLOAT64), 0)) AS budget,
-    SUM(COALESCE(SAFE_CAST(OURCOST AS FLOAT64), 0)) AS booked_nett_cost,
+    CAST(JOBNUMBER AS STRING) AS job_number,
+    MAX(NULLIF(TRIM(CAST(DATASOURCE AS STRING)), '')) AS datasource,
+    MAX(NULLIF(TRIM(CAST(CAMPAIGNNAME AS STRING)), '')) AS campaign_name,
+    MAX(NULLIF(TRIM(CAST(ADVERTISERNAME AS STRING)), '')) AS advertiser_name,
+    MAX(NULLIF(TRIM(CAST(PROPERTYNAME AS STRING)), '')) AS property_name,
+    MAX(NULLIF(TRIM(CAST(LOCATIONTEXT AS STRING)), '')) AS location_text,
+    MAX(NULLIF(TRIM(CAST(ACCOUNTMANAGERNAME AS STRING)), '')) AS account_manager_name,
+    MAX(NULLIF(TRIM(CAST(TRAFFICKERNAME AS STRING)), '')) AS trafficker_name,
+    MAX(NULLIF(TRIM(CAST(CAMPAIGNLEAD AS STRING)), '')) AS campaign_lead,
+    MAX(NULLIF(TRIM(CAST(BOOKINGSTATUS AS STRING)), '')) AS booking_status,
+    MAX(COALESCE(SAFE_CAST(ACTUALPRICE AS FLOAT64), 0)) AS budget,
+    MAX(COALESCE(SAFE_CAST(OURCOST AS FLOAT64), 0)) AS booked_nett_cost,
     COALESCE(
       MIN(SAFE_CAST(STARTDATE AS DATE)),
       MIN(SAFE.PARSE_DATE('%Y-%m-%d', CAST(STARTDATE AS STRING))),
@@ -498,6 +498,26 @@ line_items AS (
   FROM {table_fqn(project_id, dataset, "master_overview")}
   WHERE OURREF IS NOT NULL
     AND TRIM(CAST(OURREF AS STRING)) != ''
+  GROUP BY 1, 2
+),
+our_ref_rollup AS (
+  SELECT
+    our_ref,
+    STRING_AGG(DISTINCT datasource, ', ' ORDER BY datasource) AS datasources,
+    STRING_AGG(DISTINCT NULLIF(TRIM(job_number), ''), ', ' ORDER BY NULLIF(TRIM(job_number), '')) AS job_numbers,
+    STRING_AGG(DISTINCT campaign_name, ' | ' ORDER BY campaign_name) AS campaign_names,
+    STRING_AGG(DISTINCT advertiser_name, ', ' ORDER BY advertiser_name) AS advertiser_names,
+    STRING_AGG(DISTINCT property_name, ' | ' ORDER BY property_name) AS property_names,
+    STRING_AGG(DISTINCT location_text, ' | ' ORDER BY location_text) AS location_texts,
+    STRING_AGG(DISTINCT account_manager_name, ', ' ORDER BY account_manager_name) AS account_manager_names,
+    STRING_AGG(DISTINCT trafficker_name, ', ' ORDER BY trafficker_name) AS trafficker_names,
+    STRING_AGG(DISTINCT campaign_lead, ', ' ORDER BY campaign_lead) AS campaign_leads,
+    STRING_AGG(DISTINCT booking_status, ', ' ORDER BY booking_status) AS booking_statuses,
+    SUM(COALESCE(budget, 0)) AS budget,
+    SUM(COALESCE(booked_nett_cost, 0)) AS booked_nett_cost,
+    MIN(start_date) AS start_date,
+    MAX(end_date) AS end_date
+  FROM line_items
   GROUP BY 1
 ),
 delivery AS (
@@ -545,7 +565,8 @@ base AS (
     COALESCE(d.total_clicks, 0) AS total_clicks,
     d.first_delivery_date,
     d.last_delivery_date
-  FROM line_items l
+  FROM our_ref_rollup l
+  -- Roll up at OUR_REF level after deduping repeated daily rows at JOB_NUMBER level.
   CROSS JOIN latest_delivery ld
   LEFT JOIN delivery d
     ON d.our_ref = l.our_ref
