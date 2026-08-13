@@ -384,8 +384,7 @@ button:disabled {
 }
 
 .table-wrap {
-  max-height: calc(100vh - 310px);
-  overflow: auto;
+  overflow-x: auto;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -798,10 +797,6 @@ tr.selected td {
   .table-pagination {
     display: grid;
     justify-items: start;
-  }
-
-  .table-wrap {
-    max-height: 62vh;
   }
 
   .admin-grid {
