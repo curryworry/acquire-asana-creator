@@ -60,7 +60,7 @@ type AutomationResult = {
 
 const TOKEN_KEY = "acquire_ops_token";
 const ADMIN_USERNAME = "ashwin@acquirenz.com";
-const DELIVERY_PACING_HELP = "Delivery pacing shows how the campaign is doing against expected delivery. A delivery pacing of 50% means that the campaign is only delivery 50% of the goal impressions/clicks/views that it should be delivering to hit the target. Delivery pacing should be above 100% to hit the campaign goal";
+const DELIVERY_PACING_HELP = "Delivery pacing shows how the campaign is doing against expected delivery. A delivery pacing of 50% means that the campaign is only delivering 50% of the goal impressions/clicks/views that it should be delivering to hit the target. Delivery pacing should be above 100% to hit the campaign goal";
 const ALERT_SECTIONS: Array<{ key: AlertSection; page: Page; label: string }> = [
   { key: "NOT_LIVE", page: "alerts:not_live", label: "Not live" },
   { key: "STOPPED_IMPRESSIONS", page: "alerts:stopped_impressions", label: "Stopped impressions" },
