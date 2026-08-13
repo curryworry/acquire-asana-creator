@@ -101,6 +101,11 @@ function pct(value: unknown) {
   return `${(Number(value) * 100).toFixed(1)}%`;
 }
 
+function wholePct(value: unknown) {
+  if (value === null || value === undefined || value === "") return "N/A";
+  return `${Math.round(Number(value) * 100)}%`;
+}
+
 function num(value: unknown) {
   return new Intl.NumberFormat("en-NZ").format(Number(value || 0));
 }
@@ -755,21 +760,28 @@ function PacingPage(props: {
           onSort={(key) => setSort((current) => nextSort(current, key))}
           columns={[
             ["OUR_REF", "OUR REF"],
-            ["DATASOURCE", "Datasource"],
-            ["GOAL_TYPE", "Goal"],
             ["ADVERTISER_NAME", "Advertiser"],
             ["CAMPAIGN_NAME", "Campaign"],
+            ["LOCATION_TEXT", "Line item"],
+            ["__PROGRESS", "Progress"],
+            ["PROPERTY_NAME", "Property"],
+            ["JOB_NUMBER", "Job number"],
             ["ACCOUNT_MANAGER", "AM"],
             ["START_DATE", "Start"],
             ["END_DATE", "End"],
             ["TIME_PROGRESS_RATIO", "Time progress"],
             ["GOAL_DELIVERY", "Goal delivery"],
+            ["GOAL_TYPE", "Target type"],
             ["EXPECTED_DELIVERY_TO_DATE", "Expected delivery"],
             ["ACTUAL_DELIVERY", "Actual delivery"],
-            ["DELIVERY_DELTA", "Delta"],
+            ["DELIVERY_DELTA", "Short fall"],
             ["DELIVERY_PACING_RATIO", "Delivery vs expected"],
-            ["PACING_STATUS", "Status"]
+            ["DATASOURCE", "Datasource"]
           ]}
+          renderCell={(key, value, row) => {
+            if (key !== "__PROGRESS") return null;
+            return <ProgressCell timeProgress={Number(row.TIME_PROGRESS_RATIO || 0)} deliveryProgress={Number(row.DELIVERY_PACING_RATIO || 0)} />;
+          }}
           format={(key, value) => {
             if (["GOAL_DELIVERY", "EXPECTED_DELIVERY_TO_DATE", "ACTUAL_DELIVERY", "DELIVERY_DELTA"].includes(key)) return num(Math.round(Number(value || 0)));
             if (["TIME_PROGRESS_RATIO", "DELIVERY_PACING_RATIO"].includes(key)) return value === null || value === "" ? "N/A" : pct(value);
@@ -1068,6 +1080,7 @@ function DataTable(props: {
   onSort: (key: string) => void;
   columns: Array<[string, string]>;
   format: (key: string, value: unknown, row: AnyRow) => string;
+  renderCell?: (key: string, value: unknown, row: AnyRow) => React.ReactNode | null;
 }) {
   return (
     <div className="table-wrap">
@@ -1115,12 +1128,41 @@ function DataTable(props: {
                     }}
                   />
                 </td>
-                {props.columns.map(([key]) => <td key={key} title={String(row[key] ?? "")}>{props.format(key, row[key], row)}</td>)}
+                {props.columns.map(([key]) => {
+                  const customCell = props.renderCell?.(key, row[key], row);
+                  return (
+                    <td key={key} title={customCell ? "" : String(row[key] ?? "")}>
+                      {customCell ?? props.format(key, row[key], row)}
+                    </td>
+                  );
+                })}
               </tr>
             );
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function ProgressCell(props: { timeProgress: number; deliveryProgress: number }) {
+  return (
+    <div className="progress-cell">
+      <ProgressBar label="Time" value={props.timeProgress} tone="time" />
+      <ProgressBar label="Delivery" value={props.deliveryProgress} tone="delivery" />
+    </div>
+  );
+}
+
+function ProgressBar(props: { label: string; value: number; tone: "time" | "delivery" }) {
+  const clamped = Math.max(0, Math.min(props.value, 1));
+  return (
+    <div className="progress-line">
+      <span>{props.label}</span>
+      <div className="progress-track" aria-label={`${props.label} ${wholePct(props.value)}`}>
+        <div className={`progress-fill ${props.tone}`} style={{ width: `${clamped * 100}%` }} />
+      </div>
+      <strong>{wholePct(props.value)}</strong>
     </div>
   );
 }
