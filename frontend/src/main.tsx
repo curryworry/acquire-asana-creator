@@ -60,6 +60,7 @@ type AutomationResult = {
 
 const TOKEN_KEY = "acquire_ops_token";
 const ADMIN_USERNAME = "ashwin@acquirenz.com";
+const DELIVERY_PACING_HELP = "Delivery pacing shows how the campaign is doing against expected delivery. A delivery pacing of 50% means that the campaign is only delivery 50% of the goal impressions/clicks/views that it should be delivering to hit the target. Delivery pacing should be above 100% to hit the campaign goal";
 const ALERT_SECTIONS: Array<{ key: AlertSection; page: Page; label: string }> = [
   { key: "NOT_LIVE", page: "alerts:not_live", label: "Not live" },
   { key: "STOPPED_IMPRESSIONS", page: "alerts:stopped_impressions", label: "Stopped impressions" },
@@ -764,6 +765,7 @@ function PacingPage(props: {
             ["CAMPAIGN_NAME", "Campaign"],
             ["LOCATION_TEXT", "Line item"],
             ["__PROGRESS", "Progress"],
+            ["DELIVERY_PACING_RATIO", "Delivery Pacing"],
             ["PROPERTY_NAME", "Property"],
             ["JOB_NUMBER", "Job number"],
             ["ACCOUNT_MANAGER", "AM"],
@@ -775,13 +777,13 @@ function PacingPage(props: {
             ["EXPECTED_DELIVERY_TO_DATE", "Expected delivery"],
             ["ACTUAL_DELIVERY", "Actual delivery"],
             ["DELIVERY_DELTA", "Short fall"],
-            ["DELIVERY_PACING_RATIO", "Delivery vs expected"],
             ["DATASOURCE", "Datasource"]
           ]}
           renderCell={(key, value, row) => {
             if (key !== "__PROGRESS") return null;
-            return <ProgressCell timeProgress={Number(row.TIME_PROGRESS_RATIO || 0)} deliveryProgress={Number(row.DELIVERY_PACING_RATIO || 0)} />;
+            return <ProgressCell timeProgress={Number(row.TIME_PROGRESS_RATIO || 0)} deliveryProgress={Number(row.ACTUAL_DELIVERY || 0) / Math.max(Number(row.GOAL_DELIVERY || 0), 1)} />;
           }}
+          headerHelp={{ DELIVERY_PACING_RATIO: DELIVERY_PACING_HELP }}
           format={(key, value) => {
             if (["GOAL_DELIVERY", "EXPECTED_DELIVERY_TO_DATE", "ACTUAL_DELIVERY", "DELIVERY_DELTA"].includes(key)) return num(Math.round(Number(value || 0)));
             if (["TIME_PROGRESS_RATIO", "DELIVERY_PACING_RATIO"].includes(key)) return value === null || value === "" ? "N/A" : pct(value);
@@ -1081,6 +1083,7 @@ function DataTable(props: {
   columns: Array<[string, string]>;
   format: (key: string, value: unknown, row: AnyRow) => string;
   renderCell?: (key: string, value: unknown, row: AnyRow) => React.ReactNode | null;
+  headerHelp?: Record<string, string>;
 }) {
   return (
     <div className="table-wrap">
@@ -1098,7 +1101,12 @@ function DataTable(props: {
                     onClick={() => props.onSort(key)}
                     aria-sort={active ? (props.sort?.direction === "asc" ? "ascending" : "descending") : "none"}
                   >
-                    <span>{label}</span>
+                    <span className="header-label">
+                      {label}
+                      {props.headerHelp?.[key] && (
+                        <span className="header-help" title={props.headerHelp[key]} aria-label={props.headerHelp[key]}>?</span>
+                      )}
+                    </span>
                     {active ? (
                       props.sort?.direction === "asc" ? <ArrowUp size={13} /> : <ArrowDown size={13} />
                     ) : (
@@ -1131,7 +1139,7 @@ function DataTable(props: {
                 {props.columns.map(([key]) => {
                   const customCell = props.renderCell?.(key, row[key], row);
                   return (
-                    <td key={key} title={customCell ? "" : String(row[key] ?? "")}>
+                    <td key={key} className={key === "DELIVERY_PACING_RATIO" ? "strong-cell" : ""} title={customCell ? "" : String(row[key] ?? "")}>
                       {customCell ?? props.format(key, row[key], row)}
                     </td>
                   );

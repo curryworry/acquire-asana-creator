@@ -439,6 +439,26 @@ th {
   opacity: 1;
 }
 
+.header-label {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.header-help {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(248, 241, 223, 0.18);
+  color: #f8f1df;
+  font-size: 10px;
+  line-height: 1;
+}
+
 td {
   border-top: 1px solid #ece5d5;
   padding: 10px 12px;
@@ -446,6 +466,11 @@ td {
   max-width: 360px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.strong-cell {
+  font-weight: 800;
+  color: var(--ink);
 }
 
 .progress-cell {
