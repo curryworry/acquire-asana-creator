@@ -30,8 +30,9 @@ import "./styles.css";
 type AlertSection = "NOT_LIVE" | "STOPPED_IMPRESSIONS" | "MISSING_OUR_REF" | "ENDED_BUT_IMPRESSIONS";
 type PacingSection = "UNDERPACING";
 type Page = "margin" | "pacing:underpacing" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "trafficking" | "automation" | "admin";
-type ApiEnvelope<T> = { rows: T[]; meta: Record<string, string> };
 type AnyRow = Record<string, string | number | null>;
+type ApiEnvelope<T> = { rows: T[]; meta: Record<string, string> };
+type OpsBootstrapEnvelope = { alerts: ApiEnvelope<AnyRow>; pacing: ApiEnvelope<AnyRow> };
 type ApiRefreshOptions = { silent?: boolean };
 type RowUpdater = (rows: AnyRow[]) => AnyRow[];
 type SortDirection = "asc" | "desc";
@@ -237,9 +238,11 @@ function useApiRows<T extends AnyRow>(path: string, enabled = true) {
   return { rows, meta, loading, hasLoaded, error, refresh };
 }
 
-function useAlertsBootstrap(enabled: boolean) {
-  const [rows, setRows] = React.useState<AnyRow[]>([]);
-  const [meta, setMeta] = React.useState<Record<string, string>>({});
+function useOpsBootstrap(enabled: boolean) {
+  const [alertRows, setAlertRows] = React.useState<AnyRow[]>([]);
+  const [alertMeta, setAlertMeta] = React.useState<Record<string, string>>({});
+  const [pacingRows, setPacingRows] = React.useState<AnyRow[]>([]);
+  const [pacingMeta, setPacingMeta] = React.useState<Record<string, string>>({});
   const [loading, setLoading] = React.useState(enabled);
   const [hasLoaded, setHasLoaded] = React.useState(false);
   const hasLoadedRef = React.useRef(false);
@@ -248,8 +251,10 @@ function useAlertsBootstrap(enabled: boolean) {
 
   const refresh = React.useCallback(async (options: ApiRefreshOptions = {}) => {
     if (!enabled) {
-      setRows([]);
-      setMeta({});
+      setAlertRows([]);
+      setAlertMeta({});
+      setPacingRows([]);
+      setPacingMeta({});
       setLoading(false);
       hasLoadedRef.current = false;
       setHasLoaded(false);
@@ -260,9 +265,13 @@ function useAlertsBootstrap(enabled: boolean) {
     if (!options.silent) setLoading(!hasLoadedRef.current);
     setError("");
     try {
-      const data = await apiFetch<ApiEnvelope<AnyRow>>("/api/alerts/bootstrap");
-      setRows(data.rows);
-      setMeta(data.meta || {});
+      const data = await apiFetch<OpsBootstrapEnvelope>("/api/dashboard/bootstrap");
+      setAlertRows(data.alerts.rows);
+      setAlertMeta(data.alerts.meta || {});
+      setPacingRows(data.pacing.rows);
+      setPacingMeta(data.pacing.meta || {});
+      API_CACHE.set("/api/alerts/bootstrap", data.alerts);
+      API_CACHE.set("/api/pacing", data.pacing);
       hasLoadedRef.current = true;
       setHasLoaded(true);
       setLastLoadedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
@@ -285,11 +294,30 @@ function useAlertsBootstrap(enabled: boolean) {
     return () => window.clearInterval(interval);
   }, [enabled, refresh]);
 
-  const updateRows = React.useCallback((updater: RowUpdater) => {
-    setRows((currentRows) => updater(currentRows));
+  const updateAlertRows = React.useCallback((updater: RowUpdater) => {
+    setAlertRows((currentRows) => updater(currentRows));
   }, []);
 
-  return { rows, meta, loading, hasLoaded, error, refresh, updateRows, lastLoadedAt };
+  return {
+    alerts: {
+      rows: alertRows,
+      meta: alertMeta,
+      loading,
+      hasLoaded,
+      error,
+      refresh,
+      updateRows: updateAlertRows,
+      lastLoadedAt
+    },
+    pacing: {
+      rows: pacingRows,
+      meta: pacingMeta,
+      loading,
+      hasLoaded,
+      error,
+      refresh
+    }
+  };
 }
 
 function normalizeAlertStatus(status: string) {
@@ -392,8 +420,9 @@ function App() {
   const [alertStatus, setAlertStatus] = React.useState("OPEN");
   const [alertPage, setAlertPage] = React.useState(1);
   const deferredAlertQuery = React.useDeferredValue(alertQuery);
-  const alertsData = useAlertsBootstrap(Boolean(token && alertsActive));
-  const pacingData = useApiRows<AnyRow>("/api/pacing", Boolean(token));
+  const opsData = useOpsBootstrap(Boolean(token));
+  const alertsData = opsData.alerts;
+  const pacingData = opsData.pacing;
   const alertCounts = React.useMemo(() => openAlertCounts(alertsData.rows), [alertsData.rows]);
   const pacingCounts = React.useMemo(() => underpacingCounts(pacingData.rows), [pacingData.rows]);
   const totalOpenAlerts = React.useMemo(

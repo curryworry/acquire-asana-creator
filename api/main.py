@@ -1,4 +1,5 @@
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -81,6 +82,17 @@ def margin(_: dict[str, str] = Depends(current_user)) -> dict:
 @app.get("/api/pacing")
 def pacing(_: dict[str, str] = Depends(current_user)) -> dict:
     return pacing_dashboard()
+
+
+@app.get("/api/dashboard/bootstrap")
+def dashboard_bootstrap(_: dict[str, str] = Depends(current_user)) -> dict:
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        alerts_future = executor.submit(alerts_bootstrap)
+        pacing_future = executor.submit(pacing_dashboard)
+        return {
+            "alerts": alerts_future.result(),
+            "pacing": pacing_future.result(),
+        }
 
 
 @app.get("/api/alerts")
