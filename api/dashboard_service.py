@@ -588,6 +588,7 @@ base AS (
     AND l.end_date >= l.start_date
     AND l.start_date <= ld.latest_delivery_date
     AND l.end_date >= ld.latest_delivery_date
+    AND NULLIF(TRIM(COALESCE(l.datasources, '')), '') IS NOT NULL
 )
 SELECT
   our_ref,
