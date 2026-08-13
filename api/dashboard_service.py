@@ -466,13 +466,15 @@ def pacing_dashboard() -> dict[str, Any]:
             f"""
 WITH latest_delivery AS (
   SELECT MAX(DATE) AS latest_delivery_date
-  FROM {table_fqn(project_id, dataset, "BLEND_BLEND_5_1_2")}
+  FROM {table_fqn(project_id, dataset, "master_overview")}
+  WHERE DATE IS NOT NULL
 ),
 line_items AS (
   SELECT
     TRIM(CAST(OURREF AS STRING)) AS our_ref,
     CAST(JOBNUMBER AS STRING) AS job_number,
-    MAX(NULLIF(TRIM(CAST(DATASOURCE AS STRING)), '')) AS datasource,
+    MAX(NULLIF(TRIM(CAST(T_GOAL_TYPE_REPORTING_V2 AS STRING)), '')) AS goal_type,
+    STRING_AGG(DISTINCT NULLIF(TRIM(CAST(DATASOURCE AS STRING)), ''), ', ' ORDER BY NULLIF(TRIM(CAST(DATASOURCE AS STRING)), '')) AS datasources,
     MAX(NULLIF(TRIM(CAST(CAMPAIGNNAME AS STRING)), '')) AS campaign_name,
     MAX(NULLIF(TRIM(CAST(ADVERTISERNAME AS STRING)), '')) AS advertiser_name,
     MAX(NULLIF(TRIM(CAST(PROPERTYNAME AS STRING)), '')) AS property_name,
@@ -481,8 +483,22 @@ line_items AS (
     MAX(NULLIF(TRIM(CAST(TRAFFICKERNAME AS STRING)), '')) AS trafficker_name,
     MAX(NULLIF(TRIM(CAST(CAMPAIGNLEAD AS STRING)), '')) AS campaign_lead,
     MAX(NULLIF(TRIM(CAST(BOOKINGSTATUS AS STRING)), '')) AS booking_status,
+    MAX(COALESCE(SAFE_CAST(NUMUNITS AS FLOAT64), 0)) AS goal_delivery,
     MAX(COALESCE(SAFE_CAST(ACTUALPRICE AS FLOAT64), 0)) AS budget,
     MAX(COALESCE(SAFE_CAST(OURCOST AS FLOAT64), 0)) AS booked_nett_cost,
+    SUM(
+      CASE UPPER(TRIM(CAST(T_GOAL_TYPE_REPORTING_V2 AS STRING)))
+        WHEN 'IMPRESSIONS' THEN COALESCE(IMPRESSIONS, 0)
+        WHEN 'CLICKS' THEN COALESCE(LINK_CLICKS, 0)
+        WHEN 'VIEWS' THEN COALESCE(VIDEO_COMPLETIONS, 0)
+        ELSE 0
+      END
+    ) AS actual_delivery,
+    SUM(COALESCE(IMPRESSIONS, 0)) AS total_impressions,
+    SUM(COALESCE(LINK_CLICKS, 0)) AS total_link_clicks,
+    SUM(COALESCE(VIDEO_COMPLETIONS, 0)) AS total_video_completions,
+    MIN(DATE) AS first_delivery_date,
+    MAX(DATE) AS last_delivery_date,
     COALESCE(
       MIN(SAFE_CAST(STARTDATE AS DATE)),
       MIN(SAFE.PARSE_DATE('%Y-%m-%d', CAST(STARTDATE AS STRING))),
@@ -498,12 +514,14 @@ line_items AS (
   FROM {table_fqn(project_id, dataset, "master_overview")}
   WHERE OURREF IS NOT NULL
     AND TRIM(CAST(OURREF AS STRING)) != ''
+    AND T_GOAL_TYPE_REPORTING_V2 IS NOT NULL
   GROUP BY 1, 2
 ),
 our_ref_rollup AS (
   SELECT
     our_ref,
-    STRING_AGG(DISTINCT datasource, ', ' ORDER BY datasource) AS datasources,
+    STRING_AGG(DISTINCT goal_type, ', ' ORDER BY goal_type) AS goal_types,
+    STRING_AGG(DISTINCT datasources, ', ' ORDER BY datasources) AS datasources,
     STRING_AGG(DISTINCT NULLIF(TRIM(job_number), ''), ', ' ORDER BY NULLIF(TRIM(job_number), '')) AS job_numbers,
     STRING_AGG(DISTINCT campaign_name, ' | ' ORDER BY campaign_name) AS campaign_names,
     STRING_AGG(DISTINCT advertiser_name, ', ' ORDER BY advertiser_name) AS advertiser_names,
@@ -513,29 +531,24 @@ our_ref_rollup AS (
     STRING_AGG(DISTINCT trafficker_name, ', ' ORDER BY trafficker_name) AS trafficker_names,
     STRING_AGG(DISTINCT campaign_lead, ', ' ORDER BY campaign_lead) AS campaign_leads,
     STRING_AGG(DISTINCT booking_status, ', ' ORDER BY booking_status) AS booking_statuses,
+    SUM(COALESCE(goal_delivery, 0)) AS goal_delivery,
+    SUM(COALESCE(actual_delivery, 0)) AS actual_delivery,
+    SUM(COALESCE(total_impressions, 0)) AS total_impressions,
+    SUM(COALESCE(total_link_clicks, 0)) AS total_link_clicks,
+    SUM(COALESCE(total_video_completions, 0)) AS total_video_completions,
     SUM(COALESCE(budget, 0)) AS budget,
     SUM(COALESCE(booked_nett_cost, 0)) AS booked_nett_cost,
     MIN(start_date) AS start_date,
-    MAX(end_date) AS end_date
+    MAX(end_date) AS end_date,
+    MIN(first_delivery_date) AS first_delivery_date,
+    MAX(last_delivery_date) AS last_delivery_date
   FROM line_items
-  GROUP BY 1
-),
-delivery AS (
-  SELECT
-    TRIM(CAST(OUR_REF AS STRING)) AS our_ref,
-    SUM(COALESCE(COST, 0)) AS actual_nett_spend,
-    SUM(COALESCE(IMPRESSIONS, 0)) AS total_impressions,
-    SUM(COALESCE(CLICKS, 0)) AS total_clicks,
-    MIN(DATE) AS first_delivery_date,
-    MAX(DATE) AS last_delivery_date
-  FROM {table_fqn(project_id, dataset, "BLEND_BLEND_5_1_2")}
-  WHERE OUR_REF IS NOT NULL
-    AND TRIM(CAST(OUR_REF AS STRING)) != ''
   GROUP BY 1
 ),
 base AS (
   SELECT
     l.our_ref,
+    l.goal_types,
     l.datasources,
     l.job_numbers,
     l.campaign_names,
@@ -546,6 +559,11 @@ base AS (
     l.trafficker_names,
     l.campaign_leads,
     l.booking_statuses,
+    l.goal_delivery,
+    l.actual_delivery,
+    l.total_impressions,
+    l.total_link_clicks,
+    l.total_video_completions,
     l.budget,
     l.booked_nett_cost,
     l.start_date,
@@ -560,22 +578,18 @@ base AS (
         DATE_DIFF(LEAST(ld.latest_delivery_date, l.end_date), l.start_date, DAY) + 1
       )
     ) AS elapsed_days,
-    COALESCE(d.actual_nett_spend, 0) AS actual_nett_spend,
-    COALESCE(d.total_impressions, 0) AS total_impressions,
-    COALESCE(d.total_clicks, 0) AS total_clicks,
-    d.first_delivery_date,
-    d.last_delivery_date
+    l.first_delivery_date,
+    l.last_delivery_date
   FROM our_ref_rollup l
   -- Roll up at OUR_REF level after deduping repeated daily rows at JOB_NUMBER level.
   CROSS JOIN latest_delivery ld
-  LEFT JOIN delivery d
-    ON d.our_ref = l.our_ref
   WHERE l.start_date IS NOT NULL
     AND l.end_date IS NOT NULL
     AND l.end_date >= l.start_date
 )
 SELECT
   our_ref,
+  goal_types,
   datasources,
   job_numbers,
   campaign_names,
@@ -595,34 +609,38 @@ SELECT
   total_days,
   elapsed_days,
   SAFE_DIVIDE(elapsed_days, total_days) AS pacing_ratio,
-  actual_nett_spend,
+  goal_delivery,
+  SAFE_MULTIPLY(goal_delivery, SAFE_DIVIDE(elapsed_days, total_days)) AS expected_delivery_to_date,
+  actual_delivery,
+  actual_delivery - SAFE_MULTIPLY(goal_delivery, SAFE_DIVIDE(elapsed_days, total_days)) AS delivery_delta,
+  SAFE_DIVIDE(actual_delivery, SAFE_MULTIPLY(goal_delivery, SAFE_DIVIDE(elapsed_days, total_days))) AS delivery_pacing_ratio,
   total_impressions,
-  total_clicks,
+  total_link_clicks,
+  total_video_completions,
   first_delivery_date,
-  last_delivery_date,
-  SAFE_MULTIPLY(budget, SAFE_DIVIDE(elapsed_days, total_days)) AS expected_spend_to_date,
-  SAFE_MULTIPLY(budget, SAFE_DIVIDE(elapsed_days, total_days)) - actual_nett_spend AS pacing_delta,
-  SAFE_DIVIDE(actual_nett_spend, SAFE_MULTIPLY(budget, SAFE_DIVIDE(elapsed_days, total_days))) AS spend_vs_expected_ratio,
-  SAFE_DIVIDE(actual_nett_spend, budget) AS spend_vs_budget_ratio
+  last_delivery_date
 FROM base
-WHERE SAFE_MULTIPLY(budget, SAFE_DIVIDE(elapsed_days, total_days)) > 0
-  AND SAFE_DIVIDE(actual_nett_spend, SAFE_MULTIPLY(budget, SAFE_DIVIDE(elapsed_days, total_days))) <= 0.9
-ORDER BY spend_vs_expected_ratio ASC, pacing_delta ASC, our_ref
+WHERE SAFE_MULTIPLY(goal_delivery, SAFE_DIVIDE(elapsed_days, total_days)) > 0
+  AND SAFE_DIVIDE(elapsed_days, total_days) < 1
+  AND SAFE_DIVIDE(actual_delivery, SAFE_MULTIPLY(goal_delivery, SAFE_DIVIDE(elapsed_days, total_days))) <= 0.9
+ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
 """
         ).result()
     )
 
     data: list[dict[str, Any]] = []
     for r in rows:
-        actual_nett_spend = float(r["actual_nett_spend"] or 0)
-        expected_spend_to_date = float(r["expected_spend_to_date"] or 0)
+        goal_delivery = float(r["goal_delivery"] or 0)
+        expected_delivery_to_date = float(r["expected_delivery_to_date"] or 0)
+        actual_delivery = float(r["actual_delivery"] or 0)
         time_progress_ratio = float(r["pacing_ratio"] or 0)
-        spend_vs_expected_ratio = float(r["spend_vs_expected_ratio"]) if r["spend_vs_expected_ratio"] is not None else None
-        pacing_delta = float(r["pacing_delta"] or 0)
+        delivery_pacing_ratio = float(r["delivery_pacing_ratio"]) if r["delivery_pacing_ratio"] is not None else None
+        delivery_delta = float(r["delivery_delta"] or 0)
 
         data.append(
             {
                 "OUR_REF": str(r["our_ref"] or ""),
+                "GOAL_TYPE": str(r["goal_types"] or ""),
                 "DATASOURCE": str(r["datasources"] or ""),
                 "JOB_NUMBER": str(r["job_numbers"] or ""),
                 "CAMPAIGN_NAME": str(r["campaign_names"] or ""),
@@ -642,17 +660,18 @@ ORDER BY spend_vs_expected_ratio ASC, pacing_delta ASC, our_ref
                 "TOTAL_DAYS": int(r["total_days"] or 0),
                 "ELAPSED_DAYS": int(r["elapsed_days"] or 0),
                 "TIME_PROGRESS_RATIO": time_progress_ratio,
-                "ACTUAL_NETT_SPEND": actual_nett_spend,
-                "EXPECTED_SPEND_TO_DATE": expected_spend_to_date,
-                "PACING_DELTA": pacing_delta,
-                "SPEND_VS_EXPECTED_RATIO": spend_vs_expected_ratio,
+                "GOAL_DELIVERY": goal_delivery,
+                "EXPECTED_DELIVERY_TO_DATE": expected_delivery_to_date,
+                "ACTUAL_DELIVERY": actual_delivery,
+                "DELIVERY_DELTA": delivery_delta,
+                "DELIVERY_PACING_RATIO": delivery_pacing_ratio,
                 "PACING_STATUS": "UNDER",
                 "PACING_BUCKET": PACING_TYPE_UNDER,
                 "TOTAL_IMPRESSIONS": float(r["total_impressions"] or 0),
-                "TOTAL_CLICKS": float(r["total_clicks"] or 0),
+                "TOTAL_LINK_CLICKS": float(r["total_link_clicks"] or 0),
+                "TOTAL_VIDEO_COMPLETIONS": float(r["total_video_completions"] or 0),
                 "FIRST_DELIVERY_DATE": str(r["first_delivery_date"] or ""),
                 "LAST_DELIVERY_DATE": str(r["last_delivery_date"] or ""),
-                "SPEND_VS_BUDGET_RATIO": float(r["spend_vs_budget_ratio"]) if r["spend_vs_budget_ratio"] is not None else None,
             }
         )
 

@@ -701,7 +701,7 @@ function PacingPage(props: {
   refresh: () => Promise<void>;
 }) {
   const [query, setQuery] = React.useState("");
-  const [sort, setSort] = React.useState<SortState>({ key: "SPEND_VS_EXPECTED_RATIO", direction: "desc" });
+  const [sort, setSort] = React.useState<SortState>({ key: "DELIVERY_PACING_RATIO", direction: "asc" });
 
   const filtered = React.useMemo(() => props.rows.filter((row) => {
     const text = `${row.OUR_REF} ${row.JOB_NUMBER} ${row.CAMPAIGN_NAME} ${row.ADVERTISER_NAME} ${row.ACCOUNT_MANAGER}`.toLowerCase();
@@ -709,9 +709,9 @@ function PacingPage(props: {
   }), [props.pacingType, props.rows, query]);
   const sortedRows = React.useMemo(() => sortRows(filtered, sort), [filtered, sort]);
 
-  const activeRows = filtered.filter((row) => Number(row.EXPECTED_SPEND_TO_DATE || 0) > 0);
-  const totalExpected = activeRows.reduce((sum, row) => sum + Number(row.EXPECTED_SPEND_TO_DATE || 0), 0);
-  const totalActual = activeRows.reduce((sum, row) => sum + Number(row.ACTUAL_NETT_SPEND || 0), 0);
+  const activeRows = filtered.filter((row) => Number(row.EXPECTED_DELIVERY_TO_DATE || 0) > 0);
+  const totalExpected = activeRows.reduce((sum, row) => sum + Number(row.EXPECTED_DELIVERY_TO_DATE || 0), 0);
+  const totalActual = activeRows.reduce((sum, row) => sum + Number(row.ACTUAL_DELIVERY || 0), 0);
   const underCount = filtered.filter((row) => row.PACING_STATUS === "UNDER").length;
   const blendedRatio = totalExpected > 0 ? totalActual / totalExpected : null;
 
@@ -727,9 +727,9 @@ function PacingPage(props: {
       />
       <MetricStrip metrics={[
         { label: "Rows", value: num(filtered.length) },
-        { label: "Expected spend to date", value: currency(totalExpected) },
-        { label: "Actual nett spend", value: currency(totalActual) },
-        { label: "Spend vs expected", value: blendedRatio === null ? "N/A" : pct(blendedRatio) },
+        { label: "Expected delivery", value: num(Math.round(totalExpected)) },
+        { label: "Actual delivery", value: num(Math.round(totalActual)) },
+        { label: "Delivery vs expected", value: blendedRatio === null ? "N/A" : pct(blendedRatio) },
         { label: "Underpacing refs", value: num(underCount), tone: "warn" }
       ]} />
       <section className="toolbar">
@@ -756,21 +756,23 @@ function PacingPage(props: {
           columns={[
             ["OUR_REF", "OUR REF"],
             ["DATASOURCE", "Datasource"],
+            ["GOAL_TYPE", "Goal"],
             ["ADVERTISER_NAME", "Advertiser"],
             ["CAMPAIGN_NAME", "Campaign"],
             ["ACCOUNT_MANAGER", "AM"],
             ["START_DATE", "Start"],
             ["END_DATE", "End"],
             ["TIME_PROGRESS_RATIO", "Time progress"],
-            ["EXPECTED_SPEND_TO_DATE", "Expected spend"],
-            ["ACTUAL_NETT_SPEND", "Actual spend"],
-            ["PACING_DELTA", "Delta"],
-            ["SPEND_VS_EXPECTED_RATIO", "Spend vs expected"],
+            ["GOAL_DELIVERY", "Goal delivery"],
+            ["EXPECTED_DELIVERY_TO_DATE", "Expected delivery"],
+            ["ACTUAL_DELIVERY", "Actual delivery"],
+            ["DELIVERY_DELTA", "Delta"],
+            ["DELIVERY_PACING_RATIO", "Delivery vs expected"],
             ["PACING_STATUS", "Status"]
           ]}
           format={(key, value) => {
-            if (["EXPECTED_SPEND_TO_DATE", "ACTUAL_NETT_SPEND", "PACING_DELTA"].includes(key)) return currency(value);
-            if (["TIME_PROGRESS_RATIO", "SPEND_VS_EXPECTED_RATIO"].includes(key)) return value === null || value === "" ? "N/A" : pct(value);
+            if (["GOAL_DELIVERY", "EXPECTED_DELIVERY_TO_DATE", "ACTUAL_DELIVERY", "DELIVERY_DELTA"].includes(key)) return num(Math.round(Number(value || 0)));
+            if (["TIME_PROGRESS_RATIO", "DELIVERY_PACING_RATIO"].includes(key)) return value === null || value === "" ? "N/A" : pct(value);
             return String(value ?? "");
           }}
         />
