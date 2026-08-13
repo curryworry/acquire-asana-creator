@@ -586,6 +586,8 @@ base AS (
   WHERE l.start_date IS NOT NULL
     AND l.end_date IS NOT NULL
     AND l.end_date >= l.start_date
+    AND l.start_date <= ld.latest_delivery_date
+    AND l.end_date >= ld.latest_delivery_date
 )
 SELECT
   our_ref,
