@@ -25,6 +25,7 @@ import {
   Table2,
   X
 } from "lucide-react";
+import acquireLogoUrl from "./assets/acquire-logo-loader.svg";
 import "./styles.css";
 
 type AlertSection = "NOT_LIVE" | "STOPPED_IMPRESSIONS" | "MISSING_OUR_REF" | "ENDED_BUT_IMPRESSIONS";
@@ -423,6 +424,8 @@ function App() {
   const opsData = useOpsBootstrap(Boolean(token));
   const alertsData = opsData.alerts;
   const pacingData = opsData.pacing;
+  const opsCountsReady = alertsData.hasLoaded && pacingData.hasLoaded;
+  const showOpsBootstrapLoader = (alertsActive || pacingActive) && Boolean(token) && !opsData.alerts.hasLoaded && !opsData.alerts.error;
   const alertCounts = React.useMemo(() => openAlertCounts(alertsData.rows), [alertsData.rows]);
   const pacingCounts = React.useMemo(() => underpacingCounts(pacingData.rows), [pacingData.rows]);
   const totalOpenAlerts = React.useMemo(
@@ -483,7 +486,7 @@ function App() {
             >
               <Sparkles size={18} />
               <span>Pacing</span>
-              <span className="nav-count nav-count-parent">{num(totalUnderpacing)}</span>
+              {opsCountsReady && <span className="nav-count nav-count-parent">{num(totalUnderpacing)}</span>}
               <ChevronDown className={`nav-chevron ${pacingExpanded ? "open" : ""}`} size={16} />
             </button>
             {pacingExpanded && (
@@ -495,7 +498,7 @@ function App() {
                     onClick={() => setPage(section.page)}
                   >
                     <span>{section.label}</span>
-                    <span className="nav-count">{num(pacingCounts[section.key] || 0)}</span>
+                    {opsCountsReady && <span className="nav-count">{num(pacingCounts[section.key] || 0)}</span>}
                   </button>
                 ))}
               </div>
@@ -511,7 +514,7 @@ function App() {
             >
               <Bell size={18} />
               <span>Alerts</span>
-              <span className="nav-count nav-count-parent">{num(totalOpenAlerts)}</span>
+              {opsCountsReady && <span className="nav-count nav-count-parent">{num(totalOpenAlerts)}</span>}
               <ChevronDown className={`nav-chevron ${alertsExpanded ? "open" : ""}`} size={16} />
             </button>
             {alertsExpanded && (
@@ -523,7 +526,7 @@ function App() {
                     onClick={() => setPage(section.page)}
                   >
                     <span>{section.label}</span>
-                    <span className="nav-count">{num(alertCounts[section.key] || 0)}</span>
+                    {opsCountsReady && <span className="nav-count">{num(alertCounts[section.key] || 0)}</span>}
                   </button>
                 ))}
               </div>
@@ -546,6 +549,9 @@ function App() {
         </div>
       </aside>
       <main className="workspace">
+        {showOpsBootstrapLoader && <OpsLoadingScreen />}
+        {!showOpsBootstrapLoader && (
+          <>
         {page === "margin" && <MarginPage />}
         {page === "pacing:underpacing" && activePacingType && <PacingPage pacingType={activePacingType} {...pacingData} />}
         {page === "alerts:not_live" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
@@ -555,8 +561,22 @@ function App() {
         {page === "trafficking" && <PlaceholderPage title="Trafficking to Asana" body="The next migration slice will bring the Gmail fetch, parse preview, Asana dedupe check, and dry-run downloads into this interface." />}
         {page === "automation" && <PlaceholderPage title="Automation Runs" body="Manual automation triggers should run as background jobs with live status and logs, instead of blocking the interface." />}
         {page === "admin" && <AdminPage isAdmin={isAdmin} />}
+          </>
+        )}
       </main>
     </div>
+  );
+}
+
+function OpsLoadingScreen() {
+  return (
+    <section className="ops-loading-screen" role="status" aria-live="polite">
+      <div className="ops-loading-logo" aria-hidden="true">
+        <img className="ops-loading-logo-base" src={acquireLogoUrl} alt="" />
+        <img className="ops-loading-logo-fill" src={acquireLogoUrl} alt="" />
+      </div>
+      <p>Loading ops data...</p>
+    </section>
   );
 }
 
