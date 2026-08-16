@@ -1052,7 +1052,16 @@ WHEN NOT MATCHED THEN
 
 COMMIT TRANSACTION;
 """
+    current_date = today_nz()
     parsed_end_date = end_date or None
+    if parsed_end_date:
+        try:
+            end_date_value = date.fromisoformat(parsed_end_date)
+        except ValueError:
+            parsed_end_date = current_date.isoformat()
+        else:
+            if end_date_value < current_date:
+                parsed_end_date = current_date.isoformat()
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ArrayQueryParameter("our_refs", "STRING", our_refs),
@@ -1060,7 +1069,7 @@ COMMIT TRANSACTION;
             bigquery.ArrayQueryParameter("alert_types", "STRING", alert_types),
             bigquery.ArrayQueryParameter("expected_versions", "STRING", expected_versions),
             bigquery.ScalarQueryParameter("reason", "STRING", reason),
-            bigquery.ScalarQueryParameter("start_date", "DATE", today_nz().isoformat()),
+            bigquery.ScalarQueryParameter("start_date", "DATE", current_date.isoformat()),
             bigquery.ScalarQueryParameter("end_date", "DATE", parsed_end_date),
             bigquery.ScalarQueryParameter("user", "STRING", user),
             bigquery.ScalarQueryParameter("run_id", "STRING", run_id),

@@ -137,6 +137,17 @@ function downloadCsv(filename: string, rows: AnyRow[]) {
   URL.revokeObjectURL(url);
 }
 
+function todayInTimeZone(timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-NZ", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
 async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem(TOKEN_KEY);
   const headers = new Headers(options.headers);
@@ -1310,7 +1321,7 @@ function SnoozeButton(props: {
 }) {
   const [open, setOpen] = React.useState(Boolean(props.inline));
   const [reason, setReason] = React.useState("");
-  const [endDate, setEndDate] = React.useState(new Date().toISOString().slice(0, 10));
+  const [endDate, setEndDate] = React.useState(() => todayInTimeZone("Pacific/Auckland"));
   const [permanent, setPermanent] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
 
@@ -1320,7 +1331,7 @@ function SnoozeButton(props: {
 
   async function submit() {
     setLoading(true);
-    const nextEndDate = permanent ? null : endDate || new Date().toISOString().slice(0, 10);
+    const nextEndDate = permanent ? null : endDate || todayInTimeZone("Pacific/Auckland");
     props.onSubmitStart?.(props.alerts, reason, nextEndDate);
     try {
       await apiFetch(props.endpoint, {
@@ -1329,7 +1340,7 @@ function SnoozeButton(props: {
       });
       setOpen(Boolean(props.inline));
       setReason("");
-      setEndDate(new Date().toISOString().slice(0, 10));
+      setEndDate(todayInTimeZone("Pacific/Auckland"));
       setPermanent(false);
       props.onDone();
     } catch (err) {
@@ -1365,6 +1376,7 @@ function SnoozeButton(props: {
           name="snooze-end-date"
           type="date"
           autoComplete="off"
+          min={todayInTimeZone("Pacific/Auckland")}
           value={endDate}
           onChange={(event) => setEndDate(event.target.value)}
         />
