@@ -577,6 +577,51 @@ tr.selected td {
   background: #edf5ee;
 }
 
+tr.snoozed-row td {
+  color: #7f8984;
+  background: rgba(238, 235, 224, 0.48);
+}
+
+tr.snoozed-row:hover td {
+  background: rgba(230, 235, 226, 0.72);
+}
+
+tr.snoozed-row .strong-cell {
+  color: #53615b;
+}
+
+tr.snoozed-row .progress-track {
+  background: #e1ded3;
+}
+
+tr.snoozed-row .progress-fill {
+  background: #89928c;
+  opacity: 0.48;
+}
+
+.ref-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sleep-badge {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  color: #50615b;
+  background: rgba(22, 116, 95, 0.12);
+  border: 1px solid rgba(22, 116, 95, 0.12);
+}
+
+.sleep-badge img {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
 .select-col {
   width: 46px;
   text-align: center;

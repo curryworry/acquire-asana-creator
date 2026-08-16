@@ -121,6 +121,24 @@ def margin_snooze(payload: SnoozeActionRequest, user: dict[str, str] = Depends(c
     return {"status": "ok"}
 
 
+@app.post("/api/pacing/snooze")
+def pacing_snooze(payload: SnoozeActionRequest, user: dict[str, str] = Depends(current_user)) -> dict[str, str]:
+    try:
+        write_snooze_action("snooze", payload.alerts, user["username"], payload.reason, payload.end_date, payload.run_id)
+    except AlertConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"status": "ok"}
+
+
+@app.post("/api/pacing/unsnooze")
+def pacing_unsnooze(payload: SnoozeActionRequest, user: dict[str, str] = Depends(current_user)) -> dict[str, str]:
+    try:
+        write_snooze_action("unsnooze", payload.alerts, user["username"], "", None, payload.run_id)
+    except AlertConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"status": "ok"}
+
+
 @app.post("/api/alerts/snooze")
 def alerts_snooze(payload: SnoozeActionRequest, user: dict[str, str] = Depends(current_user)) -> dict[str, str]:
     try:

@@ -22,6 +22,7 @@ ALERT_TYPE_MISSING_OUR_REF = "MISSING_OUR_REF"
 ALERT_TYPE_ENDED_BUT_IMPRESSIONS = "ENDED_BUT_IMPRESSIONS"
 MARGIN_SNOOZE_TYPE = "MARGIN_DASHBOARD"
 PACING_TYPE_UNDER = "UNDERPACING"
+PACING_SNOOZE_TYPE = "PACING_UNDERPACING"
 
 
 class AlertConflictError(Exception):
@@ -461,6 +462,7 @@ ORDER BY margin_amount ASC, our_ref
 
 def pacing_dashboard() -> dict[str, Any]:
     client, project_id, dataset = bq_context()
+    ensure_control_tables(client, project_id, dataset)
     rows = list(
         client.query(
             f"""
@@ -678,13 +680,51 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
             }
         )
 
+    if data:
+        df = pd.DataFrame(data)
+        snooze_df = latest_snoozes(
+            client,
+            project_id,
+            dataset,
+            alert_keys=sorted(df["OUR_REF"].dropna().astype(str).unique().tolist()),
+            alert_types=[PACING_SNOOZE_TYPE],
+        )
+        if not snooze_df.empty:
+            df = df.merge(
+                snooze_df[["ALERT_KEY", "SNOOZE_STATUS", "SNOOZE_REASON", "SNOOZE_START_DATE", "SNOOZE_END_DATE", "SNOOZED_BY", "UPDATED_AT"]],
+                left_on="OUR_REF",
+                right_on="ALERT_KEY",
+                how="left",
+            )
+        else:
+            for col in ["ALERT_KEY", "SNOOZE_STATUS", "SNOOZE_REASON", "SNOOZE_START_DATE", "SNOOZE_END_DATE", "SNOOZED_BY", "UPDATED_AT"]:
+                df[col] = ""
+
+        today = today_nz()
+        states: list[str] = []
+        for _, row in df.iterrows():
+            status = str(row.get("SNOOZE_STATUS", "") or "").upper()
+            end_date_raw = str(row.get("SNOOZE_END_DATE", "") or "").strip()
+            end_date = pd.to_datetime(end_date_raw, errors="coerce")
+            states.append("SNOOZED" if status == "ACTIVE" and (not end_date_raw or (not pd.isna(end_date) and end_date.date() >= today)) else "OPEN")
+        df["PACING_SNOOZE_STATE"] = states
+        df["STATE_VERSION"] = df["UPDATED_AT"].fillna("").astype(str)
+        data = records_from_rows(df.fillna("").to_dict(orient="records"))
+    else:
+        data = []
+
+    open_count = sum(1 for row in data if row.get("PACING_SNOOZE_STATE") == "OPEN")
+    snoozed_count = sum(1 for row in data if row.get("PACING_SNOOZE_STATE") == "SNOOZED")
+
     return {
-        "rows": records_from_rows(data),
+        "rows": data,
         "meta": {
             "project_id": project_id,
             "dataset": dataset,
             "source_table": "master_overview",
             "count_underpacing": str(len(data)),
+            "open_count": str(open_count),
+            "snoozed_count": str(snoozed_count),
         },
     }
 

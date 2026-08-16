@@ -26,6 +26,7 @@ import {
   X
 } from "lucide-react";
 import acquireLogoUrl from "./assets/acquire-logo-loader.svg";
+import sleepBadgeUrl from "./assets/sleep-badge.svg";
 import "./styles.css";
 
 type AlertSection = "NOT_LIVE" | "STOPPED_IMPRESSIONS" | "MISSING_OUR_REF" | "ENDED_BUT_IMPRESSIONS";
@@ -756,12 +757,17 @@ function PacingPage(props: {
   refresh: () => Promise<void>;
 }) {
   const [query, setQuery] = React.useState("");
+  const [status, setStatus] = React.useState("ALL");
+  const [selected, setSelected] = React.useState<Set<string>>(new Set());
+  const [actionError, setActionError] = React.useState("");
   const [sort, setSort] = React.useState<SortState>({ key: "DELIVERY_PACING_RATIO", direction: "asc" });
 
   const filtered = React.useMemo(() => props.rows.filter((row) => {
-    const text = `${row.OUR_REF} ${row.JOB_NUMBER} ${row.CAMPAIGN_NAME} ${row.ADVERTISER_NAME} ${row.ACCOUNT_MANAGER}`.toLowerCase();
-    return row.PACING_BUCKET === props.pacingType && text.includes(query.toLowerCase());
-  }), [props.pacingType, props.rows, query]);
+    const text = `${row.OUR_REF} ${row.JOB_NUMBER} ${row.CAMPAIGN_NAME} ${row.ADVERTISER_NAME} ${row.ACCOUNT_MANAGER} ${row.SNOOZE_REASON}`.toLowerCase();
+    const state = String(row.PACING_SNOOZE_STATE || "OPEN");
+    const stateMatch = status === "ALL" || state === status;
+    return row.PACING_BUCKET === props.pacingType && stateMatch && text.includes(query.toLowerCase());
+  }), [props.pacingType, props.rows, query, status]);
   const sortedRows = React.useMemo(() => sortRows(filtered, sort), [filtered, sort]);
 
   const activeRows = filtered.filter((row) => Number(row.EXPECTED_DELIVERY_TO_DATE || 0) > 0);
@@ -769,6 +775,66 @@ function PacingPage(props: {
   const totalActual = activeRows.reduce((sum, row) => sum + Number(row.ACTUAL_DELIVERY || 0), 0);
   const underCount = filtered.filter((row) => row.PACING_STATUS === "UNDER").length;
   const blendedRatio = totalExpected > 0 ? totalActual / totalExpected : null;
+  const selectedRows = sortedRows.filter((row) => selected.has(String(row.OUR_REF)));
+  const selectedAlerts = selectedRows.map((row) => ({
+    alert_type: "PACING_UNDERPACING",
+    alert_key: String(row.OUR_REF),
+    our_ref: String(row.OUR_REF),
+    state_version: String(row.STATE_VERSION || "")
+  }));
+  const selectedSnoozedAlerts = selectedRows
+    .filter((row) => row.PACING_SNOOZE_STATE === "SNOOZED")
+    .map((row) => ({
+      alert_type: "PACING_UNDERPACING",
+      alert_key: String(row.OUR_REF),
+      our_ref: String(row.OUR_REF),
+      state_version: String(row.STATE_VERSION || "")
+    }));
+  const pacingColumns: Array<[string, string]> = [
+    ["OUR_REF", "OUR REF"],
+    ["ADVERTISER_NAME", "Advertiser"],
+    ["CAMPAIGN_NAME", "Campaign"],
+    ["LOCATION_TEXT", "Line item"],
+    ["__PROGRESS", "Progress"],
+    ["DELIVERY_PACING_RATIO", "Delivery Pacing"],
+    ["PROPERTY_NAME", "Property"],
+    ["JOB_NUMBER", "Job number"],
+    ["ACCOUNT_MANAGER", "AM"],
+    ["START_DATE", "Start"],
+    ["END_DATE", "End"],
+    ["TIME_PROGRESS_RATIO", "Time progress"],
+    ["GOAL_DELIVERY", "Goal delivery"],
+    ["GOAL_TYPE", "Target type"],
+    ["EXPECTED_DELIVERY_TO_DATE", "Expected delivery"],
+    ["ACTUAL_DELIVERY", "Actual delivery"],
+    ["DELIVERY_DELTA", "Short fall"],
+    ["DATASOURCE", "Datasource"]
+  ];
+  const snoozeColumns: Array<[string, string]> = [
+    ["SNOOZE_REASON", "Snooze reason"],
+    ["SNOOZE_END_DATE", "Snooze expiry"],
+    ["SNOOZED_BY", "Snoozed by"],
+    ["UPDATED_AT", "Snoozed at"]
+  ];
+
+  React.useEffect(() => {
+    setSelected(new Set());
+    setActionError("");
+  }, [status, props.pacingType]);
+
+  async function postAction(path: string, body: Record<string, unknown>) {
+    setActionError("");
+    try {
+      await apiFetch(path, { method: "POST", body: JSON.stringify(body) });
+      invalidateApiCache("/api/pacing");
+      setSelected(new Set());
+      await props.refresh();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Action failed";
+      setActionError(message);
+      if (err instanceof ApiError && err.status === 409) await props.refresh();
+    }
+  }
 
   return (
     <>
@@ -787,60 +853,60 @@ function PacingPage(props: {
         { label: "Delivery vs expected", value: blendedRatio === null ? "N/A" : pct(blendedRatio) },
         { label: "Underpacing refs", value: num(underCount), tone: "warn" }
       ]} />
-      <section className="toolbar">
-        <div className="searchbox">
-          <Search size={16} />
-          <input
-            name="pacing-table-search"
-            placeholder="Search refs, jobs, campaigns, advertisers..."
-            autoComplete="off"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </div>
-        <div className="selected-chip"><SlidersHorizontal size={15} /> {filtered.length} rows</div>
-      </section>
+      <Toolbar query={query} setQuery={setQuery} status={status} setStatus={setStatus} statuses={["OPEN", "SNOOZED", "ALL"]} selectedCount={selectedAlerts.length} />
       <DataState loading={props.loading && !props.hasLoaded} error={props.error} empty={!filtered.length}>
         <DataTable
           rows={sortedRows}
-          selected={new Set()}
-          setSelected={() => {}}
+          selected={selected}
+          setSelected={setSelected}
           idKey="OUR_REF"
           sort={sort}
           onSort={(key) => setSort((current) => nextSort(current, key))}
-          columns={[
-            ["OUR_REF", "OUR REF"],
-            ["ADVERTISER_NAME", "Advertiser"],
-            ["CAMPAIGN_NAME", "Campaign"],
-            ["LOCATION_TEXT", "Line item"],
-            ["__PROGRESS", "Progress"],
-            ["DELIVERY_PACING_RATIO", "Delivery Pacing"],
-            ["PROPERTY_NAME", "Property"],
-            ["JOB_NUMBER", "Job number"],
-            ["ACCOUNT_MANAGER", "AM"],
-            ["START_DATE", "Start"],
-            ["END_DATE", "End"],
-            ["TIME_PROGRESS_RATIO", "Time progress"],
-            ["GOAL_DELIVERY", "Goal delivery"],
-            ["GOAL_TYPE", "Target type"],
-            ["EXPECTED_DELIVERY_TO_DATE", "Expected delivery"],
-            ["ACTUAL_DELIVERY", "Actual delivery"],
-            ["DELIVERY_DELTA", "Short fall"],
-            ["DATASOURCE", "Datasource"]
-          ]}
+          columns={status === "SNOOZED" ? [...pacingColumns, ...snoozeColumns] : pacingColumns}
           renderCell={(key, value, row) => {
+            if (key === "OUR_REF") return <RefCell value={value} snoozed={row.PACING_SNOOZE_STATE === "SNOOZED"} />;
             if (key !== "__PROGRESS") return null;
             return <ProgressCell timeProgress={Number(row.TIME_PROGRESS_RATIO || 0)} deliveryProgress={Number(row.ACTUAL_DELIVERY || 0) / Math.max(Number(row.GOAL_DELIVERY || 0), 1)} />;
           }}
           headerHelp={{ DELIVERY_PACING_RATIO: DELIVERY_PACING_HELP }}
-          format={(key, value) => {
+          rowClassName={(row) => row.PACING_SNOOZE_STATE === "SNOOZED" ? "snoozed-row" : ""}
+          format={(key, value, row) => {
             if (["GOAL_DELIVERY", "EXPECTED_DELIVERY_TO_DATE", "ACTUAL_DELIVERY", "DELIVERY_DELTA"].includes(key)) return num(Math.round(Number(value || 0)));
             if (["TIME_PROGRESS_RATIO", "DELIVERY_PACING_RATIO"].includes(key)) return value === null || value === "" ? "N/A" : pct(value);
+            if (key === "SNOOZE_END_DATE" && !value && row.PACING_SNOOZE_STATE === "SNOOZED") return "Permanent";
             return String(value ?? "");
           }}
         />
       </DataState>
+      <ActionDock selectedCount={selectedAlerts.length} onClear={() => setSelected(new Set())}>
+        <SnoozeButton
+          endpoint="/api/pacing/snooze"
+          alerts={selectedAlerts}
+          onDone={() => { setSelected(new Set()); void props.refresh(); }}
+          onError={(message) => { setActionError(message); void props.refresh(); }}
+          onConflict={() => void props.refresh()}
+        />
+        {status !== "OPEN" && (
+          <button className="dock-button" disabled={!selectedSnoozedAlerts.length} onClick={() => void postAction("/api/pacing/unsnooze", { alerts: selectedSnoozedAlerts })}>
+            <Check size={15} /> Unsnooze
+          </button>
+        )}
+        {actionError && <span className="dock-error">{actionError}</span>}
+      </ActionDock>
     </>
+  );
+}
+
+function RefCell(props: { value: unknown; snoozed: boolean }) {
+  return (
+    <span className="ref-cell">
+      <span>{String(props.value ?? "")}</span>
+      {props.snoozed && (
+        <span className="sleep-badge" title="Snoozed">
+          <img src={sleepBadgeUrl} alt="Snoozed" />
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -1133,6 +1199,7 @@ function DataTable(props: {
   format: (key: string, value: unknown, row: AnyRow) => string;
   renderCell?: (key: string, value: unknown, row: AnyRow) => React.ReactNode | null;
   headerHelp?: Record<string, string>;
+  rowClassName?: (row: AnyRow) => string;
 }) {
   return (
     <div className="table-wrap">
@@ -1171,8 +1238,9 @@ function DataTable(props: {
           {props.rows.map((row) => {
             const id = String(row[props.idKey]);
             const checked = props.selected.has(id);
+            const rowClassName = [checked ? "selected" : "", props.rowClassName?.(row) || ""].filter(Boolean).join(" ");
             return (
-              <tr key={id} className={checked ? "selected" : ""}>
+              <tr key={id} className={rowClassName}>
                 <td className="select-col">
                   <input
                     type="checkbox"
