@@ -1078,6 +1078,9 @@ COMMIT TRANSACTION;
     try:
         client.query(query, job_config=job_config).result()
     except BadRequest as exc:
-        if "Alert state changed" in str(exc):
+        error_text = str(exc)
+        if "Alert state changed" in error_text:
             raise AlertConflictError("Alert state changed before your action was saved. Refresh and try again.") from exc
+        if "concurrent update" in error_text.lower():
+            raise AlertConflictError("Snooze state changed while your action was saving. Refresh and try again.") from exc
         raise

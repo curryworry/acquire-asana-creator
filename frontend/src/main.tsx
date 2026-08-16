@@ -771,6 +771,7 @@ function PacingPage(props: {
   const [status, setStatus] = React.useState("ALL");
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [actionError, setActionError] = React.useState("");
+  const [actionLoading, setActionLoading] = React.useState(false);
   const [sort, setSort] = React.useState<SortState>({ key: "DELIVERY_PACING_RATIO", direction: "asc" });
 
   const filtered = React.useMemo(() => props.rows.filter((row) => {
@@ -831,9 +832,12 @@ function PacingPage(props: {
   React.useEffect(() => {
     setSelected(new Set());
     setActionError("");
+    setActionLoading(false);
   }, [status, props.pacingType]);
 
   async function postAction(path: string, body: Record<string, unknown>) {
+    if (actionLoading) return;
+    setActionLoading(true);
     setActionError("");
     try {
       await apiFetch(path, { method: "POST", body: JSON.stringify(body) });
@@ -844,6 +848,8 @@ function PacingPage(props: {
       const message = err instanceof Error ? err.message : "Action failed";
       setActionError(message);
       if (err instanceof ApiError && err.status === 409) await props.refresh();
+    } finally {
+      setActionLoading(false);
     }
   }
 
@@ -898,8 +904,8 @@ function PacingPage(props: {
           onConflict={() => void props.refresh()}
         />
         {status !== "OPEN" && (
-          <button className="dock-button" disabled={!selectedSnoozedAlerts.length} onClick={() => void postAction("/api/pacing/unsnooze", { alerts: selectedSnoozedAlerts })}>
-            <Check size={15} /> Unsnooze
+          <button className="dock-button" disabled={!selectedSnoozedAlerts.length || actionLoading} onClick={() => void postAction("/api/pacing/unsnooze", { alerts: selectedSnoozedAlerts })}>
+            {actionLoading ? <Loader2 className="spin" size={15} /> : <Check size={15} />} Unsnooze
           </button>
         )}
         {actionError && <span className="dock-error">{actionError}</span>}
