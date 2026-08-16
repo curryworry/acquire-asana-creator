@@ -248,7 +248,11 @@ function useApiRows<T extends AnyRow>(path: string, enabled = true) {
     void refresh();
   }, [enabled, path, refresh]);
 
-  return { rows, meta, loading, hasLoaded, error, refresh };
+  const updateRows = React.useCallback((updater: (rows: T[]) => T[]) => {
+    setRows((currentRows) => updater(currentRows));
+  }, []);
+
+  return { rows, meta, loading, hasLoaded, error, refresh, updateRows };
 }
 
 function useOpsBootstrap(enabled: boolean) {
@@ -311,6 +315,10 @@ function useOpsBootstrap(enabled: boolean) {
     setAlertRows((currentRows) => updater(currentRows));
   }, []);
 
+  const updatePacingRows = React.useCallback((updater: RowUpdater) => {
+    setPacingRows((currentRows) => updater(currentRows));
+  }, []);
+
   return {
     alerts: {
       rows: alertRows,
@@ -328,7 +336,8 @@ function useOpsBootstrap(enabled: boolean) {
       loading,
       hasLoaded,
       error,
-      refresh
+      refresh,
+      updateRows: updatePacingRows
     }
   };
 }
@@ -684,7 +693,7 @@ function MetricStrip({ metrics }: { metrics: Array<{ label: string; value: strin
 }
 
 function MarginPage() {
-  const { rows, meta, loading, hasLoaded, error, refresh } = useApiRows<AnyRow>("/api/margin");
+  const { rows, meta, loading, hasLoaded, error, refresh, updateRows } = useApiRows<AnyRow>("/api/margin");
   const [query, setQuery] = React.useState("");
   const [status, setStatus] = React.useState("OPEN");
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
@@ -706,6 +715,24 @@ function MarginPage() {
       our_ref: String(row.OUR_REF),
       state_version: String(row.STATE_VERSION || "")
     }));
+
+  function applyOptimisticMarginSnooze(alerts: Array<Record<string, string>>, reason: string, endDate: string | null) {
+    const selectedRefs = new Set(alerts.map((alert) => String(alert.our_ref || alert.alert_key)));
+    updateRows((currentRows) => currentRows.map((row) => {
+      if (!selectedRefs.has(String(row.OUR_REF))) return row;
+      return {
+        ...row,
+        MARGIN_SNOOZE_STATE: "ACTIVE",
+        SNOOZE_STATUS: "ACTIVE",
+        SNOOZE_REASON: reason,
+        SNOOZE_START_DATE: todayInTimeZone("Pacific/Auckland"),
+        SNOOZE_END_DATE: endDate || "",
+        SNOOZED_BY: "Saving...",
+        UPDATED_AT: "Saving..."
+      };
+    }));
+    setSelected(new Set());
+  }
 
   return (
     <>
@@ -752,7 +779,14 @@ function MarginPage() {
         />
       </DataState>
       <ActionDock selectedCount={selected.size} onClear={() => setSelected(new Set())}>
-        <SnoozeButton endpoint="/api/margin/snooze" alerts={selectedAlerts} onDone={() => { setSelected(new Set()); void refresh(); }} />
+        <SnoozeButton
+          endpoint="/api/margin/snooze"
+          alerts={selectedAlerts}
+          onSubmitStart={(alerts, reason, endDate) => applyOptimisticMarginSnooze(alerts, reason, endDate)}
+          onDone={() => { void refresh(); }}
+          onError={() => { void refresh(); }}
+          onConflict={() => void refresh()}
+        />
       </ActionDock>
     </>
   );
@@ -766,6 +800,7 @@ function PacingPage(props: {
   hasLoaded: boolean;
   error: string;
   refresh: () => Promise<void>;
+  updateRows: (updater: RowUpdater) => void;
 }) {
   const [query, setQuery] = React.useState("");
   const [status, setStatus] = React.useState("ALL");
@@ -835,6 +870,40 @@ function PacingPage(props: {
     setActionLoading(false);
   }, [status, props.pacingType]);
 
+  function applyOptimisticPacingSnooze(alerts: Array<Record<string, string>>, reason: string, endDate: string | null) {
+    const selectedRefs = new Set(alerts.map((alert) => String(alert.our_ref || alert.alert_key)));
+    props.updateRows((rows) => rows.map((row) => {
+      if (!selectedRefs.has(String(row.OUR_REF))) return row;
+      return {
+        ...row,
+        PACING_SNOOZE_STATE: "SNOOZED",
+        SNOOZE_STATUS: "ACTIVE",
+        SNOOZE_REASON: reason,
+        SNOOZE_START_DATE: todayInTimeZone("Pacific/Auckland"),
+        SNOOZE_END_DATE: endDate || "",
+        SNOOZED_BY: "Saving...",
+        UPDATED_AT: "Saving..."
+      };
+    }));
+    setSelected(new Set());
+  }
+
+  function applyOptimisticPacingUnsnooze(alerts: Array<Record<string, string>>) {
+    const selectedRefs = new Set(alerts.map((alert) => String(alert.our_ref || alert.alert_key)));
+    props.updateRows((rows) => rows.map((row) => {
+      if (!selectedRefs.has(String(row.OUR_REF))) return row;
+      return {
+        ...row,
+        PACING_SNOOZE_STATE: "OPEN",
+        SNOOZE_STATUS: "UNSNOOZED",
+        SNOOZE_REASON: "Manual unsnooze",
+        SNOOZED_BY: "",
+        UPDATED_AT: "Saving..."
+      };
+    }));
+    setSelected(new Set());
+  }
+
   async function postAction(path: string, body: Record<string, unknown>) {
     if (actionLoading) return;
     setActionLoading(true);
@@ -899,12 +968,16 @@ function PacingPage(props: {
         <SnoozeButton
           endpoint="/api/pacing/snooze"
           alerts={selectedAlerts}
-          onDone={() => { setSelected(new Set()); void props.refresh(); }}
+          onSubmitStart={(alerts, reason, endDate) => applyOptimisticPacingSnooze(alerts, reason, endDate)}
+          onDone={() => { void props.refresh(); }}
           onError={(message) => { setActionError(message); void props.refresh(); }}
           onConflict={() => void props.refresh()}
         />
         {status !== "OPEN" && (
-          <button className="dock-button" disabled={!selectedSnoozedAlerts.length || actionLoading} onClick={() => void postAction("/api/pacing/unsnooze", { alerts: selectedSnoozedAlerts })}>
+          <button className="dock-button" disabled={!selectedSnoozedAlerts.length || actionLoading} onClick={() => {
+            applyOptimisticPacingUnsnooze(selectedSnoozedAlerts);
+            void postAction("/api/pacing/unsnooze", { alerts: selectedSnoozedAlerts });
+          }}>
             {actionLoading ? <Loader2 className="spin" size={15} /> : <Check size={15} />} Unsnooze
           </button>
         )}
@@ -1080,6 +1153,33 @@ function AlertsPage(props: {
     setSelected(new Set());
   }
 
+  function applyOptimisticAlertState(alerts: Array<Record<string, string>>, state: "OPEN" | "DISMISSED") {
+    const selectedKeys = new Set(alerts.map((alert) => `${alert.alert_type}::${alert.alert_key}`));
+    props.updateRows((rows) => rows.map((row) => {
+      const key = `${row.ALERT_TYPE}::${row.ALERT_KEY}`;
+      if (!selectedKeys.has(key)) return row;
+      if (state === "DISMISSED") {
+        return {
+          ...row,
+          LIVE_ALERT_STATE: "DISMISSED",
+          SNOOZE_STATUS: "DISMISSED",
+          SNOOZE_REASON: "Dismissed in React dashboard",
+          DISMISSED_BY: "Saving...",
+          UPDATED_AT: "Saving..."
+        };
+      }
+      return {
+        ...row,
+        LIVE_ALERT_STATE: "OPEN",
+        SNOOZE_STATUS: "UNSNOOZED",
+        SNOOZE_REASON: "Manual unsnooze",
+        SNOOZED_BY: "",
+        UPDATED_AT: "Saving..."
+      };
+    }));
+    setSelected(new Set());
+  }
+
   return (
     <>
       <PageHeader
@@ -1143,7 +1243,10 @@ function AlertsPage(props: {
               onError={(message) => { setActionError(message); void props.refresh({ silent: true }); }}
               onConflict={() => void props.refresh({ silent: true })}
             />
-            <button className="dock-button" disabled={!selected.size} onClick={() => void postAction("/api/alerts/unsnooze", { alerts: selectedAlerts })}>
+            <button className="dock-button" disabled={!selected.size} onClick={() => {
+              applyOptimisticAlertState(selectedAlerts, "OPEN");
+              void postAction("/api/alerts/unsnooze", { alerts: selectedAlerts });
+            }}>
               <Check size={15} /> Unsnooze
             </button>
             <input
@@ -1155,7 +1258,10 @@ function AlertsPage(props: {
               value={adminPass}
               onChange={(event) => setAdminPass(event.target.value)}
             />
-            <button className="dock-button danger" disabled={!selected.size || !adminPass} onClick={() => void postAction("/api/alerts/dismiss", { alerts: selectedAlerts, reason: "Dismissed in React dashboard", admin_pass: adminPass })}>
+            <button className="dock-button danger" disabled={!selected.size || !adminPass} onClick={() => {
+              applyOptimisticAlertState(selectedAlerts, "DISMISSED");
+              void postAction("/api/alerts/dismiss", { alerts: selectedAlerts, reason: "Dismissed in React dashboard", admin_pass: adminPass });
+            }}>
               <X size={15} /> Dismiss
             </button>
           </>
