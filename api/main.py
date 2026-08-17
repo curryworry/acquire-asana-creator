@@ -17,7 +17,9 @@ from api.config import REPO_ROOT, get_auth_users, get_secret
 from api.dashboard_service import (
     alerts_bootstrap,
     alerts_dashboard,
+    bq_context,
     enqueue_snooze_actions,
+    ensure_control_tables,
     margin_dashboard,
     pacing_dashboard,
     process_snooze_action_queue,
@@ -216,6 +218,14 @@ def admin_automations(user: dict[str, str] = Depends(current_user)) -> dict:
 def admin_process_snooze_actions(user: dict[str, str] = Depends(current_user)) -> dict[str, int]:
     require_admin(user)
     return process_snooze_action_queue()
+
+
+@app.post("/api/admin/control-tables/ensure")
+def admin_ensure_control_tables(user: dict[str, str] = Depends(current_user)) -> dict[str, str]:
+    require_admin(user)
+    client, project_id, dataset = bq_context()
+    ensure_control_tables(client, project_id, dataset)
+    return {"status": "ok", "project_id": project_id, "dataset": dataset}
 
 
 @app.post("/api/admin/automations/campaign-alert", response_model=AutomationRunResponse)

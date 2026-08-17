@@ -624,7 +624,6 @@ ORDER BY l.updated_at DESC
 
 def margin_dashboard() -> dict[str, Any]:
     client, project_id, dataset = bq_context()
-    ensure_control_tables(client, project_id, dataset)
     ensure_margin_view(client, project_id, dataset)
 
     rows = list(
@@ -714,7 +713,6 @@ ORDER BY margin_amount ASC, our_ref
 
 def pacing_dashboard() -> dict[str, Any]:
     client, project_id, dataset = bq_context()
-    ensure_control_tables(client, project_id, dataset)
     rows = list(
         client.query(
             f"""
@@ -983,7 +981,6 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
 
 def alerts_dataset() -> tuple[pd.DataFrame, dict[str, str]]:
     client, project_id, dataset = bq_context()
-    ensure_control_tables(client, project_id, dataset)
     global_snooze_df = global_latest_snoozes(client, project_id, dataset)
     rows = list(
         client.query(
