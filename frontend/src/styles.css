@@ -73,7 +73,16 @@ button:disabled {
 }
 
 .brand-block {
-  gap: 12px;
+  height: 48px;
+  justify-content: flex-start;
+}
+
+.brand-logo {
+  width: 158px;
+  height: 45px;
+  background: var(--green);
+  mask: url("./assets/acquire-logo-loader.svg") left center / contain no-repeat;
+  -webkit-mask: url("./assets/acquire-logo-loader.svg") left center / contain no-repeat;
 }
 
 .brand-mark,

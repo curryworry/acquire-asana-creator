@@ -489,11 +489,7 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand-block">
-          <div className="brand-mark"><Sparkles size={18} /></div>
-          <div>
-            <div className="brand-title">Acquire Ops</div>
-            <div className="brand-subtitle">Trafficking control room</div>
-          </div>
+          <div className="brand-logo" role="img" aria-label="Acquire" />
         </div>
         <nav className="nav-stack">
           <NavButton active={page === "margin"} icon={<Gauge size={18} />} label="Margin" onClick={() => setPage("margin")} />
