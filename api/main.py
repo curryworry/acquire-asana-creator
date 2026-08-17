@@ -52,6 +52,12 @@ app.add_middleware(
 FRONTEND_DIST = REPO_ROOT / "frontend" / "dist"
 
 
+@app.on_event("startup")
+def ensure_control_tables_on_startup() -> None:
+    client, project_id, dataset = bq_context()
+    ensure_control_tables(client, project_id, dataset)
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
