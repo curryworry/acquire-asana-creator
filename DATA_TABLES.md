@@ -113,7 +113,7 @@ Rules (confirmed 2026-05-26):
 ### 4) `STOPPED_IMPRESSIONS`
 Flags campaigns that are still active but appear to have stopped delivering.
 
-Rules (updated 2026-06-12):
+Rules (updated 2026-08-17):
 - Source join: `master_overview` (`OURREF`) to delivery `BLEND_BLEND_5_1_2` (`OUR_REF`)
 - Latest data anchor: `MAX(BLEND_BLEND_5_1_2.DATE)` rather than system date
 - Campaign must still be active:
@@ -125,7 +125,7 @@ Rules (updated 2026-06-12):
   - property contains `Programmatic`
   - property excludes `Adserving`
 - Prior activity threshold:
-  - `SUM(IMPRESSIONS)` over the previous 7 days, excluding the latest delivery date, must be `> 200`
+  - campaign must have previously delivered more than `200` impressions before the latest delivery date
 - Stopped condition:
   - `0 impressions` on the latest delivery date
   - `0 impressions` on the previous delivery date
@@ -133,6 +133,7 @@ Rules (updated 2026-06-12):
   - `LATEST_DELIVERY_DATE`: global freshest `DATE` present in `BLEND_BLEND_5_1_2`
   - `LAST_SEEN_DELIVERY_DATE`: last delivery `DATE` seen for that specific campaign
   - `LAST_NONZERO_IMPRESSIONS_DATE`: last `DATE` where that campaign had impressions greater than zero
+  - `HISTORICAL_IMPRESSIONS_BEFORE_LATEST_DAY`: campaign impressions accumulated before the latest delivery date
 
 Data recency check on 2026-06-02:
 - `BLEND_BLEND_5_1_2` latest `DATE` = `2026-06-01`
