@@ -82,6 +82,15 @@ const EMPTY_ALERT_COUNTS: Record<AlertSection, number> = {
   ENDED_BUT_IMPRESSIONS: 0
 };
 const API_CACHE = new Map<string, ApiEnvelope<AnyRow>>();
+const OPS_LOADING_STAGES = [
+  "Loading ops data",
+  "Querying BigQuery",
+  "Rolling up OUR_REFs",
+  "Calculating pacing",
+  "Checking snoozes",
+  "Filtering alerts",
+  "Preparing dashboard"
+];
 
 class ApiError extends Error {
   status: number;
@@ -447,7 +456,9 @@ function App() {
   const alertsData = opsData.alerts;
   const pacingData = opsData.pacing;
   const opsCountsReady = alertsData.hasLoaded && pacingData.hasLoaded;
-  const showOpsBootstrapLoader = (alertsActive || pacingActive) && Boolean(token) && !opsData.alerts.hasLoaded && !opsData.alerts.error;
+  const opsBootstrapPending = (alertsActive || pacingActive) && Boolean(token) && !opsData.alerts.hasLoaded && !opsData.alerts.error;
+  const [opsLoaderDismissed, setOpsLoaderDismissed] = React.useState(!opsBootstrapPending);
+  const showOpsBootstrapLoader = opsBootstrapPending || !opsLoaderDismissed;
   const alertCounts = React.useMemo(() => openAlertCounts(alertsData.rows), [alertsData.rows]);
   const pacingCounts = React.useMemo(() => underpacingCounts(pacingData.rows), [pacingData.rows]);
   const totalOpenAlerts = React.useMemo(
@@ -459,6 +470,16 @@ function App() {
     [pacingCounts]
   );
   const isAdmin = user?.username.toLowerCase() === ADMIN_USERNAME;
+
+  React.useEffect(() => {
+    if (opsBootstrapPending) {
+      setOpsLoaderDismissed(false);
+      return undefined;
+    }
+    if (opsLoaderDismissed) return undefined;
+    const timeout = window.setTimeout(() => setOpsLoaderDismissed(true), 450);
+    return () => window.clearTimeout(timeout);
+  }, [opsBootstrapPending, opsLoaderDismissed]);
 
   React.useEffect(() => {
     if (!token) return;
@@ -567,7 +588,7 @@ function App() {
         </div>
       </aside>
       <main className="workspace">
-        {showOpsBootstrapLoader && <OpsLoadingScreen />}
+        {showOpsBootstrapLoader && <OpsLoadingScreen complete={!opsBootstrapPending} />}
         {!showOpsBootstrapLoader && (
           <>
         {page === "margin" && <MarginPage />}
@@ -586,14 +607,39 @@ function App() {
   );
 }
 
-function OpsLoadingScreen() {
+function OpsLoadingScreen({ complete }: { complete: boolean }) {
+  const [stageIndex, setStageIndex] = React.useState(0);
+  const [stageProgress, setStageProgress] = React.useState(0);
+  const activeStage = OPS_LOADING_STAGES[stageIndex] || OPS_LOADING_STAGES[0];
+
+  React.useEffect(() => {
+    if (complete) {
+      setStageIndex(OPS_LOADING_STAGES.length - 1);
+      setStageProgress(100);
+      return undefined;
+    }
+    const interval = window.setInterval(() => {
+      setStageProgress((currentProgress) => {
+        const isFinalStage = stageIndex >= OPS_LOADING_STAGES.length - 1;
+        const ceiling = isFinalStage ? 94 : 100;
+        const nextProgress = Math.min(ceiling, currentProgress + 4);
+        if (nextProgress >= 100 && !isFinalStage) {
+          setStageIndex((currentStage) => Math.min(currentStage + 1, OPS_LOADING_STAGES.length - 1));
+          return 0;
+        }
+        return nextProgress;
+      });
+    }, 90);
+    return () => window.clearInterval(interval);
+  }, [complete, stageIndex]);
+
   return (
     <section className="ops-loading-screen" role="status" aria-live="polite">
       <div className="ops-loading-logo" aria-hidden="true">
         <img className="ops-loading-logo-base" src={acquireLogoUrl} alt="" />
         <img className="ops-loading-logo-fill" src={acquireLogoUrl} alt="" />
       </div>
-      <p>Loading ops data...</p>
+      <p>{activeStage} ({stageProgress}%)</p>
     </section>
   );
 }
