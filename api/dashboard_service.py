@@ -1026,7 +1026,8 @@ ASSERT (
     ON L.alert_key = S.alert_key
    AND L.snooze_type = S.alert_type
    AND L.rn = 1
-  WHERE COALESCE(FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%E6S%Ez', L.updated_at), '') != S.expected_version
+  WHERE S.expected_version NOT IN ('PENDING_OPTIMISTIC', 'Saving...')
+    AND COALESCE(FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%E6S%Ez', L.updated_at), '') != S.expected_version
 ) AS 'Alert state changed before your action was saved. Refresh and try again.';
 
 MERGE {table_fqn(project_id, dataset, "snoozes")} T
