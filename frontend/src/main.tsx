@@ -26,6 +26,7 @@ import {
   X
 } from "lucide-react";
 import acquireLogoUrl from "./assets/acquire-logo-loader.svg";
+import acquireSidebarLogoUrl from "./assets/acquire-logo-sidebar.svg";
 import sleepBadgeUrl from "./assets/sleep-badge.svg";
 import "./styles.css";
 
@@ -489,7 +490,7 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand-block">
-          <div className="brand-logo" role="img" aria-label="Acquire" />
+          <img className="brand-logo" src={acquireSidebarLogoUrl} alt="Acquire" />
         </div>
         <nav className="nav-stack">
           <NavButton active={page === "margin"} icon={<Gauge size={18} />} label="Margin" onClick={() => setPage("margin")} />
