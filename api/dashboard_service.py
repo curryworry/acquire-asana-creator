@@ -20,6 +20,12 @@ ALERT_TYPE_NOT_LIVE = "NOT_LIVE"
 ALERT_TYPE_STOPPED_IMPRESSIONS = "STOPPED_IMPRESSIONS"
 ALERT_TYPE_MISSING_OUR_REF = "MISSING_OUR_REF"
 ALERT_TYPE_ENDED_BUT_IMPRESSIONS = "ENDED_BUT_IMPRESSIONS"
+LIVE_ALERT_TYPES = (
+    ALERT_TYPE_NOT_LIVE,
+    ALERT_TYPE_STOPPED_IMPRESSIONS,
+    ALERT_TYPE_MISSING_OUR_REF,
+    ALERT_TYPE_ENDED_BUT_IMPRESSIONS,
+)
 MARGIN_SNOOZE_TYPE = "MARGIN_DASHBOARD"
 PACING_TYPE_UNDER = "UNDERPACING"
 PACING_SNOOZE_TYPE = "PACING_UNDERPACING"
@@ -41,6 +47,20 @@ def sanitize_id(value: str, field_name: str) -> str:
 
 def today_nz() -> date:
     return datetime.now(timezone.utc).astimezone(ZoneInfo("Pacific/Auckland")).date()
+
+
+def normalized_snooze_end_date(end_date: str | None) -> str | None:
+    current_date = today_nz()
+    parsed_end_date = end_date or None
+    if not parsed_end_date:
+        return None
+    try:
+        end_date_value = date.fromisoformat(parsed_end_date)
+    except ValueError:
+        return current_date.isoformat()
+    if end_date_value < current_date:
+        return current_date.isoformat()
+    return parsed_end_date
 
 
 @lru_cache(maxsize=1)
@@ -123,8 +143,31 @@ CREATE TABLE IF NOT EXISTS {table_fqn(project_id, dataset, "live_alert_snapshots
 )
 """
     ).result()
+    client.query(
+        f"""
+CREATE TABLE IF NOT EXISTS {table_fqn(project_id, dataset, "snooze_actions")} (
+  action_id STRING NOT NULL,
+  batch_id STRING NOT NULL,
+  action_status STRING NOT NULL,
+  action_type STRING NOT NULL,
+  snooze_type STRING NOT NULL,
+  alert_key STRING NOT NULL,
+  our_ref STRING,
+  reason STRING,
+  snooze_end_date DATE,
+  requested_by STRING NOT NULL,
+  requested_at TIMESTAMP NOT NULL,
+  processor_id STRING,
+  attempt_count INT64,
+  processed_at TIMESTAMP,
+  error_message STRING,
+  updated_at TIMESTAMP NOT NULL
+)
+"""
+    ).result()
     client.query(f"ALTER TABLE {table_fqn(project_id, dataset, 'snoozes')} ADD COLUMN IF NOT EXISTS alert_key STRING").result()
     client.query(f"ALTER TABLE {table_fqn(project_id, dataset, 'live_alert_snapshots')} ADD COLUMN IF NOT EXISTS alert_key STRING").result()
+    client.query(f"ALTER TABLE {table_fqn(project_id, dataset, 'snooze_actions')} ADD COLUMN IF NOT EXISTS processor_id STRING").result()
 
 
 def ensure_margin_view(client: bigquery.Client, project_id: str, dataset: str) -> None:
@@ -246,7 +289,7 @@ SELECT * FROM latest WHERE rn = 1
         ]
     )
     rows = list(client.query(query, job_config=job_config).result())
-    return pd.DataFrame(
+    canonical_df = pd.DataFrame(
         [
             {
                 "ALERT_KEY": str(r["alert_key"] or ""),
@@ -263,6 +306,199 @@ SELECT * FROM latest WHERE rn = 1
             for r in rows
         ]
     )
+    pending_df = latest_pending_snooze_actions(client, project_id, dataset, alert_keys, alert_types)
+    if pending_df.empty:
+        return canonical_df
+    if canonical_df.empty:
+        return pending_df
+    pending_keys = set(zip(pending_df["ALERT_TYPE"], pending_df["ALERT_KEY"]))
+    canonical_df = canonical_df[
+        ~canonical_df.apply(lambda row: (row["ALERT_TYPE"], row["ALERT_KEY"]) in pending_keys, axis=1)
+    ]
+    return pd.concat([canonical_df, pending_df], ignore_index=True, sort=False)
+
+
+def latest_pending_snooze_actions(
+    client: bigquery.Client,
+    project_id: str,
+    dataset: str,
+    alert_keys: list[str],
+    alert_types: list[str],
+) -> pd.DataFrame:
+    if not alert_keys or not alert_types:
+        return pd.DataFrame()
+    query = f"""
+WITH latest AS (
+  SELECT
+    action_id,
+    action_type,
+    snooze_type,
+    alert_key,
+    our_ref,
+    reason,
+    snooze_end_date,
+    requested_by,
+    requested_at,
+    ROW_NUMBER() OVER (PARTITION BY snooze_type, alert_key ORDER BY requested_at DESC, action_id DESC) AS rn
+  FROM {table_fqn(project_id, dataset, "snooze_actions")}
+  WHERE action_status IN ('PENDING', 'PROCESSING')
+    AND snooze_type IN UNNEST(@alert_types)
+    AND alert_key IN UNNEST(@alert_keys)
+)
+SELECT * FROM latest WHERE rn = 1
+"""
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ArrayQueryParameter("alert_types", "STRING", alert_types),
+            bigquery.ArrayQueryParameter("alert_keys", "STRING", alert_keys),
+        ]
+    )
+    rows = list(client.query(query, job_config=job_config).result())
+    data: list[dict[str, Any]] = []
+    for r in rows:
+        action = str(r["action_type"] or "").lower()
+        if action == "snooze":
+            status = "ACTIVE"
+            reason = str(r["reason"] or "")
+            snoozed_by = str(r["requested_by"] or "")
+            dismissed_by = ""
+        elif action == "dismiss":
+            status = "DISMISSED"
+            reason = str(r["reason"] or "")
+            snoozed_by = ""
+            dismissed_by = str(r["requested_by"] or "")
+        else:
+            status = "UNSNOOZED"
+            reason = "Manual unsnooze"
+            snoozed_by = ""
+            dismissed_by = ""
+        data.append(
+            {
+                "ALERT_KEY": str(r["alert_key"] or ""),
+                "ALERT_TYPE": str(r["snooze_type"] or ""),
+                "OUR_REF": str(r["our_ref"] or ""),
+                "SNOOZE_STATUS": status,
+                "SNOOZE_REASON": reason,
+                "SNOOZE_START_DATE": today_nz().isoformat() if status == "ACTIVE" else "",
+                "SNOOZE_END_DATE": str(r["snooze_end_date"] or ""),
+                "SNOOZED_BY": snoozed_by or "Saving...",
+                "DISMISSED_BY": dismissed_by or ("Saving..." if status == "DISMISSED" else ""),
+                "UPDATED_AT": "Queued...",
+                "STATE_VERSION": "",
+            }
+        )
+    return pd.DataFrame(data)
+
+
+def global_pending_snooze_actions(client: bigquery.Client, project_id: str, dataset: str) -> pd.DataFrame:
+    query = f"""
+WITH latest AS (
+  SELECT
+    action_id,
+    action_type,
+    snooze_type,
+    alert_key,
+    our_ref,
+    reason,
+    snooze_end_date,
+    requested_by,
+    requested_at,
+    ROW_NUMBER() OVER (PARTITION BY snooze_type, alert_key ORDER BY requested_at DESC, action_id DESC) AS rn
+  FROM {table_fqn(project_id, dataset, "snooze_actions")}
+  WHERE action_status IN ('PENDING', 'PROCESSING')
+    AND snooze_type IN UNNEST(@alert_types)
+),
+snapshot_latest AS (
+  SELECT
+    alert_type,
+    alert_key,
+    advertiser,
+    campaign,
+    property_name,
+    start_date,
+    end_date,
+    ROW_NUMBER() OVER (PARTITION BY alert_type, alert_key ORDER BY run_timestamp_utc DESC) AS rn
+  FROM {table_fqn(project_id, dataset, "live_alert_snapshots")}
+)
+SELECT
+  l.*,
+  COALESCE(s.advertiser, '') AS advertiser,
+  COALESCE(s.campaign, '') AS campaign,
+  COALESCE(s.property_name, '') AS property_name,
+  s.start_date,
+  s.end_date
+FROM latest l
+LEFT JOIN snapshot_latest s
+  ON s.alert_type = l.snooze_type
+ AND s.alert_key = l.alert_key
+ AND s.rn = 1
+WHERE l.rn = 1
+"""
+    rows = list(
+        client.query(
+            query,
+            job_config=bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ArrayQueryParameter("alert_types", "STRING", list(LIVE_ALERT_TYPES))]
+            ),
+        ).result()
+    )
+    data: list[dict[str, Any]] = []
+    for r in rows:
+        action = str(r["action_type"] or "").lower()
+        if action == "snooze":
+            status = "ACTIVE"
+            live_state = "ACTIVE"
+            reason = str(r["reason"] or "")
+            snoozed_by = str(r["requested_by"] or "")
+            dismissed_by = ""
+        elif action == "dismiss":
+            status = "DISMISSED"
+            live_state = "DISMISSED"
+            reason = str(r["reason"] or "")
+            snoozed_by = ""
+            dismissed_by = str(r["requested_by"] or "")
+        else:
+            status = "UNSNOOZED"
+            live_state = "OPEN"
+            reason = "Manual unsnooze"
+            snoozed_by = ""
+            dismissed_by = ""
+        data.append(
+            {
+                "RUN_ID": "",
+                "RUN_DATE_NZ": "",
+                "RUN_TS_UTC": str(r["requested_at"] or ""),
+                "ALERT_TYPE": str(r["snooze_type"] or ""),
+                "ALERT_KEY": str(r["alert_key"] or ""),
+                "OUR_REF": str(r["our_ref"] or ""),
+                "JOB_NUMBER": "",
+                "START_DATE": str(r["start_date"] or ""),
+                "END_DATE": str(r["end_date"] or ""),
+                "ADVERTISER": str(r["advertiser"] or ""),
+                "CAMPAIGN": str(r["campaign"] or ""),
+                "LOCATIONTEXT": "",
+                "PROPERTYNAME": str(r["property_name"] or ""),
+                "BOOKINGSTATUS": "",
+                "DATASOURCE": "",
+                "ACCOUNT": "",
+                "FIRST_MISSING_DATE": "",
+                "LAST_MISSING_DATE": "",
+                "TOTAL_IMPRESSIONS": 0.0,
+                "TOTAL_CLICKS": 0.0,
+                "TOTAL_COST": 0.0,
+                "ROW_COUNT": 0,
+                "SNOOZE_STATUS": status,
+                "SNOOZE_REASON": reason,
+                "SNOOZE_START_DATE": today_nz().isoformat() if status == "ACTIVE" else "",
+                "SNOOZE_END_DATE": str(r["snooze_end_date"] or ""),
+                "SNOOZED_BY": snoozed_by or ("Saving..." if status == "ACTIVE" else ""),
+                "DISMISSED_BY": dismissed_by or ("Saving..." if status == "DISMISSED" else ""),
+                "UPDATED_AT": "Queued...",
+                "LIVE_ALERT_STATE": live_state,
+                "SOURCE_VIEW": "GLOBAL_SNOOZE",
+            }
+        )
+    return pd.DataFrame(data)
 
 
 def global_latest_snoozes(client: bigquery.Client, project_id: str, dataset: str) -> pd.DataFrame:
@@ -316,6 +552,7 @@ LEFT JOIN snapshot_latest s
  AND s.alert_key = l.alert_key
  AND s.rn = 1
 WHERE l.rn = 1
+  AND l.snooze_type IN UNNEST(@alert_types)
   AND (
     (
       UPPER(COALESCE(l.snooze_status, '')) = 'ACTIVE'
@@ -325,10 +562,15 @@ WHERE l.rn = 1
   )
 ORDER BY l.updated_at DESC
 """
-    rows = list(client.query(query).result())
-    if not rows:
-        return pd.DataFrame()
-    return pd.DataFrame(
+    rows = list(
+        client.query(
+            query,
+            job_config=bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ArrayQueryParameter("alert_types", "STRING", list(LIVE_ALERT_TYPES))]
+            ),
+        ).result()
+    )
+    canonical_df = pd.DataFrame(
         [
             {
                 "RUN_ID": "",
@@ -368,6 +610,16 @@ ORDER BY l.updated_at DESC
             for r in rows
         ]
     )
+    pending_df = global_pending_snooze_actions(client, project_id, dataset)
+    if not pending_df.empty:
+        pending_keys = set(zip(pending_df["ALERT_TYPE"], pending_df["ALERT_KEY"]))
+        if not canonical_df.empty:
+            canonical_df = canonical_df[
+                ~canonical_df.apply(lambda row: (row["ALERT_TYPE"], row["ALERT_KEY"]) in pending_keys, axis=1)
+            ]
+        pending_visible_df = pending_df[pending_df["LIVE_ALERT_STATE"].isin(["ACTIVE", "DISMISSED"])].copy()
+        canonical_df = pd.concat([canonical_df, pending_visible_df], ignore_index=True, sort=False)
+    return canonical_df
 
 
 def margin_dashboard() -> dict[str, Any]:
@@ -936,7 +1188,198 @@ def alerts_dashboard(
     }
 
 
-def write_snooze_action(action: str, alerts: list[dict[str, str]], user: str, reason: str = "", end_date: str | None = None, run_id: str = "") -> None:
+def enqueue_snooze_actions(
+    action: str,
+    alerts: list[dict[str, str]],
+    user: str,
+    reason: str = "",
+    end_date: str | None = None,
+    run_id: str = "",
+) -> list[str]:
+    if not alerts:
+        return []
+    client, project_id, dataset = bq_context()
+    ensure_control_tables(client, project_id, dataset)
+    batch_id = run_id or f"react_dashboard:{uuid.uuid4().hex}"
+    action_ids = [uuid.uuid4().hex for _ in alerts]
+    alert_keys = [str(a.get("alert_key", a.get("our_ref", "")) or "") for a in alerts]
+    our_refs = [str(a.get("our_ref", "") or "") for a in alerts]
+    alert_types = [str(a.get("alert_type", "") or "") for a in alerts]
+    parsed_end_date = normalized_snooze_end_date(end_date)
+    query = f"""
+INSERT INTO {table_fqn(project_id, dataset, "snooze_actions")} (
+  action_id, batch_id, action_status, action_type, snooze_type, alert_key, our_ref,
+  reason, snooze_end_date, requested_by, requested_at, processor_id, attempt_count,
+  processed_at, error_message, updated_at
+)
+SELECT
+  action_ids[OFFSET(i)] AS action_id,
+  @batch_id AS batch_id,
+  'PENDING' AS action_status,
+  @action AS action_type,
+  types[OFFSET(i)] AS snooze_type,
+  keys[OFFSET(i)] AS alert_key,
+  refs[OFFSET(i)] AS our_ref,
+  @reason AS reason,
+  @end_date AS snooze_end_date,
+  @user AS requested_by,
+  CURRENT_TIMESTAMP() AS requested_at,
+  NULL AS processor_id,
+  0 AS attempt_count,
+  NULL AS processed_at,
+  NULL AS error_message,
+  CURRENT_TIMESTAMP() AS updated_at
+FROM (
+  SELECT @action_ids AS action_ids, @alert_keys AS keys, @our_refs AS refs, @alert_types AS types
+),
+UNNEST(GENERATE_ARRAY(0, ARRAY_LENGTH(action_ids) - 1)) AS i
+"""
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ArrayQueryParameter("action_ids", "STRING", action_ids),
+            bigquery.ScalarQueryParameter("batch_id", "STRING", batch_id),
+            bigquery.ScalarQueryParameter("action", "STRING", action),
+            bigquery.ArrayQueryParameter("alert_keys", "STRING", alert_keys),
+            bigquery.ArrayQueryParameter("our_refs", "STRING", our_refs),
+            bigquery.ArrayQueryParameter("alert_types", "STRING", alert_types),
+            bigquery.ScalarQueryParameter("reason", "STRING", reason),
+            bigquery.ScalarQueryParameter("end_date", "DATE", parsed_end_date),
+            bigquery.ScalarQueryParameter("user", "STRING", user),
+        ]
+    )
+    client.query(query, job_config=job_config).result()
+    return action_ids
+
+
+def process_snooze_action_queue(max_actions: int = 50) -> dict[str, int]:
+    client, project_id, dataset = bq_context()
+    ensure_control_tables(client, project_id, dataset)
+    applied = 0
+    failed = 0
+    for _ in range(max_actions):
+        processor_id = uuid.uuid4().hex
+        try:
+            action_row = claim_next_snooze_action(client, project_id, dataset, processor_id)
+        except BadRequest:
+            break
+        if action_row is None:
+            break
+        action_id = str(action_row["action_id"])
+        try:
+            write_snooze_action(
+                str(action_row["action_type"]),
+                [
+                    {
+                        "our_ref": str(action_row["our_ref"] or ""),
+                        "alert_key": str(action_row["alert_key"] or ""),
+                        "alert_type": str(action_row["snooze_type"] or ""),
+                    }
+                ],
+                str(action_row["requested_by"] or ""),
+                str(action_row["reason"] or ""),
+                str(action_row["snooze_end_date"] or "") or None,
+                str(action_row["batch_id"] or ""),
+                enforce_version=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - persist queue failures for inspection.
+            failed += 1
+            mark_snooze_action(client, project_id, dataset, action_id, "FAILED", str(exc)[:1000])
+        else:
+            applied += 1
+            mark_snooze_action(client, project_id, dataset, action_id, "APPLIED", "")
+    return {"applied": applied, "failed": failed}
+
+
+def claim_next_snooze_action(
+    client: bigquery.Client,
+    project_id: str,
+    dataset: str,
+    processor_id: str,
+) -> Any | None:
+    client.query(
+        f"""
+UPDATE {table_fqn(project_id, dataset, "snooze_actions")}
+SET action_status = 'PENDING', processor_id = NULL, updated_at = CURRENT_TIMESTAMP()
+WHERE action_status = 'PROCESSING'
+  AND updated_at < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 10 MINUTE)
+"""
+    ).result()
+    claim_query = f"""
+UPDATE {table_fqn(project_id, dataset, "snooze_actions")}
+SET
+  action_status = 'PROCESSING',
+  processor_id = @processor_id,
+  attempt_count = COALESCE(attempt_count, 0) + 1,
+  updated_at = CURRENT_TIMESTAMP()
+WHERE action_id IN (
+  SELECT action_id
+  FROM {table_fqn(project_id, dataset, "snooze_actions")}
+  WHERE action_status = 'PENDING'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM {table_fqn(project_id, dataset, "snooze_actions")}
+      WHERE action_status = 'PROCESSING'
+    )
+  ORDER BY requested_at, action_id
+  LIMIT 1
+)
+"""
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("processor_id", "STRING", processor_id)]
+    )
+    client.query(claim_query, job_config=job_config).result()
+    rows = list(
+        client.query(
+            f"""
+SELECT *
+FROM {table_fqn(project_id, dataset, "snooze_actions")}
+WHERE action_status = 'PROCESSING'
+  AND processor_id = @processor_id
+ORDER BY requested_at, action_id
+LIMIT 1
+""",
+            job_config=job_config,
+        ).result()
+    )
+    return rows[0] if rows else None
+
+
+def mark_snooze_action(
+    client: bigquery.Client,
+    project_id: str,
+    dataset: str,
+    action_id: str,
+    status: str,
+    error_message: str,
+) -> None:
+    query = f"""
+UPDATE {table_fqn(project_id, dataset, "snooze_actions")}
+SET
+  action_status = @status,
+  processed_at = CURRENT_TIMESTAMP(),
+  error_message = @error_message,
+  updated_at = CURRENT_TIMESTAMP()
+WHERE action_id = @action_id
+"""
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("status", "STRING", status),
+            bigquery.ScalarQueryParameter("error_message", "STRING", error_message),
+            bigquery.ScalarQueryParameter("action_id", "STRING", action_id),
+        ]
+    )
+    client.query(query, job_config=job_config).result()
+
+
+def write_snooze_action(
+    action: str,
+    alerts: list[dict[str, str]],
+    user: str,
+    reason: str = "",
+    end_date: str | None = None,
+    run_id: str = "",
+    enforce_version: bool = True,
+) -> None:
     if not alerts:
         return
     client, project_id, dataset = bq_context()
@@ -1026,7 +1469,7 @@ ASSERT (
     ON L.alert_key = S.alert_key
    AND L.snooze_type = S.alert_type
    AND L.rn = 1
-  WHERE S.expected_version NOT IN ('PENDING_OPTIMISTIC', 'Saving...')
+  WHERE @enforce_version
     AND COALESCE(FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%E6S%Ez', L.updated_at), '') != S.expected_version
 ) AS 'Alert state changed before your action was saved. Refresh and try again.';
 
@@ -1054,21 +1497,14 @@ WHEN NOT MATCHED THEN
 COMMIT TRANSACTION;
 """
     current_date = today_nz()
-    parsed_end_date = end_date or None
-    if parsed_end_date:
-        try:
-            end_date_value = date.fromisoformat(parsed_end_date)
-        except ValueError:
-            parsed_end_date = current_date.isoformat()
-        else:
-            if end_date_value < current_date:
-                parsed_end_date = current_date.isoformat()
+    parsed_end_date = normalized_snooze_end_date(end_date)
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ArrayQueryParameter("our_refs", "STRING", our_refs),
             bigquery.ArrayQueryParameter("alert_keys", "STRING", alert_keys),
             bigquery.ArrayQueryParameter("alert_types", "STRING", alert_types),
             bigquery.ArrayQueryParameter("expected_versions", "STRING", expected_versions),
+            bigquery.ScalarQueryParameter("enforce_version", "BOOL", enforce_version),
             bigquery.ScalarQueryParameter("reason", "STRING", reason),
             bigquery.ScalarQueryParameter("start_date", "DATE", current_date.isoformat()),
             bigquery.ScalarQueryParameter("end_date", "DATE", parsed_end_date),

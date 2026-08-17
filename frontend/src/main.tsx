@@ -728,8 +728,7 @@ function MarginPage() {
         SNOOZE_START_DATE: todayInTimeZone("Pacific/Auckland"),
         SNOOZE_END_DATE: endDate || "",
         SNOOZED_BY: "Saving...",
-        UPDATED_AT: "Saving...",
-        STATE_VERSION: "PENDING_OPTIMISTIC"
+        UPDATED_AT: "Saving..."
       };
     }));
     setSelected(new Set());
@@ -883,8 +882,7 @@ function PacingPage(props: {
         SNOOZE_START_DATE: todayInTimeZone("Pacific/Auckland"),
         SNOOZE_END_DATE: endDate || "",
         SNOOZED_BY: "Saving...",
-        UPDATED_AT: "Saving...",
-        STATE_VERSION: "PENDING_OPTIMISTIC"
+        UPDATED_AT: "Saving..."
       };
     }));
     setSelected(new Set());
@@ -900,8 +898,7 @@ function PacingPage(props: {
         SNOOZE_STATUS: "UNSNOOZED",
         SNOOZE_REASON: "Manual unsnooze",
         SNOOZED_BY: "",
-        UPDATED_AT: "Saving...",
-        STATE_VERSION: "PENDING_OPTIMISTIC"
+        UPDATED_AT: "Saving..."
       };
     }));
     setSelected(new Set());
@@ -1150,8 +1147,7 @@ function AlertsPage(props: {
         SNOOZE_START_DATE: today,
         SNOOZE_END_DATE: endDate || "",
         SNOOZED_BY: "Saving...",
-        UPDATED_AT: "Saving...",
-        STATE_VERSION: "PENDING_OPTIMISTIC"
+        UPDATED_AT: "Saving..."
       };
     }));
     setSelected(new Set());
@@ -1169,8 +1165,7 @@ function AlertsPage(props: {
           SNOOZE_STATUS: "DISMISSED",
           SNOOZE_REASON: "Dismissed in React dashboard",
           DISMISSED_BY: "Saving...",
-          UPDATED_AT: "Saving...",
-          STATE_VERSION: "PENDING_OPTIMISTIC"
+          UPDATED_AT: "Saving..."
         };
       }
       return {
@@ -1179,8 +1174,7 @@ function AlertsPage(props: {
         SNOOZE_STATUS: "UNSNOOZED",
         SNOOZE_REASON: "Manual unsnooze",
         SNOOZED_BY: "",
-        UPDATED_AT: "Saving...",
-        STATE_VERSION: "PENDING_OPTIMISTIC"
+        UPDATED_AT: "Saving..."
       };
     }));
     setSelected(new Set());

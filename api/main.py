@@ -1,7 +1,7 @@
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -14,7 +14,14 @@ from api.automation_service import (
     run_daily_trafficking,
 )
 from api.config import REPO_ROOT, get_auth_users, get_secret
-from api.dashboard_service import AlertConflictError, alerts_bootstrap, alerts_dashboard, margin_dashboard, pacing_dashboard, write_snooze_action
+from api.dashboard_service import (
+    alerts_bootstrap,
+    alerts_dashboard,
+    enqueue_snooze_actions,
+    margin_dashboard,
+    pacing_dashboard,
+    process_snooze_action_queue,
+)
 from api.schemas import (
     AutomationRunResponse,
     CampaignAlertRunRequest,
@@ -112,61 +119,81 @@ def alerts_bootstrap_route(_: dict[str, str] = Depends(current_user)) -> dict:
     return alerts_bootstrap()
 
 
+def enqueue_snooze_response(
+    background_tasks: BackgroundTasks,
+    action: str,
+    payload: SnoozeActionRequest,
+    user: dict[str, str],
+    reason: str = "",
+    end_date: str | None = None,
+) -> dict[str, str | int]:
+    action_ids = enqueue_snooze_actions(
+        action,
+        payload.alerts,
+        user["username"],
+        reason,
+        end_date,
+        payload.run_id,
+    )
+    background_tasks.add_task(process_snooze_action_queue)
+    return {"status": "queued", "queued": len(action_ids)}
+
+
 @app.post("/api/margin/snooze")
-def margin_snooze(payload: SnoozeActionRequest, user: dict[str, str] = Depends(current_user)) -> dict[str, str]:
-    try:
-        write_snooze_action("snooze", payload.alerts, user["username"], payload.reason, payload.end_date, payload.run_id)
-    except AlertConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"status": "ok"}
+def margin_snooze(
+    payload: SnoozeActionRequest,
+    background_tasks: BackgroundTasks,
+    user: dict[str, str] = Depends(current_user),
+) -> dict[str, str | int]:
+    return enqueue_snooze_response(background_tasks, "snooze", payload, user, payload.reason, payload.end_date)
 
 
 @app.post("/api/pacing/snooze")
-def pacing_snooze(payload: SnoozeActionRequest, user: dict[str, str] = Depends(current_user)) -> dict[str, str]:
-    try:
-        write_snooze_action("snooze", payload.alerts, user["username"], payload.reason, payload.end_date, payload.run_id)
-    except AlertConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"status": "ok"}
+def pacing_snooze(
+    payload: SnoozeActionRequest,
+    background_tasks: BackgroundTasks,
+    user: dict[str, str] = Depends(current_user),
+) -> dict[str, str | int]:
+    return enqueue_snooze_response(background_tasks, "snooze", payload, user, payload.reason, payload.end_date)
 
 
 @app.post("/api/pacing/unsnooze")
-def pacing_unsnooze(payload: SnoozeActionRequest, user: dict[str, str] = Depends(current_user)) -> dict[str, str]:
-    try:
-        write_snooze_action("unsnooze", payload.alerts, user["username"], "", None, payload.run_id)
-    except AlertConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"status": "ok"}
+def pacing_unsnooze(
+    payload: SnoozeActionRequest,
+    background_tasks: BackgroundTasks,
+    user: dict[str, str] = Depends(current_user),
+) -> dict[str, str | int]:
+    return enqueue_snooze_response(background_tasks, "unsnooze", payload, user)
 
 
 @app.post("/api/alerts/snooze")
-def alerts_snooze(payload: SnoozeActionRequest, user: dict[str, str] = Depends(current_user)) -> dict[str, str]:
-    try:
-        write_snooze_action("snooze", payload.alerts, user["username"], payload.reason, payload.end_date, payload.run_id)
-    except AlertConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"status": "ok"}
+def alerts_snooze(
+    payload: SnoozeActionRequest,
+    background_tasks: BackgroundTasks,
+    user: dict[str, str] = Depends(current_user),
+) -> dict[str, str | int]:
+    return enqueue_snooze_response(background_tasks, "snooze", payload, user, payload.reason, payload.end_date)
 
 
 @app.post("/api/alerts/unsnooze")
-def alerts_unsnooze(payload: SnoozeActionRequest, user: dict[str, str] = Depends(current_user)) -> dict[str, str]:
-    try:
-        write_snooze_action("unsnooze", payload.alerts, user["username"], "", None, payload.run_id)
-    except AlertConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"status": "ok"}
+def alerts_unsnooze(
+    payload: SnoozeActionRequest,
+    background_tasks: BackgroundTasks,
+    user: dict[str, str] = Depends(current_user),
+) -> dict[str, str | int]:
+    return enqueue_snooze_response(background_tasks, "unsnooze", payload, user)
 
 
 @app.post("/api/alerts/dismiss")
-def alerts_dismiss(payload: DismissActionRequest, user: dict[str, str] = Depends(current_user)) -> dict[str, str]:
+def alerts_dismiss(
+    payload: DismissActionRequest,
+    background_tasks: BackgroundTasks,
+    user: dict[str, str] = Depends(current_user),
+) -> dict[str, str | int]:
     admin_pass = get_secret("ADMIN_PASS", "")
     if not admin_pass or payload.admin_pass != admin_pass:
         raise HTTPException(status_code=403, detail="Admin password is incorrect.")
-    try:
-        write_snooze_action("dismiss", payload.alerts, user["username"], payload.reason, None, payload.run_id)
-    except AlertConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"status": "ok"}
+    return enqueue_snooze_response(background_tasks, "dismiss", payload, user, payload.reason)
 
 
 def require_admin(user: dict[str, str]) -> dict[str, str]:
@@ -183,6 +210,12 @@ def admin_automations(user: dict[str, str] = Depends(current_user)) -> dict:
         "campaign_alert": campaign_alert_defaults(),
         "daily_trafficking": daily_trafficking_defaults(),
     }
+
+
+@app.post("/api/admin/snooze-actions/process")
+def admin_process_snooze_actions(user: dict[str, str] = Depends(current_user)) -> dict[str, int]:
+    require_admin(user)
+    return process_snooze_action_queue()
 
 
 @app.post("/api/admin/automations/campaign-alert", response_model=AutomationRunResponse)
