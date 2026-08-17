@@ -1,4 +1,5 @@
 import json
+import hashlib
 import uuid
 from datetime import date, datetime, timezone
 from functools import lru_cache
@@ -61,6 +62,11 @@ def normalized_snooze_end_date(end_date: str | None) -> str | None:
     if end_date_value < current_date:
         return current_date.isoformat()
     return parsed_end_date
+
+
+def make_alert_key(alert_type: str, dims: list[str]) -> str:
+    canonical = "|".join([alert_type] + [str(x or "").strip().lower() for x in dims])
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
 
 
 @lru_cache(maxsize=1)
@@ -895,6 +901,7 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
         data.append(
             {
                 "OUR_REF": str(r["our_ref"] or ""),
+                "ALERT_KEY": make_alert_key(PACING_SNOOZE_TYPE, [str(r["our_ref"] or "")]),
                 "GOAL_TYPE": str(r["goal_types"] or ""),
                 "DATASOURCE": str(r["datasources"] or ""),
                 "JOB_NUMBER": str(r["job_numbers"] or ""),
@@ -936,18 +943,17 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
             client,
             project_id,
             dataset,
-            alert_keys=sorted(df["OUR_REF"].dropna().astype(str).unique().tolist()),
+            alert_keys=sorted(df["ALERT_KEY"].dropna().astype(str).unique().tolist()),
             alert_types=[PACING_SNOOZE_TYPE],
         )
         if not snooze_df.empty:
             df = df.merge(
                 snooze_df[["ALERT_KEY", "SNOOZE_STATUS", "SNOOZE_REASON", "SNOOZE_START_DATE", "SNOOZE_END_DATE", "SNOOZED_BY", "UPDATED_AT"]],
-                left_on="OUR_REF",
-                right_on="ALERT_KEY",
+                on="ALERT_KEY",
                 how="left",
             )
         else:
-            for col in ["ALERT_KEY", "SNOOZE_STATUS", "SNOOZE_REASON", "SNOOZE_START_DATE", "SNOOZE_END_DATE", "SNOOZED_BY", "UPDATED_AT"]:
+            for col in ["SNOOZE_STATUS", "SNOOZE_REASON", "SNOOZE_START_DATE", "SNOOZE_END_DATE", "SNOOZED_BY", "UPDATED_AT"]:
                 df[col] = ""
 
         today = today_nz()

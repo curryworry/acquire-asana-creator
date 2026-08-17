@@ -868,7 +868,7 @@ function PacingPage(props: {
   const selectedRows = sortedRows.filter((row) => selected.has(String(row.OUR_REF)));
   const selectedAlerts = selectedRows.map((row) => ({
     alert_type: "PACING_UNDERPACING",
-    alert_key: String(row.OUR_REF),
+    alert_key: String(row.ALERT_KEY || row.OUR_REF),
     our_ref: String(row.OUR_REF),
     state_version: String(row.STATE_VERSION || "")
   }));
@@ -876,7 +876,7 @@ function PacingPage(props: {
     .filter((row) => row.PACING_SNOOZE_STATE === "SNOOZED")
     .map((row) => ({
       alert_type: "PACING_UNDERPACING",
-      alert_key: String(row.OUR_REF),
+      alert_key: String(row.ALERT_KEY || row.OUR_REF),
       our_ref: String(row.OUR_REF),
       state_version: String(row.STATE_VERSION || "")
     }));
