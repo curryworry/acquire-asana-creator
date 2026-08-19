@@ -67,6 +67,7 @@ button:disabled {
 .toolbar,
 .header-actions,
 .action-dock,
+.toolbar-export,
 .selected-chip {
   display: flex;
   align-items: center;
@@ -430,6 +431,26 @@ button:disabled {
   background: #f1e9d4;
   color: #725817;
   font-weight: 700;
+}
+
+.toolbar-export {
+  min-height: 42px;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid #dfd6bf;
+  border-radius: 8px;
+  background: rgba(255, 252, 245, 0.88);
+  color: var(--green-strong);
+  font-weight: 800;
+}
+
+.toolbar-export:hover {
+  border-color: var(--green);
+}
+
+.toolbar-export:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .table-wrap {

@@ -147,6 +147,18 @@ function downloadCsv(filename: string, rows: AnyRow[]) {
   URL.revokeObjectURL(url);
 }
 
+function rowsForCsv(
+  rows: AnyRow[],
+  columns: Array<[string, string]>,
+  format: (key: string, value: unknown, row: AnyRow) => string
+) {
+  return rows.map((row) => Object.fromEntries(
+    columns
+      .filter(([key]) => key !== "__PROGRESS")
+      .map(([key, label]) => [label, format(key, row[key], row)])
+  ));
+}
+
 function todayInTimeZone(timeZone: string) {
   const parts = new Intl.DateTimeFormat("en-NZ", {
     timeZone,
@@ -906,6 +918,13 @@ function PacingPage(props: {
     ["SNOOZED_BY", "Snoozed by"],
     ["UPDATED_AT", "Snoozed at"]
   ];
+  const visibleColumns = status === "SNOOZED" ? [...pacingColumns, ...snoozeColumns] : pacingColumns;
+  const formatPacingValue = (key: string, value: unknown, row: AnyRow) => {
+    if (["GOAL_DELIVERY", "EXPECTED_DELIVERY_TO_DATE", "ACTUAL_DELIVERY", "DELIVERY_DELTA"].includes(key)) return num(Math.round(Number(value || 0)));
+    if (["TIME_PROGRESS_RATIO", "DELIVERY_PACING_RATIO"].includes(key)) return value === null || value === "" ? "N/A" : pct(value);
+    if (key === "SNOOZE_END_DATE" && !value && row.PACING_SNOOZE_STATE === "SNOOZED") return "Permanent";
+    return String(value ?? "");
+  };
 
   React.useEffect(() => {
     setSelected(new Set());
@@ -973,7 +992,6 @@ function PacingPage(props: {
         subtitle="OUR_REF-level pacing, rolled up across data sources with one row per reference."
         loading={props.loading}
         onRefresh={props.refresh}
-        onDownload={() => downloadCsv("pacing-dashboard.csv", sortedRows)}
       />
       <MetricStrip metrics={[
         { label: "Rows", value: num(filtered.length) },
@@ -982,7 +1000,16 @@ function PacingPage(props: {
         { label: "Delivery vs expected", value: blendedRatio === null ? "N/A" : pct(blendedRatio) },
         { label: "Underpacing refs", value: num(underCount), tone: "warn" }
       ]} />
-      <Toolbar query={query} setQuery={setQuery} status={status} setStatus={setStatus} statuses={["OPEN", "SNOOZED", "ALL"]} selectedCount={selectedAlerts.length} />
+      <Toolbar
+        query={query}
+        setQuery={setQuery}
+        status={status}
+        setStatus={setStatus}
+        statuses={["OPEN", "SNOOZED", "ALL"]}
+        selectedCount={selectedAlerts.length}
+        onDownload={() => downloadCsv("pacing-dashboard.csv", rowsForCsv(sortedRows, visibleColumns, formatPacingValue))}
+        downloadDisabled={!sortedRows.length}
+      />
       <DataState loading={props.loading && !props.hasLoaded} error={props.error} empty={!filtered.length}>
         <DataTable
           rows={sortedRows}
@@ -991,7 +1018,7 @@ function PacingPage(props: {
           idKey="OUR_REF"
           sort={sort}
           onSort={(key) => setSort((current) => nextSort(current, key))}
-          columns={status === "SNOOZED" ? [...pacingColumns, ...snoozeColumns] : pacingColumns}
+          columns={visibleColumns}
           renderCell={(key, value, row) => {
             if (key === "OUR_REF") return <RefCell value={value} snoozed={row.PACING_SNOOZE_STATE === "SNOOZED"} />;
             if (key !== "__PROGRESS") return null;
@@ -999,12 +1026,7 @@ function PacingPage(props: {
           }}
           headerHelp={{ DELIVERY_PACING_RATIO: DELIVERY_PACING_HELP }}
           rowClassName={(row) => row.PACING_SNOOZE_STATE === "SNOOZED" ? "snoozed-row" : ""}
-          format={(key, value, row) => {
-            if (["GOAL_DELIVERY", "EXPECTED_DELIVERY_TO_DATE", "ACTUAL_DELIVERY", "DELIVERY_DELTA"].includes(key)) return num(Math.round(Number(value || 0)));
-            if (["TIME_PROGRESS_RATIO", "DELIVERY_PACING_RATIO"].includes(key)) return value === null || value === "" ? "N/A" : pct(value);
-            if (key === "SNOOZE_END_DATE" && !value && row.PACING_SNOOZE_STATE === "SNOOZED") return "Permanent";
-            return String(value ?? "");
-          }}
+          format={formatPacingValue}
         />
       </DataState>
       <ActionDock selectedCount={selectedAlerts.length} onClear={() => setSelected(new Set())}>
@@ -1331,7 +1353,16 @@ function TablePagination(props: { page: number; totalPages: number; totalRows: n
   );
 }
 
-function Toolbar(props: { query: string; setQuery: (value: string) => void; status: string; setStatus: (value: string) => void; statuses: string[]; selectedCount: number }) {
+function Toolbar(props: {
+  query: string;
+  setQuery: (value: string) => void;
+  status: string;
+  setStatus: (value: string) => void;
+  statuses: string[];
+  selectedCount: number;
+  onDownload?: () => void;
+  downloadDisabled?: boolean;
+}) {
   return (
     <section className="toolbar">
       <div className="searchbox">
@@ -1349,6 +1380,11 @@ function Toolbar(props: { query: string; setQuery: (value: string) => void; stat
           <button key={status} className={props.status === status ? "active" : ""} onClick={() => props.setStatus(status)}>{status}</button>
         ))}
       </div>
+      {props.onDownload && (
+        <button className="toolbar-export" onClick={props.onDownload} disabled={props.downloadDisabled}>
+          <Download size={15} /> CSV
+        </button>
+      )}
       <div className="selected-chip"><SlidersHorizontal size={15} /> {props.selectedCount} selected</div>
     </section>
   );
