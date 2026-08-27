@@ -65,6 +65,20 @@ class AsanaClient:
         body = response.json()
         return body.get("data", body)
 
+    def create_task_comment(self, task_gid: str, text: str) -> Dict[str, Any]:
+        response = self.session.post(
+            f"{ASANA_API_BASE}/tasks/{task_gid}/stories",
+            json={"data": {"text": text}},
+            timeout=self.timeout,
+        )
+
+        if response.status_code >= 400:
+            msg = self._extract_error_message(response)
+            raise AsanaError(msg)
+
+        body = response.json()
+        return body.get("data", body)
+
     def list_project_tasks(self, project_gid: str) -> List[Dict[str, str]]:
         tasks: List[Dict[str, str]] = []
         offset = None

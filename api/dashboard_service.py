@@ -11,6 +11,7 @@ from google.api_core.exceptions import BadRequest
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
+from asana_client import AsanaClient
 from api.config import REPO_ROOT, get_secret
 
 
@@ -30,10 +31,28 @@ LIVE_ALERT_TYPES = (
 MARGIN_SNOOZE_TYPE = "MARGIN_DASHBOARD"
 PACING_TYPE_UNDER = "UNDERPACING"
 PACING_SNOOZE_TYPE = "PACING_UNDERPACING"
+ASANA_COMMENT_ALERT_TYPES = (
+    PACING_SNOOZE_TYPE,
+    ALERT_TYPE_NOT_LIVE,
+    ALERT_TYPE_STOPPED_IMPRESSIONS,
+)
+ALERT_LABELS = {
+    PACING_SNOOZE_TYPE: "Underpacing",
+    ALERT_TYPE_NOT_LIVE: "Not live",
+    ALERT_TYPE_STOPPED_IMPRESSIONS: "Stopped impressions",
+    ALERT_TYPE_MISSING_OUR_REF: "Missing OUR_REF",
+    ALERT_TYPE_ENDED_BUT_IMPRESSIONS: "Ended but impressions",
+}
 
 
 class AlertConflictError(Exception):
     pass
+
+
+class AsanaCommentFailure(Exception):
+    def __init__(self, message: str, resolution: str = "") -> None:
+        super().__init__(message)
+        self.resolution = resolution
 
 
 def sanitize_id(value: str, field_name: str) -> str:
@@ -67,6 +86,40 @@ def normalized_snooze_end_date(end_date: str | None) -> str | None:
 def make_alert_key(alert_type: str, dims: list[str]) -> str:
     canonical = "|".join([alert_type] + [str(x or "").strip().lower() for x in dims])
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+
+
+def split_csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def asana_project_gids() -> list[str]:
+    project_gids: list[str] = []
+    for gid in [get_secret("ASANA_PROJECT_GID", ""), *split_csv(get_secret("ASANA_DEDUPE_PROJECT_GIDS", ""))]:
+        if gid and gid not in project_gids:
+            project_gids.append(gid)
+    return project_gids
+
+
+def format_nz_datetime(value: datetime | None = None) -> str:
+    dt = (value or datetime.now(timezone.utc)).astimezone(ZoneInfo("Pacific/Auckland"))
+    hour = dt.hour % 12 or 12
+    suffix = "AM" if dt.hour < 12 else "PM"
+    return f"{dt.day}/{dt.month}/{dt:%y} {hour}:{dt:%M}{suffix}"
+
+
+def asana_comment_text(alert_type: str, our_ref: str, reason: str, end_date: str | None, requested_by: str) -> str:
+    snooze_until = end_date or "Permanent"
+    return "\n".join(
+        [
+            f"Snoozed in Acquire Ops by {requested_by}",
+            "",
+            f"Snoozed at: {format_nz_datetime()}",
+            f"Alert: {ALERT_LABELS.get(alert_type, alert_type)}",
+            f"OUR_REF: {our_ref}",
+            f"Snooze until: {snooze_until}",
+            f"Reason: {reason}",
+        ]
+    )
 
 
 @lru_cache(maxsize=1)
@@ -171,9 +224,48 @@ CREATE TABLE IF NOT EXISTS {table_fqn(project_id, dataset, "snooze_actions")} (
 )
 """
     ).result()
+    client.query(
+        f"""
+CREATE TABLE IF NOT EXISTS {table_fqn(project_id, dataset, "asana_comment_actions")} (
+  action_id STRING NOT NULL,
+  snooze_action_id STRING NOT NULL,
+  action_status STRING NOT NULL,
+  alert_type STRING NOT NULL,
+  alert_key STRING NOT NULL,
+  our_ref STRING,
+  job_number STRING,
+  reason STRING,
+  snooze_end_date DATE,
+  requested_by STRING NOT NULL,
+  requested_at TIMESTAMP NOT NULL,
+  comment_text STRING NOT NULL,
+  target_resolution STRING,
+  asana_parent_gid STRING,
+  asana_target_gid STRING,
+  asana_target_type STRING,
+  asana_story_gid STRING,
+  processor_id STRING,
+  attempt_count INT64,
+  processed_at TIMESTAMP,
+  error_message STRING,
+  updated_at TIMESTAMP NOT NULL
+)
+"""
+    ).result()
     client.query(f"ALTER TABLE {table_fqn(project_id, dataset, 'snoozes')} ADD COLUMN IF NOT EXISTS alert_key STRING").result()
     client.query(f"ALTER TABLE {table_fqn(project_id, dataset, 'live_alert_snapshots')} ADD COLUMN IF NOT EXISTS alert_key STRING").result()
     client.query(f"ALTER TABLE {table_fqn(project_id, dataset, 'snooze_actions')} ADD COLUMN IF NOT EXISTS processor_id STRING").result()
+    for column_sql in [
+        "target_resolution STRING",
+        "asana_parent_gid STRING",
+        "asana_target_gid STRING",
+        "asana_target_type STRING",
+        "asana_story_gid STRING",
+        "processor_id STRING",
+    ]:
+        client.query(
+            f"ALTER TABLE {table_fqn(project_id, dataset, 'asana_comment_actions')} ADD COLUMN IF NOT EXISTS {column_sql}"
+        ).result()
 
 
 def ensure_margin_view(client: bigquery.Client, project_id: str, dataset: str) -> None:
@@ -1254,6 +1346,134 @@ UNNEST(GENERATE_ARRAY(0, ARRAY_LENGTH(action_ids) - 1)) AS i
     return action_ids
 
 
+def first_value(value: str) -> str:
+    for part in str(value or "").replace("|", ",").split(","):
+        clean = part.strip()
+        if clean:
+            return clean
+    return ""
+
+
+def resolve_asana_job_number(
+    client: bigquery.Client,
+    project_id: str,
+    dataset: str,
+    alert_type: str,
+    alert_key: str,
+    our_ref: str,
+) -> str:
+    snapshot_query = f"""
+SELECT job_number
+FROM {table_fqn(project_id, dataset, "live_alert_snapshots")}
+WHERE alert_type = @alert_type
+  AND COALESCE(alert_key, our_ref) = @alert_key
+  AND NULLIF(TRIM(COALESCE(job_number, '')), '') IS NOT NULL
+ORDER BY run_timestamp_utc DESC
+LIMIT 1
+"""
+    snapshot_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("alert_type", "STRING", alert_type),
+            bigquery.ScalarQueryParameter("alert_key", "STRING", alert_key),
+        ]
+    )
+    snapshot_rows = list(client.query(snapshot_query, job_config=snapshot_config).result())
+    if snapshot_rows:
+        job_number = first_value(str(snapshot_rows[0]["job_number"] or ""))
+        if job_number:
+            return job_number
+
+    if not our_ref:
+        return ""
+    master_query = f"""
+SELECT TRIM(CAST(JOBNUMBER AS STRING)) AS job_number
+FROM {table_fqn(project_id, dataset, "master_overview")}
+WHERE TRIM(CAST(OURREF AS STRING)) = @our_ref
+  AND NULLIF(TRIM(CAST(JOBNUMBER AS STRING)), '') IS NOT NULL
+GROUP BY job_number
+ORDER BY job_number
+LIMIT 1
+"""
+    master_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("our_ref", "STRING", our_ref)]
+    )
+    master_rows = list(client.query(master_query, job_config=master_config).result())
+    return first_value(str(master_rows[0]["job_number"] or "")) if master_rows else ""
+
+
+def enqueue_asana_comment_action(
+    client: bigquery.Client,
+    project_id: str,
+    dataset: str,
+    snooze_action: Any,
+) -> None:
+    if str(snooze_action["action_type"] or "").lower() != "snooze":
+        return
+    alert_type = str(snooze_action["snooze_type"] or "")
+    if alert_type not in ASANA_COMMENT_ALERT_TYPES:
+        return
+
+    alert_key = str(snooze_action["alert_key"] or "")
+    our_ref = str(snooze_action["our_ref"] or "")
+    reason = str(snooze_action["reason"] or "")
+    end_date = str(snooze_action["snooze_end_date"] or "") or None
+    requested_by = str(snooze_action["requested_by"] or "")
+    job_number = resolve_asana_job_number(client, project_id, dataset, alert_type, alert_key, our_ref)
+    action_status = "PENDING" if job_number else "FAILED"
+    error_message = "" if job_number else "Missing JOB_NUMBER for Asana comment."
+    comment_text = asana_comment_text(alert_type, our_ref, reason, end_date, requested_by)
+    query = f"""
+MERGE {table_fqn(project_id, dataset, "asana_comment_actions")} T
+USING (
+  SELECT
+    @action_id AS action_id,
+    @snooze_action_id AS snooze_action_id,
+    @action_status AS action_status,
+    @alert_type AS alert_type,
+    @alert_key AS alert_key,
+    @our_ref AS our_ref,
+    @job_number AS job_number,
+    @reason AS reason,
+    @snooze_end_date AS snooze_end_date,
+    @requested_by AS requested_by,
+    @requested_at AS requested_at,
+    @comment_text AS comment_text,
+    @error_message AS error_message
+) S
+ON T.snooze_action_id = S.snooze_action_id
+WHEN NOT MATCHED THEN
+  INSERT (
+    action_id, snooze_action_id, action_status, alert_type, alert_key, our_ref, job_number,
+    reason, snooze_end_date, requested_by, requested_at, comment_text, target_resolution,
+    asana_parent_gid, asana_target_gid, asana_target_type, asana_story_gid, processor_id,
+    attempt_count, processed_at, error_message, updated_at
+  )
+  VALUES (
+    S.action_id, S.snooze_action_id, S.action_status, S.alert_type, S.alert_key, S.our_ref, S.job_number,
+    S.reason, S.snooze_end_date, S.requested_by, S.requested_at, S.comment_text, NULL,
+    NULL, NULL, NULL, NULL, NULL, 0, NULL, S.error_message, CURRENT_TIMESTAMP()
+  )
+"""
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("action_id", "STRING", uuid.uuid4().hex),
+            bigquery.ScalarQueryParameter("snooze_action_id", "STRING", str(snooze_action["action_id"] or "")),
+            bigquery.ScalarQueryParameter("action_status", "STRING", action_status),
+            bigquery.ScalarQueryParameter("alert_type", "STRING", alert_type),
+            bigquery.ScalarQueryParameter("alert_key", "STRING", alert_key),
+            bigquery.ScalarQueryParameter("our_ref", "STRING", our_ref),
+            bigquery.ScalarQueryParameter("job_number", "STRING", job_number),
+            bigquery.ScalarQueryParameter("reason", "STRING", reason),
+            bigquery.ScalarQueryParameter("snooze_end_date", "DATE", end_date),
+            bigquery.ScalarQueryParameter("requested_by", "STRING", requested_by),
+            bigquery.ScalarQueryParameter("requested_at", "TIMESTAMP", snooze_action["requested_at"]),
+            bigquery.ScalarQueryParameter("comment_text", "STRING", comment_text),
+            bigquery.ScalarQueryParameter("error_message", "STRING", error_message),
+        ]
+    )
+    client.query(query, job_config=job_config).result()
+
+
 def process_snooze_action_queue(max_actions: int = 50) -> dict[str, int]:
     client, project_id, dataset = bq_context()
     ensure_control_tables(client, project_id, dataset)
@@ -1288,6 +1508,10 @@ def process_snooze_action_queue(max_actions: int = 50) -> dict[str, int]:
             failed += 1
             mark_snooze_action(client, project_id, dataset, action_id, "FAILED", str(exc)[:1000])
         else:
+            try:
+                enqueue_asana_comment_action(client, project_id, dataset, action_row)
+            except Exception:
+                pass
             applied += 1
             mark_snooze_action(client, project_id, dataset, action_id, "APPLIED", "")
     return {"applied": applied, "failed": failed}
@@ -1372,6 +1596,210 @@ WHERE action_id = @action_id
         ]
     )
     client.query(query, job_config=job_config).result()
+
+
+def process_asana_comment_action_queue(max_actions: int = 20) -> dict[str, int]:
+    client, project_id, dataset = bq_context()
+    ensure_control_tables(client, project_id, dataset)
+    applied = 0
+    failed = 0
+    for _ in range(max_actions):
+        processor_id = uuid.uuid4().hex
+        try:
+            action_row = claim_next_asana_comment_action(client, project_id, dataset, processor_id)
+        except BadRequest:
+            break
+        if action_row is None:
+            break
+        action_id = str(action_row["action_id"])
+        try:
+            result = post_asana_snooze_comment(action_row)
+        except AsanaCommentFailure as exc:
+            failed += 1
+            mark_asana_comment_action(
+                client,
+                project_id,
+                dataset,
+                action_id,
+                "FAILED",
+                str(exc)[:1000],
+                exc.resolution,
+            )
+        except Exception as exc:  # noqa: BLE001 - Asana side effects must not affect snoozes.
+            failed += 1
+            mark_asana_comment_action(
+                client,
+                project_id,
+                dataset,
+                action_id,
+                "FAILED",
+                str(exc)[:1000],
+                "",
+            )
+        else:
+            applied += 1
+            mark_asana_comment_action(
+                client,
+                project_id,
+                dataset,
+                action_id,
+                "APPLIED",
+                "",
+                result["target_resolution"],
+                result["asana_parent_gid"],
+                result["asana_target_gid"],
+                result["asana_target_type"],
+                result["asana_story_gid"],
+            )
+    return {"applied": applied, "failed": failed}
+
+
+def claim_next_asana_comment_action(
+    client: bigquery.Client,
+    project_id: str,
+    dataset: str,
+    processor_id: str,
+) -> Any | None:
+    client.query(
+        f"""
+UPDATE {table_fqn(project_id, dataset, "asana_comment_actions")}
+SET action_status = 'PENDING', processor_id = NULL, updated_at = CURRENT_TIMESTAMP()
+WHERE action_status = 'PROCESSING'
+  AND updated_at < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 10 MINUTE)
+"""
+    ).result()
+    claim_query = f"""
+UPDATE {table_fqn(project_id, dataset, "asana_comment_actions")}
+SET
+  action_status = 'PROCESSING',
+  processor_id = @processor_id,
+  attempt_count = COALESCE(attempt_count, 0) + 1,
+  updated_at = CURRENT_TIMESTAMP()
+WHERE action_id IN (
+  SELECT action_id
+  FROM {table_fqn(project_id, dataset, "asana_comment_actions")}
+  WHERE action_status = 'PENDING'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM {table_fqn(project_id, dataset, "asana_comment_actions")}
+      WHERE action_status = 'PROCESSING'
+    )
+  ORDER BY requested_at, action_id
+  LIMIT 1
+)
+"""
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("processor_id", "STRING", processor_id)]
+    )
+    client.query(claim_query, job_config=job_config).result()
+    rows = list(
+        client.query(
+            f"""
+SELECT *
+FROM {table_fqn(project_id, dataset, "asana_comment_actions")}
+WHERE action_status = 'PROCESSING'
+  AND processor_id = @processor_id
+ORDER BY requested_at, action_id
+LIMIT 1
+""",
+            job_config=job_config,
+        ).result()
+    )
+    return rows[0] if rows else None
+
+
+def mark_asana_comment_action(
+    client: bigquery.Client,
+    project_id: str,
+    dataset: str,
+    action_id: str,
+    status: str,
+    error_message: str,
+    target_resolution: str,
+    asana_parent_gid: str = "",
+    asana_target_gid: str = "",
+    asana_target_type: str = "",
+    asana_story_gid: str = "",
+) -> None:
+    query = f"""
+UPDATE {table_fqn(project_id, dataset, "asana_comment_actions")}
+SET
+  action_status = @status,
+  target_resolution = NULLIF(@target_resolution, ''),
+  asana_parent_gid = NULLIF(@asana_parent_gid, ''),
+  asana_target_gid = NULLIF(@asana_target_gid, ''),
+  asana_target_type = NULLIF(@asana_target_type, ''),
+  asana_story_gid = NULLIF(@asana_story_gid, ''),
+  processed_at = CURRENT_TIMESTAMP(),
+  error_message = @error_message,
+  updated_at = CURRENT_TIMESTAMP()
+WHERE action_id = @action_id
+"""
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("status", "STRING", status),
+            bigquery.ScalarQueryParameter("target_resolution", "STRING", target_resolution),
+            bigquery.ScalarQueryParameter("asana_parent_gid", "STRING", asana_parent_gid),
+            bigquery.ScalarQueryParameter("asana_target_gid", "STRING", asana_target_gid),
+            bigquery.ScalarQueryParameter("asana_target_type", "STRING", asana_target_type),
+            bigquery.ScalarQueryParameter("asana_story_gid", "STRING", asana_story_gid),
+            bigquery.ScalarQueryParameter("error_message", "STRING", error_message),
+            bigquery.ScalarQueryParameter("action_id", "STRING", action_id),
+        ]
+    )
+    client.query(query, job_config=job_config).result()
+
+
+def find_asana_parent_task(asana: AsanaClient, job_number: str) -> dict[str, str] | None:
+    for project_gid in asana_project_gids():
+        for task in asana.list_project_tasks(project_gid):
+            if job_number and job_number in str(task.get("name", "")):
+                return task
+    return None
+
+
+def post_asana_snooze_comment(action_row: Any) -> dict[str, str]:
+    token = get_secret("ASANA_ACCESS_TOKEN", "")
+    if not token:
+        raise AsanaCommentFailure("Missing ASANA_ACCESS_TOKEN.", "CONFIG_MISSING")
+    if not asana_project_gids():
+        raise AsanaCommentFailure("Missing Asana project GIDs.", "CONFIG_MISSING")
+
+    job_number = str(action_row["job_number"] or "").strip()
+    our_ref = str(action_row["our_ref"] or "").strip()
+    if not job_number:
+        raise AsanaCommentFailure("Missing JOB_NUMBER for Asana comment.", "JOB_NUMBER_MISSING")
+
+    asana = AsanaClient(access_token=token)
+    parent = find_asana_parent_task(asana, job_number)
+    if not parent:
+        raise AsanaCommentFailure(f"Asana parent task not found for JOB_NUMBER {job_number}.", "PARENT_NOT_FOUND")
+
+    parent_gid = str(parent.get("gid", ""))
+    if not parent_gid:
+        raise AsanaCommentFailure("Matched Asana parent task has no gid.", "PARENT_GID_MISSING")
+
+    target_gid = parent_gid
+    target_type = "parent"
+    resolution = "PARENT_NO_SUBTASK"
+    if our_ref:
+        subtasks = asana.list_subtasks(parent_gid)
+        matches = [task for task in subtasks if our_ref.lower() in str(task.get("name", "")).lower()]
+        if len(matches) == 1:
+            target_gid = str(matches[0].get("gid", ""))
+            target_type = "subtask"
+            resolution = "SUBTASK_EXACT"
+        elif len(matches) > 1:
+            resolution = "PARENT_AMBIGUOUS_SUBTASKS"
+
+    story = asana.create_task_comment(target_gid, str(action_row["comment_text"] or ""))
+    return {
+        "target_resolution": resolution,
+        "asana_parent_gid": parent_gid,
+        "asana_target_gid": target_gid,
+        "asana_target_type": target_type,
+        "asana_story_gid": str(story.get("gid", "")),
+    }
 
 
 def write_snooze_action(

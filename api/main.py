@@ -22,6 +22,7 @@ from api.dashboard_service import (
     ensure_control_tables,
     margin_dashboard,
     pacing_dashboard,
+    process_asana_comment_action_queue,
     process_snooze_action_queue,
 )
 from api.schemas import (
@@ -138,12 +139,13 @@ def enqueue_snooze_response(
     action_ids = enqueue_snooze_actions(
         action,
         payload.alerts,
-        user["username"],
+        user.get("display_name") or user["username"],
         reason,
         end_date,
         payload.run_id,
     )
     background_tasks.add_task(process_snooze_action_queue)
+    background_tasks.add_task(process_asana_comment_action_queue)
     return {"status": "queued", "queued": len(action_ids)}
 
 
@@ -224,6 +226,12 @@ def admin_automations(user: dict[str, str] = Depends(current_user)) -> dict:
 def admin_process_snooze_actions(user: dict[str, str] = Depends(current_user)) -> dict[str, int]:
     require_admin(user)
     return process_snooze_action_queue()
+
+
+@app.post("/api/admin/asana-comment-actions/process")
+def admin_process_asana_comment_actions(user: dict[str, str] = Depends(current_user)) -> dict[str, int]:
+    require_admin(user)
+    return process_asana_comment_action_queue()
 
 
 @app.post("/api/admin/control-tables/ensure")
