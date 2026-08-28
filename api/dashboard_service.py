@@ -844,6 +844,18 @@ line_items AS (
         ELSE 0
       END
     ) AS actual_delivery,
+    SUM(COALESCE(COST, 0)) AS actual_cost,
+    SUM(
+      CASE WHEN DATE = ld.latest_delivery_date THEN
+        CASE UPPER(TRIM(CAST(T_GOAL_TYPE_REPORTING_V2 AS STRING)))
+          WHEN 'IMPRESSIONS' THEN COALESCE(IMPRESSIONS, 0)
+          WHEN 'CLICKS' THEN COALESCE(LINK_CLICKS, 0)
+          WHEN 'VIEWS' THEN COALESCE(VIDEO_COMPLETIONS, 0)
+          ELSE 0
+        END
+      ELSE 0 END
+    ) AS current_daily_delivery,
+    SUM(CASE WHEN DATE = ld.latest_delivery_date THEN COALESCE(COST, 0) ELSE 0 END) AS current_daily_cost,
     SUM(COALESCE(IMPRESSIONS, 0)) AS total_impressions,
     SUM(COALESCE(LINK_CLICKS, 0)) AS total_link_clicks,
     SUM(COALESCE(VIDEO_COMPLETIONS, 0)) AS total_video_completions,
@@ -862,6 +874,7 @@ line_items AS (
       MAX(SAFE.PARSE_DATE('%m/%d/%Y', CAST(ENDDATE AS STRING)))
     ) AS end_date
   FROM {table_fqn(project_id, dataset, "master_overview")}
+  CROSS JOIN latest_delivery ld
   WHERE OURREF IS NOT NULL
     AND TRIM(CAST(OURREF AS STRING)) != ''
     AND T_GOAL_TYPE_REPORTING_V2 IS NOT NULL
@@ -883,6 +896,9 @@ our_ref_rollup AS (
     STRING_AGG(DISTINCT booking_status, ', ' ORDER BY booking_status) AS booking_statuses,
     SUM(COALESCE(goal_delivery, 0)) AS goal_delivery,
     SUM(COALESCE(actual_delivery, 0)) AS actual_delivery,
+    SUM(COALESCE(actual_cost, 0)) AS actual_cost,
+    SUM(COALESCE(current_daily_delivery, 0)) AS current_daily_delivery,
+    SUM(COALESCE(current_daily_cost, 0)) AS current_daily_cost,
     SUM(COALESCE(total_impressions, 0)) AS total_impressions,
     SUM(COALESCE(total_link_clicks, 0)) AS total_link_clicks,
     SUM(COALESCE(total_video_completions, 0)) AS total_video_completions,
@@ -911,6 +927,9 @@ base AS (
     l.booking_statuses,
     l.goal_delivery,
     l.actual_delivery,
+    l.actual_cost,
+    l.current_daily_delivery,
+    l.current_daily_cost,
     l.total_impressions,
     l.total_link_clicks,
     l.total_video_completions,
@@ -928,6 +947,7 @@ base AS (
         DATE_DIFF(LEAST(ld.latest_delivery_date, l.end_date), l.start_date, DAY) + 1
       )
     ) AS elapsed_days,
+    GREATEST(1, DATE_DIFF(l.end_date, LEAST(ld.latest_delivery_date, l.end_date), DAY)) AS remaining_days,
     l.first_delivery_date,
     l.last_delivery_date
   FROM our_ref_rollup l
@@ -961,10 +981,29 @@ SELECT
   as_of_date,
   total_days,
   elapsed_days,
+  remaining_days,
   SAFE_DIVIDE(elapsed_days, total_days) AS pacing_ratio,
   goal_delivery,
   SAFE_MULTIPLY(goal_delivery, SAFE_DIVIDE(elapsed_days, total_days)) AS expected_delivery_to_date,
   actual_delivery,
+  actual_cost,
+  current_daily_delivery,
+  current_daily_cost,
+  CASE
+    WHEN UPPER(goal_types) = 'IMPRESSIONS' THEN 'CPM'
+    WHEN UPPER(goal_types) = 'CLICKS' THEN 'CPC'
+    WHEN UPPER(goal_types) = 'VIEWS' THEN 'CPV'
+    ELSE 'CPU'
+  END AS cost_unit,
+  SAFE_DIVIDE(GREATEST(goal_delivery - actual_delivery, 0), remaining_days) AS required_daily_delivery,
+  CASE
+    WHEN UPPER(goal_types) = 'IMPRESSIONS' THEN SAFE_MULTIPLY(SAFE_DIVIDE(GREATEST(booked_nett_cost - actual_cost, 0), NULLIF(GREATEST(goal_delivery - actual_delivery, 0), 0)), 1000)
+    ELSE SAFE_DIVIDE(GREATEST(booked_nett_cost - actual_cost, 0), NULLIF(GREATEST(goal_delivery - actual_delivery, 0), 0))
+  END AS required_cost_per_unit,
+  CASE
+    WHEN UPPER(goal_types) = 'IMPRESSIONS' THEN SAFE_MULTIPLY(SAFE_DIVIDE(current_daily_cost, NULLIF(current_daily_delivery, 0)), 1000)
+    ELSE SAFE_DIVIDE(current_daily_cost, NULLIF(current_daily_delivery, 0))
+  END AS current_daily_cost_per_unit,
   actual_delivery - SAFE_MULTIPLY(goal_delivery, SAFE_DIVIDE(elapsed_days, total_days)) AS delivery_delta,
   SAFE_DIVIDE(actual_delivery, SAFE_MULTIPLY(goal_delivery, SAFE_DIVIDE(elapsed_days, total_days))) AS delivery_pacing_ratio,
   total_impressions,
@@ -1013,10 +1052,18 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
                 "AS_OF_DATE": str(r["as_of_date"] or ""),
                 "TOTAL_DAYS": int(r["total_days"] or 0),
                 "ELAPSED_DAYS": int(r["elapsed_days"] or 0),
+                "REMAINING_DAYS": int(r["remaining_days"] or 0),
                 "TIME_PROGRESS_RATIO": time_progress_ratio,
                 "GOAL_DELIVERY": goal_delivery,
                 "EXPECTED_DELIVERY_TO_DATE": expected_delivery_to_date,
                 "ACTUAL_DELIVERY": actual_delivery,
+                "ACTUAL_COST": float(r["actual_cost"] or 0),
+                "CURRENT_DAILY_DELIVERY": float(r["current_daily_delivery"] or 0),
+                "CURRENT_DAILY_COST": float(r["current_daily_cost"] or 0),
+                "COST_UNIT": str(r["cost_unit"] or "CPU"),
+                "REQUIRED_DAILY_DELIVERY": float(r["required_daily_delivery"] or 0),
+                "REQUIRED_COST_PER_UNIT": float(r["required_cost_per_unit"]) if r["required_cost_per_unit"] is not None else None,
+                "CURRENT_DAILY_COST_PER_UNIT": float(r["current_daily_cost_per_unit"]) if r["current_daily_cost_per_unit"] is not None else None,
                 "DELIVERY_DELTA": delivery_delta,
                 "DELIVERY_PACING_RATIO": delivery_pacing_ratio,
                 "PACING_STATUS": "UNDER",

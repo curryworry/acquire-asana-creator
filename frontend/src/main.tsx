@@ -16,6 +16,8 @@ import {
   Loader2,
   Lock,
   LogOut,
+  Minus,
+  Plus,
   RefreshCcw,
   Search,
   Settings,
@@ -108,6 +110,21 @@ function currency(value: unknown) {
     currency: "NZD",
     maximumFractionDigits: 0
   }).format(number);
+}
+
+function unitCurrency(value: unknown) {
+  const number = Number(value || 0);
+  return new Intl.NumberFormat("en-NZ", {
+    style: "currency",
+    currency: "NZD",
+    minimumFractionDigits: Math.abs(number) < 10 ? 2 : 0,
+    maximumFractionDigits: 2
+  }).format(number);
+}
+
+function costPerUnit(value: unknown, unit: unknown) {
+  if (value === null || value === undefined || value === "") return "N/A";
+  return `${unitCurrency(value)} ${String(unit || "CPU")}`;
 }
 
 function pct(value: unknown) {
@@ -863,6 +880,7 @@ function PacingPage(props: {
   const [actionError, setActionError] = React.useState("");
   const [actionLoading, setActionLoading] = React.useState(false);
   const [sort, setSort] = React.useState<SortState>({ key: "DELIVERY_PACING_RATIO", direction: "asc" });
+  const [showDiagnosis, setShowDiagnosis] = React.useState(false);
 
   const filtered = React.useMemo(() => props.rows.filter((row) => {
     const text = `${row.OUR_REF} ${row.JOB_NUMBER} ${row.CAMPAIGN_NAME} ${row.ADVERTISER_NAME} ${row.ACCOUNT_MANAGER} ${row.SNOOZE_REASON}`.toLowerCase();
@@ -918,9 +936,20 @@ function PacingPage(props: {
     ["SNOOZED_BY", "Snoozed by"],
     ["UPDATED_AT", "Snoozed at"]
   ];
-  const visibleColumns = status === "SNOOZED" ? [...pacingColumns, ...snoozeColumns] : pacingColumns;
+  const diagnosisColumns: Array<[string, string]> = [
+    ["REQUIRED_DAILY_DELIVERY", "Required daily delivery"],
+    ["CURRENT_DAILY_DELIVERY", "Current daily delivery"],
+    ["REQUIRED_COST_PER_UNIT", "Required cost per unit"],
+    ["CURRENT_DAILY_COST_PER_UNIT", "Current daily cost per unit"]
+  ];
+  const visibleColumns = [
+    ...pacingColumns,
+    ...(showDiagnosis ? diagnosisColumns : []),
+    ...(status === "SNOOZED" ? snoozeColumns : [])
+  ];
   const formatPacingValue = (key: string, value: unknown, row: AnyRow) => {
-    if (["GOAL_DELIVERY", "EXPECTED_DELIVERY_TO_DATE", "ACTUAL_DELIVERY", "DELIVERY_DELTA"].includes(key)) return num(Math.round(Number(value || 0)));
+    if (["GOAL_DELIVERY", "EXPECTED_DELIVERY_TO_DATE", "ACTUAL_DELIVERY", "DELIVERY_DELTA", "REQUIRED_DAILY_DELIVERY", "CURRENT_DAILY_DELIVERY"].includes(key)) return num(Math.round(Number(value || 0)));
+    if (["REQUIRED_COST_PER_UNIT", "CURRENT_DAILY_COST_PER_UNIT"].includes(key)) return costPerUnit(value, row.COST_UNIT);
     if (["TIME_PROGRESS_RATIO", "DELIVERY_PACING_RATIO"].includes(key)) return value === null || value === "" ? "N/A" : pct(value);
     if (key === "SNOOZE_END_DATE" && !value && row.PACING_SNOOZE_STATE === "SNOOZED") return "Permanent";
     return String(value ?? "");
@@ -1025,6 +1054,11 @@ function PacingPage(props: {
             return <ProgressCell timeProgress={Number(row.TIME_PROGRESS_RATIO || 0)} deliveryProgress={Number(row.ACTUAL_DELIVERY || 0) / Math.max(Number(row.GOAL_DELIVERY || 0), 1)} />;
           }}
           headerHelp={{ DELIVERY_PACING_RATIO: DELIVERY_PACING_HELP }}
+          trailingControl={{
+            expanded: showDiagnosis,
+            label: showDiagnosis ? "Hide diagnosis columns" : "Show diagnosis columns",
+            onToggle: () => setShowDiagnosis((current) => !current)
+          }}
           rowClassName={(row) => row.PACING_SNOOZE_STATE === "SNOOZED" ? "snoozed-row" : ""}
           format={formatPacingValue}
         />
@@ -1401,6 +1435,7 @@ function DataTable(props: {
   format: (key: string, value: unknown, row: AnyRow) => string;
   renderCell?: (key: string, value: unknown, row: AnyRow) => React.ReactNode | null;
   headerHelp?: Record<string, string>;
+  trailingControl?: { expanded: boolean; label: string; onToggle: () => void };
   rowClassName?: (row: AnyRow) => string;
 }) {
   return (
@@ -1434,6 +1469,19 @@ function DataTable(props: {
                 </th>
               );
             })}
+            {props.trailingControl && (
+              <th className="table-toggle-col">
+                <button
+                  className={`table-toggle-button ${props.trailingControl.expanded ? "active" : ""}`}
+                  type="button"
+                  onClick={props.trailingControl.onToggle}
+                  aria-label={props.trailingControl.label}
+                  title={props.trailingControl.label}
+                >
+                  {props.trailingControl.expanded ? <Minus size={17} /> : <Plus size={17} />}
+                </button>
+              </th>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -1463,6 +1511,7 @@ function DataTable(props: {
                     </td>
                   );
                 })}
+                {props.trailingControl && <td className="table-toggle-col" />}
               </tr>
             );
           })}
