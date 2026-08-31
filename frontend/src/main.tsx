@@ -1512,7 +1512,6 @@ function DataTable(props: {
                     </td>
                   );
                 })}
-                {props.trailingControl && <td className="table-toggle-col" />}
               </tr>
             );
           })}
