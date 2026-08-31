@@ -925,8 +925,8 @@ function PacingPage(props: {
     ["TIME_PROGRESS_RATIO", "Time progress"],
     ["GOAL_DELIVERY", "Goal delivery"],
     ["GOAL_TYPE", "Target type"],
-    ["EXPECTED_DELIVERY_TO_DATE", "Expected delivery"],
-    ["ACTUAL_DELIVERY", "Actual delivery"],
+    ["EXPECTED_DELIVERY_TO_DATE", "Expected delivery to date"],
+    ["ACTUAL_DELIVERY", "Actual delivery to date"],
     ["DELIVERY_DELTA", "Short fall"],
     ["DATASOURCE", "Datasource"]
   ];
@@ -1025,8 +1025,8 @@ function PacingPage(props: {
       />
       <MetricStrip metrics={[
         { label: "Rows", value: num(filtered.length) },
-        { label: "Expected delivery", value: num(Math.round(totalExpected)) },
-        { label: "Actual delivery", value: num(Math.round(totalActual)) },
+        { label: "Expected delivery to date", value: num(Math.round(totalExpected)) },
+        { label: "Actual delivery to date", value: num(Math.round(totalActual)) },
         { label: "Delivery vs expected", value: blendedRatio === null ? "N/A" : pct(blendedRatio) },
         { label: "Underpacing refs", value: num(underCount), tone: "warn" }
       ]} />
