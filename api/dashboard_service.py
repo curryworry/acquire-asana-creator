@@ -996,6 +996,7 @@ SELECT
     ELSE 'CPU'
   END AS cost_unit,
   SAFE_DIVIDE(GREATEST(goal_delivery - actual_delivery, 0), remaining_days) AS required_daily_delivery,
+  actual_delivery + SAFE_MULTIPLY(current_daily_delivery, remaining_days) AS projected_end_delivery,
   CASE
     WHEN UPPER(goal_types) = 'IMPRESSIONS' THEN SAFE_MULTIPLY(SAFE_DIVIDE(GREATEST(booked_nett_cost - actual_cost, 0), NULLIF(GREATEST(goal_delivery - actual_delivery, 0), 0)), 1000)
     ELSE SAFE_DIVIDE(GREATEST(booked_nett_cost - actual_cost, 0), NULLIF(GREATEST(goal_delivery - actual_delivery, 0), 0))
@@ -1062,6 +1063,7 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
                 "CURRENT_DAILY_COST": float(r["current_daily_cost"] or 0),
                 "COST_UNIT": str(r["cost_unit"] or "CPU"),
                 "REQUIRED_DAILY_DELIVERY": float(r["required_daily_delivery"] or 0),
+                "PROJECTED_END_DELIVERY": float(r["projected_end_delivery"] or 0),
                 "REQUIRED_COST_PER_UNIT": float(r["required_cost_per_unit"]) if r["required_cost_per_unit"] is not None else None,
                 "CURRENT_DAILY_COST_PER_UNIT": float(r["current_daily_cost_per_unit"]) if r["current_daily_cost_per_unit"] is not None else None,
                 "DELIVERY_DELTA": delivery_delta,

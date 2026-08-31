@@ -939,6 +939,7 @@ function PacingPage(props: {
   const diagnosisColumns: Array<[string, string]> = [
     ["REQUIRED_DAILY_DELIVERY", "Required daily delivery"],
     ["CURRENT_DAILY_DELIVERY", "Current daily delivery"],
+    ["PROJECTED_END_DELIVERY", "Projected end of campaign delivery"],
     ["REQUIRED_COST_PER_UNIT", "Required cost per unit"],
     ["CURRENT_DAILY_COST_PER_UNIT", "Current daily cost per unit"]
   ];
@@ -948,7 +949,7 @@ function PacingPage(props: {
     ...(status === "SNOOZED" ? snoozeColumns : [])
   ];
   const formatPacingValue = (key: string, value: unknown, row: AnyRow) => {
-    if (["GOAL_DELIVERY", "EXPECTED_DELIVERY_TO_DATE", "ACTUAL_DELIVERY", "DELIVERY_DELTA", "REQUIRED_DAILY_DELIVERY", "CURRENT_DAILY_DELIVERY"].includes(key)) return num(Math.round(Number(value || 0)));
+    if (["GOAL_DELIVERY", "EXPECTED_DELIVERY_TO_DATE", "ACTUAL_DELIVERY", "DELIVERY_DELTA", "REQUIRED_DAILY_DELIVERY", "CURRENT_DAILY_DELIVERY", "PROJECTED_END_DELIVERY"].includes(key)) return num(Math.round(Number(value || 0)));
     if (["REQUIRED_COST_PER_UNIT", "CURRENT_DAILY_COST_PER_UNIT"].includes(key)) return costPerUnit(value, row.COST_UNIT);
     if (["TIME_PROGRESS_RATIO", "DELIVERY_PACING_RATIO"].includes(key)) return value === null || value === "" ? "N/A" : pct(value);
     if (key === "SNOOZE_END_DATE" && !value && row.PACING_SNOOZE_STATE === "SNOOZED") return "Permanent";
