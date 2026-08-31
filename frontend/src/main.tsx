@@ -1441,6 +1441,17 @@ function DataTable(props: {
 }) {
   return (
     <div className="table-wrap">
+      {props.trailingControl && (
+        <button
+          className={`table-floating-toggle ${props.trailingControl.expanded ? "active" : ""}`}
+          type="button"
+          onClick={props.trailingControl.onToggle}
+          aria-label={props.trailingControl.label}
+          title={props.trailingControl.label}
+        >
+          {props.trailingControl.expanded ? <Minus size={17} /> : <Plus size={17} />}
+        </button>
+      )}
       <table>
         <thead>
           <tr>
@@ -1470,19 +1481,6 @@ function DataTable(props: {
                 </th>
               );
             })}
-            {props.trailingControl && (
-              <th className="table-toggle-col">
-                <button
-                  className={`table-toggle-button ${props.trailingControl.expanded ? "active" : ""}`}
-                  type="button"
-                  onClick={props.trailingControl.onToggle}
-                  aria-label={props.trailingControl.label}
-                  title={props.trailingControl.label}
-                >
-                  {props.trailingControl.expanded ? <Minus size={17} /> : <Plus size={17} />}
-                </button>
-              </th>
-            )}
           </tr>
         </thead>
         <tbody>

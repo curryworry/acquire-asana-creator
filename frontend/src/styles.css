@@ -454,6 +454,7 @@ button:disabled {
 }
 
 .table-wrap {
+  position: relative;
   overflow-x: auto;
   background: var(--panel);
   border: 1px solid var(--line);
@@ -528,20 +529,11 @@ th {
   line-height: 1;
 }
 
-.table-toggle-col {
-  width: 46px;
-  min-width: 46px;
-  max-width: 46px;
-  text-align: center;
-  padding: 8px 10px;
-}
-
-th.table-toggle-col {
-  text-align: center;
-  vertical-align: middle;
-}
-
-.table-toggle-button {
+.table-floating-toggle {
+  position: sticky;
+  top: 9px;
+  left: calc(100% - 37px);
+  z-index: 3;
   width: 26px;
   height: 26px;
   border: 0;
@@ -554,16 +546,16 @@ th.table-toggle-col {
   box-shadow: inset 0 0 0 1px rgba(248, 241, 223, 0.55);
   line-height: 0;
   padding: 0;
-  vertical-align: middle;
+  margin: 9px 10px -35px auto;
 }
 
-.table-toggle-button svg {
+.table-floating-toggle svg {
   display: block;
   stroke-width: 2.4;
 }
 
-.table-toggle-button:hover,
-.table-toggle-button.active {
+.table-floating-toggle:hover,
+.table-floating-toggle.active {
   background: var(--green);
   color: white;
 }
