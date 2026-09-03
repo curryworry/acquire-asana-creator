@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import re
+from csv import DictWriter
 from datetime import datetime, timezone
 from io import BytesIO
+from io import StringIO
 from typing import Any
 
 import pandas as pd
+from google.api_core.exceptions import NotFound
+from google.cloud import bigquery
 
+from api.dashboard_service import bq_context, table_fqn
 from api.config import get_secret
 from gmail_client import GmailAttachment, GmailInboxClient
 
 
 DEFAULT_TRADEME_VIDEO_SUBJECT = "TradeMe On Video - Last 7 Days"
+QA_VIDEO_TRADEME_TABLE = "qa_video_on_trademe"
 FOOTER_PREFIXES = (
     "report time",
     "date range",
@@ -142,8 +148,8 @@ def parse_video_trademe_attachment(attachment: GmailAttachment) -> dict[str, Any
     }
 
 
-def video_on_trademe_dashboard() -> dict[str, Any]:
-    subject_contains = get_secret("QA_TRADEME_VIDEO_SUBJECT_CONTAINS", DEFAULT_TRADEME_VIDEO_SUBJECT)
+def fetch_video_on_trademe_gmail_report() -> dict[str, Any]:
+    subject_contains = get_secret("QA_TRADEME_VIDEO_SUBJECT_CONTAINS", "").strip() or DEFAULT_TRADEME_VIDEO_SUBJECT
     search_query = get_secret("QA_TRADEME_VIDEO_GMAIL_SEARCH_QUERY", "").strip()
     max_messages = _as_int(get_secret("QA_TRADEME_VIDEO_MAX_MESSAGES", "20"), 20)
 
@@ -160,3 +166,132 @@ def video_on_trademe_dashboard() -> dict[str, Any]:
         max_messages=max_messages,
     )
     return parse_video_trademe_attachment(attachment)
+
+
+def _qa_video_schema() -> list[bigquery.SchemaField]:
+    return [
+        bigquery.SchemaField("row_number", "INTEGER"),
+        bigquery.SchemaField("campaign", "STRING"),
+        bigquery.SchemaField("last_7_day_impressions", "INTEGER"),
+        bigquery.SchemaField("source_subject", "STRING"),
+        bigquery.SchemaField("source_message_id", "STRING"),
+        bigquery.SchemaField("source_attachment", "STRING"),
+        bigquery.SchemaField("email_received_at", "TIMESTAMP"),
+        bigquery.SchemaField("report_time", "STRING"),
+        bigquery.SchemaField("date_range", "STRING"),
+        bigquery.SchemaField("group_by", "STRING"),
+        bigquery.SchemaField("loaded_at", "TIMESTAMP"),
+    ]
+
+
+def ensure_video_on_trademe_table(client: bigquery.Client, project_id: str, dataset: str) -> None:
+    table_id = f"{project_id}.{dataset}.{QA_VIDEO_TRADEME_TABLE}"
+    try:
+        client.get_table(table_id)
+        return
+    except NotFound:
+        pass
+
+    table = bigquery.Table(table_id, schema=_qa_video_schema())
+    client.create_table(table)
+
+
+def load_video_on_trademe_table(report: dict[str, Any]) -> dict[str, str | int]:
+    client, project_id, dataset = bq_context()
+    ensure_video_on_trademe_table(client, project_id, dataset)
+    table_id = f"{project_id}.{dataset}.{QA_VIDEO_TRADEME_TABLE}"
+    meta = report.get("meta", {})
+    loaded_at = datetime.now(timezone.utc).isoformat()
+    fieldnames = [field.name for field in _qa_video_schema()]
+    output = StringIO()
+    writer = DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    for index, row in enumerate(report.get("rows", []), start=1):
+        writer.writerow(
+            {
+                "row_number": index,
+                "campaign": row.get("CAMPAIGN", ""),
+                "last_7_day_impressions": int(row.get("IMPRESSIONS", 0) or 0),
+                "source_subject": meta.get("subject", ""),
+                "source_message_id": meta.get("message_id", ""),
+                "source_attachment": meta.get("attachment", ""),
+                "email_received_at": meta.get("received_at", ""),
+                "report_time": meta.get("report_time", ""),
+                "date_range": meta.get("date_range", ""),
+                "group_by": meta.get("group_by", ""),
+                "loaded_at": loaded_at,
+            }
+        )
+
+    job_config = bigquery.LoadJobConfig(
+        source_format=bigquery.SourceFormat.CSV,
+        skip_leading_rows=1,
+        schema=_qa_video_schema(),
+        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+    )
+    csv_bytes = output.getvalue().encode("utf-8")
+    client.load_table_from_file(BytesIO(csv_bytes), table_id, job_config=job_config).result()
+    return {
+        "project_id": project_id,
+        "dataset": dataset,
+        "table": QA_VIDEO_TRADEME_TABLE,
+        "rows": len(report.get("rows", [])),
+        "total_impressions": int(meta.get("total_impressions", "0") or 0),
+    }
+
+
+def ingest_video_on_trademe_report() -> dict[str, str | int]:
+    report = fetch_video_on_trademe_gmail_report()
+    return load_video_on_trademe_table(report)
+
+
+def video_on_trademe_dashboard() -> dict[str, Any]:
+    client, project_id, dataset = bq_context()
+    ensure_video_on_trademe_table(client, project_id, dataset)
+    rows = list(
+        client.query(
+            f"""
+SELECT
+  row_number,
+  campaign,
+  last_7_day_impressions,
+  source_subject,
+  source_message_id,
+  source_attachment,
+  email_received_at,
+  report_time,
+  date_range,
+  group_by,
+  loaded_at
+FROM {table_fqn(project_id, dataset, QA_VIDEO_TRADEME_TABLE)}
+ORDER BY last_7_day_impressions DESC, campaign
+"""
+        ).result()
+    )
+    data = [
+        {
+            "ROW_ID": f"{r['source_message_id']}:{r['row_number']}",
+            "CAMPAIGN": str(r["campaign"] or ""),
+            "IMPRESSIONS": int(r["last_7_day_impressions"] or 0),
+        }
+        for r in rows
+    ]
+    first = rows[0] if rows else None
+    return {
+        "rows": data,
+        "meta": {
+            "project_id": project_id,
+            "dataset": dataset,
+            "table": QA_VIDEO_TRADEME_TABLE,
+            "subject": str(first["source_subject"] or "") if first else "",
+            "message_id": str(first["source_message_id"] or "") if first else "",
+            "received_at": first["email_received_at"].isoformat() if first and first["email_received_at"] else "",
+            "attachment": str(first["source_attachment"] or "") if first else "",
+            "report_time": str(first["report_time"] or "") if first else "",
+            "date_range": str(first["date_range"] or "") if first else "",
+            "group_by": str(first["group_by"] or "") if first else "",
+            "loaded_at": first["loaded_at"].isoformat() if first and first["loaded_at"] else "",
+            "total_rows": str(len(data)),
+            "total_impressions": str(sum(row["IMPRESSIONS"] for row in data)),
+        },
+    }

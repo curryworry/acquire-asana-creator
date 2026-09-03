@@ -150,3 +150,25 @@ Data recency check on 2026-06-02:
 - Snapshot table: `supermetrics_data.live_alert_snapshots`
 - Each email run stores row-level snapshot data keyed by `run_id`
 - Email includes signed dashboard link using `mode=live_alerts&user&run_id&exp&sig`
+
+## QA Table: `qa_video_on_trademe`
+Purpose: Current rolling 7-day DV360 TradeMe video QA snapshot, loaded from the daily Gmail CSV attachment.
+
+Load behavior:
+- Source Gmail subject contains `TradeMe On Video - Last 7 Days`
+- Fully overwritten on each successful daily ingestion
+- Scheduled by `.github/workflows/qa_video_on_trademe.yml`
+- Dashboard endpoint `/api/qa/video-on-trademe` reads this table instead of Gmail
+
+Columns:
+- `row_number` INT64
+- `campaign` STRING
+- `last_7_day_impressions` INT64
+- `source_subject` STRING
+- `source_message_id` STRING
+- `source_attachment` STRING
+- `email_received_at` TIMESTAMP
+- `report_time` STRING
+- `date_range` STRING
+- `group_by` STRING
+- `loaded_at` TIMESTAMP

@@ -118,6 +118,38 @@ Optional secrets:
 - `ALERT_LINK_TTL_DAYS` (default `7`)
 - `ADMIN_PASS` (required in Streamlit app for `Dismiss` action)
 
+## 3c) QA: TradeMe video report ingestion (Gmail + BigQuery)
+
+Workflow file:
+- `.github/workflows/qa_video_on_trademe.yml`
+
+Schedule:
+- Runs daily at 9:00 AM `America/New_York`.
+- GitHub Actions triggers at both `13:00` and `14:00` UTC so daylight saving time is handled. The script exits unless New York local time is 9 AM.
+
+Script:
+- `scripts/load_qa_video_on_trademe.py`
+
+Logic:
+1. Pull the latest Gmail attachment where the subject contains `TradeMe On Video - Last 7 Days`.
+2. Parse the DV360 CSV campaign/impressions rows.
+3. Fully overwrite `supermetrics_data.qa_video_on_trademe`.
+4. Dashboard endpoint `/api/qa/video-on-trademe` reads BigQuery only.
+
+Required GitHub repository secrets:
+- `BQ_PROJECT_ID`
+- `BQ_DATASET`
+- `BQ_SERVICE_ACCOUNT_JSON`
+- `GMAIL_CLIENT_ID`
+- `GMAIL_CLIENT_SECRET`
+- `GMAIL_REFRESH_TOKEN`
+
+Optional vars/secrets:
+- `GMAIL_USER` (default `me`)
+- `QA_TRADEME_VIDEO_SUBJECT_CONTAINS` (default `TradeMe On Video - Last 7 Days`)
+- `QA_TRADEME_VIDEO_GMAIL_SEARCH_QUERY`
+- `QA_TRADEME_VIDEO_MAX_MESSAGES` (default `20`)
+
 Local token check helper:
 - `scripts/print_gmail_access_token.py`
 - Example:

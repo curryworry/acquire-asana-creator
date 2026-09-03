@@ -491,6 +491,7 @@ function App() {
   const opsData = useOpsBootstrap(Boolean(token));
   const alertsData = opsData.alerts;
   const pacingData = opsData.pacing;
+  const qaVideoTrademeData = useApiRows<AnyRow>("/api/qa/video-on-trademe", Boolean(token));
   const opsCountsReady = alertsData.hasLoaded && pacingData.hasLoaded;
   const opsBootstrapPending = (alertsActive || pacingActive) && Boolean(token) && !opsData.alerts.hasLoaded && !opsData.alerts.error;
   const [opsLoaderDismissed, setOpsLoaderDismissed] = React.useState(!opsBootstrapPending);
@@ -617,6 +618,7 @@ function App() {
             >
               <ClipboardCheck size={18} />
               <span>QA</span>
+              {qaVideoTrademeData.hasLoaded && <span className="nav-count nav-count-parent">{num(qaVideoTrademeData.rows.length)}</span>}
               <ChevronDown className={`nav-chevron ${qaExpanded ? "open" : ""}`} size={16} />
             </button>
             {qaExpanded && (
@@ -628,6 +630,7 @@ function App() {
                     onClick={() => setPage(section.page)}
                   >
                     <span>{section.label}</span>
+                    {qaVideoTrademeData.hasLoaded && <span className="nav-count">{num(qaVideoTrademeData.rows.length)}</span>}
                   </button>
                 ))}
               </div>
@@ -659,7 +662,7 @@ function App() {
         {page === "alerts:stopped_impressions" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
         {page === "alerts:missing_our_ref" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
         {page === "alerts:ended_but_impressions" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
-        {page === "qa:video_on_trademe" && <QaVideoOnTrademePage />}
+        {page === "qa:video_on_trademe" && <QaVideoOnTrademePage {...qaVideoTrademeData} />}
         {page === "trafficking" && <PlaceholderPage title="Trafficking to Asana" body="The next migration slice will bring the Gmail fetch, parse preview, Asana dedupe check, and dry-run downloads into this interface." />}
         {page === "automation" && <PlaceholderPage title="Automation Runs" body="Manual automation triggers should run as background jobs with live status and logs, instead of blocking the interface." />}
         {page === "admin" && <AdminPage isAdmin={isAdmin} />}
@@ -1406,8 +1409,15 @@ function AlertsPage(props: {
   );
 }
 
-function QaVideoOnTrademePage() {
-  const { rows, meta, loading, hasLoaded, error, refresh } = useApiRows<AnyRow>("/api/qa/video-on-trademe");
+function QaVideoOnTrademePage(props: {
+  rows: AnyRow[];
+  meta: Record<string, string>;
+  loading: boolean;
+  hasLoaded: boolean;
+  error: string;
+  refresh: () => Promise<void>;
+}) {
+  const { rows, meta, loading, hasLoaded, error, refresh } = props;
   const [query, setQuery] = React.useState("");
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [sort, setSort] = React.useState<SortState>({ key: "IMPRESSIONS", direction: "desc" });
@@ -1420,7 +1430,7 @@ function QaVideoOnTrademePage() {
   const totalImpressions = sortedRows.reduce((sum, row) => sum + Number(row.IMPRESSIONS || 0), 0);
   const columns: Array<[string, string]> = [
     ["CAMPAIGN", "Campaign"],
-    ["IMPRESSIONS", "Impressions"]
+    ["IMPRESSIONS", "Last 7-day impressions"]
   ];
 
   return (
