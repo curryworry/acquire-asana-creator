@@ -69,6 +69,14 @@ def daily_trafficking_defaults() -> dict[str, str]:
     }
 
 
+def qa_video_on_trademe_defaults() -> dict[str, str]:
+    return {
+        "subject_contains": get_secret("QA_TRADEME_VIDEO_SUBJECT_CONTAINS", "TradeMe On Video - Last 7 Days"),
+        "table": "qa_video_on_trademe",
+        "script": str(Path("scripts") / "load_qa_video_on_trademe.py"),
+    }
+
+
 def run_campaign_alert(recipients: str, force_run: bool) -> dict[str, str | int | bool]:
     env = {
         **_secret_env([
@@ -114,3 +122,22 @@ def run_daily_trafficking(force_dry_run: bool) -> dict[str, str | int | bool]:
         "DRY_RUN_MODE": "true" if force_dry_run else get_secret("DRY_RUN_MODE", "true"),
     }
     return run_script("scripts/daily_trafficking_dry_run.py", env)
+
+
+def run_qa_video_on_trademe() -> dict[str, str | int | bool]:
+    env = {
+        **_secret_env([
+            "BQ_SERVICE_ACCOUNT_JSON",
+            "GMAIL_CLIENT_ID",
+            "GMAIL_CLIENT_SECRET",
+            "GMAIL_REFRESH_TOKEN",
+            "QA_TRADEME_VIDEO_SUBJECT_CONTAINS",
+            "QA_TRADEME_VIDEO_GMAIL_SEARCH_QUERY",
+            "QA_TRADEME_VIDEO_MAX_MESSAGES",
+        ]),
+        "BQ_PROJECT_ID": get_secret("BQ_PROJECT_ID", "sm-test-391201"),
+        "BQ_DATASET": get_secret("BQ_DATASET", "supermetrics_data"),
+        "GMAIL_USER": get_secret("GMAIL_USER", "me"),
+        "QA_TRADEME_VIDEO_FORCE_RUN": "true",
+    }
+    return run_script("scripts/load_qa_video_on_trademe.py", env)

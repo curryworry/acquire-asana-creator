@@ -136,6 +136,9 @@ Logic:
 3. Fully overwrite `supermetrics_data.qa_video_on_trademe`.
 4. Dashboard endpoint `/api/qa/video-on-trademe` reads BigQuery only.
 
+Manual trigger:
+- Admin page > TradeMe Video QA > Load TradeMe Video QA Now
+
 Required GitHub repository secrets:
 - `BQ_PROJECT_ID`
 - `BQ_DATASET`

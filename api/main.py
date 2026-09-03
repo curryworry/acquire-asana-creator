@@ -10,8 +10,10 @@ from api.automation_service import (
     campaign_alert_defaults,
     daily_trafficking_defaults,
     is_admin_user,
+    qa_video_on_trademe_defaults,
     run_campaign_alert,
     run_daily_trafficking,
+    run_qa_video_on_trademe,
 )
 from api.config import REPO_ROOT, get_auth_users, get_secret
 from api.dashboard_service import (
@@ -228,6 +230,7 @@ def admin_automations(user: dict[str, str] = Depends(current_user)) -> dict:
         "admin": user.get("username"),
         "campaign_alert": campaign_alert_defaults(),
         "daily_trafficking": daily_trafficking_defaults(),
+        "qa_video_on_trademe": qa_video_on_trademe_defaults(),
     }
 
 
@@ -270,6 +273,12 @@ def admin_daily_trafficking(
 ) -> AutomationRunResponse:
     require_admin(user)
     return AutomationRunResponse(**run_daily_trafficking(force_dry_run=payload.force_dry_run))
+
+
+@app.post("/api/admin/automations/qa-video-on-trademe", response_model=AutomationRunResponse)
+def admin_qa_video_on_trademe(user: dict[str, str] = Depends(current_user)) -> AutomationRunResponse:
+    require_admin(user)
+    return AutomationRunResponse(**run_qa_video_on_trademe())
 
 
 if FRONTEND_DIST.exists():

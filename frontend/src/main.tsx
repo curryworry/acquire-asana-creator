@@ -57,6 +57,11 @@ type AutomationDefaults = {
     dry_run_mode: string;
     script: string;
   };
+  qa_video_on_trademe: {
+    subject_contains: string;
+    table: string;
+    script: string;
+  };
 };
 type AutomationResult = {
   status: string;
@@ -1757,7 +1762,8 @@ function AdminPage({ isAdmin }: { isAdmin: boolean }) {
   const [forceDryRun, setForceDryRun] = React.useState(true);
   const [campaignResult, setCampaignResult] = React.useState<AutomationResult | null>(null);
   const [dailyResult, setDailyResult] = React.useState<AutomationResult | null>(null);
-  const [loading, setLoading] = React.useState<"campaign" | "daily" | "defaults" | "">("defaults");
+  const [qaResult, setQaResult] = React.useState<AutomationResult | null>(null);
+  const [loading, setLoading] = React.useState<"campaign" | "daily" | "qa" | "defaults" | "">("defaults");
   const [error, setError] = React.useState("");
 
   React.useEffect(() => {
@@ -1803,6 +1809,24 @@ function AdminPage({ isAdmin }: { isAdmin: boolean }) {
       setDailyResult(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Daily trafficking run failed.");
+    } finally {
+      setLoading("");
+    }
+  }
+
+  async function runQaVideoOnTrademe() {
+    setLoading("qa");
+    setError("");
+    setQaResult(null);
+    try {
+      const result = await apiFetch<AutomationResult>("/api/admin/automations/qa-video-on-trademe", {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+      invalidateApiCache("/api/qa/video-on-trademe");
+      setQaResult(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "TradeMe video QA load failed.");
     } finally {
       setLoading("");
     }
@@ -1875,6 +1899,21 @@ function AdminPage({ isAdmin }: { isAdmin: boolean }) {
           </button>
           <AutomationOutput result={dailyResult} />
           {defaults?.daily_trafficking.script && <p className="admin-note">Script: {defaults.daily_trafficking.script}</p>}
+        </article>
+
+        <article className="admin-card">
+          <div>
+            <span className="eyebrow">QA</span>
+            <h2>TradeMe Video QA</h2>
+            <p>Loads the latest DV360 Gmail attachment and overwrites the BigQuery QA table.</p>
+          </div>
+          <button className="primary-button" disabled={loading === "qa"} onClick={() => void runQaVideoOnTrademe()}>
+            {loading === "qa" ? <Loader2 className="spin" size={16} /> : <ClipboardCheck size={16} />}
+            Load TradeMe Video QA Now
+          </button>
+          <AutomationOutput result={qaResult} />
+          {defaults?.qa_video_on_trademe.table && <p className="admin-note">Table: {defaults.qa_video_on_trademe.table}</p>}
+          {defaults?.qa_video_on_trademe.script && <p className="admin-note">Script: {defaults.qa_video_on_trademe.script}</p>}
         </article>
       </section>
     </>
