@@ -163,6 +163,7 @@ CREATE TABLE IF NOT EXISTS {snapshots_table_fqn()} (
   end_date DATE,
   advertiser STRING,
   campaign STRING,
+  account_manager_name STRING,
   location_text STRING,
   property_name STRING,
   booking_status STRING,
@@ -181,6 +182,7 @@ CREATE TABLE IF NOT EXISTS {snapshots_table_fqn()} (
 
     client.query(f"ALTER TABLE {snoozes_table_fqn()} ADD COLUMN IF NOT EXISTS alert_key STRING").result()
     client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS alert_key STRING").result()
+    client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS account_manager_name STRING").result()
     client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS datasource STRING").result()
     client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS account STRING").result()
     client.query(f"ALTER TABLE {snapshots_table_fqn()} ADD COLUMN IF NOT EXISTS first_missing_date DATE").result()
@@ -205,6 +207,7 @@ class AlertRow:
     location_text: str
     property_name: str
     booking_status: str
+    account_manager_name: str = ""
     datasource: str = ""
     account: str = ""
     first_missing_date: str = ""
@@ -238,6 +241,7 @@ WITH typed AS (
     ) AS END_DATE,
     CAST(ADVERTISERNAME AS STRING) AS ADVERTISER,
     CAST(CAMPAIGNNAME AS STRING) AS CAMPAIGN,
+    CAST(ACCOUNTMANAGERNAME AS STRING) AS ACCOUNT_MANAGER_NAME,
     CAST(LOCATIONTEXT AS STRING) AS LOCATION_TEXT,
     CAST(PROPERTYNAME AS STRING) AS PROPERTY_NAME,
     CAST(BOOKINGSTATUS AS STRING) AS BOOKING_STATUS,
@@ -252,6 +256,7 @@ agg AS (
     MIN(END_DATE) AS END_DATE,
     ANY_VALUE(ADVERTISER) AS ADVERTISER,
     ANY_VALUE(CAMPAIGN) AS CAMPAIGN,
+    ANY_VALUE(ACCOUNT_MANAGER_NAME) AS ACCOUNT_MANAGER_NAME,
     ANY_VALUE(LOCATION_TEXT) AS LOCATION_TEXT,
     ANY_VALUE(PROPERTY_NAME) AS PROPERTY_NAME,
     ANY_VALUE(BOOKING_STATUS) AS BOOKING_STATUS,
@@ -268,6 +273,7 @@ SELECT
   END_DATE,
   ADVERTISER,
   CAMPAIGN,
+  ACCOUNT_MANAGER_NAME,
   LOCATION_TEXT,
   PROPERTY_NAME,
   BOOKING_STATUS
@@ -296,6 +302,7 @@ ORDER BY START_DATE, OUR_REF
                 end_date=str(row["END_DATE"] or "").strip(),
                 advertiser=str(row["ADVERTISER"] or "").strip(),
                 campaign=str(row["CAMPAIGN"] or "").strip(),
+                account_manager_name=str(row["ACCOUNT_MANAGER_NAME"] or "").strip(),
                 location_text=str(row["LOCATION_TEXT"] or "").strip(),
                 property_name=str(row["PROPERTY_NAME"] or "").strip(),
                 booking_status=str(row["BOOKING_STATUS"] or "").strip(),
@@ -698,6 +705,7 @@ def store_snapshot_rows(client: bigquery.Client, rows: List[AlertRow], run_id: s
                 "end_date": _nullable_date(row.end_date),
                 "advertiser": row.advertiser,
                 "campaign": row.campaign,
+                "account_manager_name": row.account_manager_name,
                 "location_text": row.location_text,
                 "property_name": row.property_name,
                 "booking_status": row.booking_status,

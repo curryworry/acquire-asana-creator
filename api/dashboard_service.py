@@ -188,6 +188,7 @@ CREATE TABLE IF NOT EXISTS {table_fqn(project_id, dataset, "live_alert_snapshots
   end_date DATE,
   advertiser STRING,
   campaign STRING,
+  account_manager_name STRING,
   location_text STRING,
   property_name STRING,
   booking_status STRING,
@@ -254,6 +255,7 @@ CREATE TABLE IF NOT EXISTS {table_fqn(project_id, dataset, "asana_comment_action
     ).result()
     client.query(f"ALTER TABLE {table_fqn(project_id, dataset, 'snoozes')} ADD COLUMN IF NOT EXISTS alert_key STRING").result()
     client.query(f"ALTER TABLE {table_fqn(project_id, dataset, 'live_alert_snapshots')} ADD COLUMN IF NOT EXISTS alert_key STRING").result()
+    client.query(f"ALTER TABLE {table_fqn(project_id, dataset, 'live_alert_snapshots')} ADD COLUMN IF NOT EXISTS account_manager_name STRING").result()
     client.query(f"ALTER TABLE {table_fqn(project_id, dataset, 'snooze_actions')} ADD COLUMN IF NOT EXISTS processor_id STRING").result()
     for column_sql in [
         "target_resolution STRING",
@@ -512,6 +514,7 @@ snapshot_latest AS (
     alert_key,
     advertiser,
     campaign,
+    account_manager_name,
     property_name,
     start_date,
     end_date,
@@ -522,6 +525,7 @@ SELECT
   l.*,
   COALESCE(s.advertiser, '') AS advertiser,
   COALESCE(s.campaign, '') AS campaign,
+  COALESCE(s.account_manager_name, '') AS account_manager_name,
   COALESCE(s.property_name, '') AS property_name,
   s.start_date,
   s.end_date
@@ -574,6 +578,7 @@ WHERE l.rn = 1
                 "END_DATE": str(r["end_date"] or ""),
                 "ADVERTISER": str(r["advertiser"] or ""),
                 "CAMPAIGN": str(r["campaign"] or ""),
+                "ACCOUNT_MANAGER": str(r["account_manager_name"] or ""),
                 "LOCATIONTEXT": "",
                 "PROPERTYNAME": str(r["property_name"] or ""),
                 "BOOKINGSTATUS": "",
@@ -622,6 +627,7 @@ snapshot_latest AS (
     alert_key,
     advertiser,
     campaign,
+    account_manager_name,
     property_name,
     start_date,
     end_date,
@@ -641,6 +647,7 @@ SELECT
   l.updated_at,
   COALESCE(s.advertiser, '') AS advertiser,
   COALESCE(s.campaign, '') AS campaign,
+  COALESCE(s.account_manager_name, '') AS account_manager_name,
   COALESCE(s.property_name, '') AS property_name,
   s.start_date,
   s.end_date
@@ -682,6 +689,7 @@ ORDER BY l.updated_at DESC
                 "END_DATE": str(r["end_date"] or ""),
                 "ADVERTISER": str(r["advertiser"] or ""),
                 "CAMPAIGN": str(r["campaign"] or ""),
+                "ACCOUNT_MANAGER": str(r["account_manager_name"] or ""),
                 "LOCATIONTEXT": "",
                 "PROPERTYNAME": str(r["property_name"] or ""),
                 "BOOKINGSTATUS": "",
@@ -1141,7 +1149,7 @@ WITH latest_run AS (
 SELECT
   s.run_id, s.run_date_nz, s.run_timestamp_utc, s.alert_type, s.alert_key,
   s.our_ref, s.job_number, s.start_date, s.end_date, s.advertiser, s.campaign,
-  s.location_text, s.property_name, s.booking_status, s.datasource, s.account,
+  s.account_manager_name, s.location_text, s.property_name, s.booking_status, s.datasource, s.account,
   s.first_missing_date, s.last_missing_date, s.total_impressions, s.total_clicks,
   s.total_cost, s.row_count
 FROM {table_fqn(project_id, dataset, "live_alert_snapshots")} s
@@ -1163,6 +1171,7 @@ ORDER BY s.run_timestamp_utc DESC, s.alert_type, s.our_ref
             "END_DATE": str(r["end_date"] or ""),
             "ADVERTISER": str(r["advertiser"] or ""),
             "CAMPAIGN": str(r["campaign"] or ""),
+            "ACCOUNT_MANAGER": str(r["account_manager_name"] or ""),
             "LOCATIONTEXT": str(r["location_text"] or ""),
             "PROPERTYNAME": str(r["property_name"] or ""),
             "BOOKINGSTATUS": str(r["booking_status"] or ""),

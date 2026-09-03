@@ -1176,7 +1176,8 @@ function AlertsPage(props: {
     ["DISMISSED_BY", "DISMISSED_BY"],
     ["UPDATED_AT", "UPDATED_AT"],
     ["ADVERTISER", "ADVERTISER"],
-    ["CAMPAIGN", "CAMPAIGN"]
+    ["CAMPAIGN", "CAMPAIGN"],
+    ["ACCOUNT_MANAGER", "Account Manager name"]
   ];
   const baseAlertColumns: Array<[string, string]> = [
     ["ALERT_TYPE", "ALERT_TYPE"],
@@ -1186,6 +1187,7 @@ function AlertsPage(props: {
     ["END_DATE", "END_DATE"],
     ["ADVERTISER", "ADVERTISER"],
     ["CAMPAIGN", "CAMPAIGN"],
+    ["ACCOUNT_MANAGER", "Account Manager name"],
     ["LOCATIONTEXT", "LOCATIONTEXT"],
     ["PROPERTYNAME", "PROPERTYNAME"],
     ["BOOKINGSTATUS", "BOOKINGSTATUS"]
@@ -1230,6 +1232,7 @@ function AlertsPage(props: {
           row.JOB_NUMBER,
           row.ADVERTISER,
           row.CAMPAIGN,
+          row.ACCOUNT_MANAGER,
           row.SNOOZE_REASON,
           row.SNOOZED_BY,
           row.DISMISSED_BY
