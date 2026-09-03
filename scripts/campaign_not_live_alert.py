@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 import csv
 import hashlib
-import hmac
 import json
 import os
 import sys
-import time
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from io import StringIO
 from pathlib import Path
 from typing import Dict, List
-from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from google.cloud import bigquery
@@ -29,7 +26,7 @@ ALERT_TYPE_NOT_LIVE = "NOT_LIVE"
 ALERT_TYPE_MISSING_OUR_REF = "MISSING_OUR_REF"
 ALERT_TYPE_ENDED_BUT_IMPRESSIONS = "ENDED_BUT_IMPRESSIONS"
 ALERT_TYPE_STOPPED_IMPRESSIONS = "STOPPED_IMPRESSIONS"
-DEFAULT_NEW_UI_URL = "https://acquire-ops-roa7aw2wuq-ts.a.run.app"
+OPS_DASHBOARD_URL = "https://ops.acquire.agency"
 
 
 def env(name: str, default: str = "") -> str:
@@ -941,28 +938,7 @@ def build_csv_stopped_impressions(rows: List[AlertRow]) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
-def build_signed_dashboard_link(base_url: str, user: str, run_id: str, ttl_days: int, secret: str) -> str:
-    normalized_base = base_url.strip()
-    if not normalized_base.lower().startswith(("http://", "https://")):
-        normalized_base = f"https://{normalized_base.lstrip('/')}"
-
-    exp = int(time.time()) + max(ttl_days, 1) * 24 * 60 * 60
-    payload = f"{user}|{run_id}|{exp}"
-    sig = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-    query = urlencode(
-        {
-            "mode": "live_alerts",
-            "user": user,
-            "run_id": run_id,
-            "exp": str(exp),
-            "sig": sig,
-        }
-    )
-    joiner = "&" if "?" in normalized_base else "?"
-    return f"{normalized_base}{joiner}{query}"
-
-
-def build_email_body(link: str, rows: List[AlertRow], new_ui_url: str = "") -> str:
+def build_email_body(rows: List[AlertRow]) -> str:
     by_type: Dict[str, int] = {}
     for row in rows:
         by_type[row.alert_type] = by_type.get(row.alert_type, 0) + 1
@@ -974,10 +950,7 @@ def build_email_body(link: str, rows: List[AlertRow], new_ui_url: str = "") -> s
     lines.append("")
     lines.append("Please check attachments and dashboard for details.")
     lines.append("")
-    lines.append(f"Open dashboard: {link}")
-    if new_ui_url:
-        lines.append("")
-        lines.append(f"New UI: {new_ui_url}")
+    lines.append(f"Open dashboard: {OPS_DASHBOARD_URL}")
     return "\n".join(lines)
 
 
@@ -985,16 +958,6 @@ def send_digest(rows: List[AlertRow], run_id: str) -> str:
     recipients = split_csv(env("ALERT_EMAIL_TO", ""))
     if not recipients:
         raise RuntimeError("ALERT_EMAIL_TO is required.")
-
-    dashboard_base_url = env("ALERT_DASHBOARD_BASE_URL", "")
-    new_ui_url = env("ALERT_NEW_UI_URL", DEFAULT_NEW_UI_URL)
-    link_secret = env("LINK_SIGNING_SECRET", "")
-    if not dashboard_base_url:
-        raise RuntimeError("ALERT_DASHBOARD_BASE_URL is required for signed dashboard links.")
-    if not link_secret:
-        raise RuntimeError("LINK_SIGNING_SECRET is required for signed dashboard links.")
-
-    link_ttl_days = as_int(env("ALERT_LINK_TTL_DAYS", "7"), 7)
 
     client = GmailInboxClient(
         client_id=env("GMAIL_CLIENT_ID"),
@@ -1027,14 +990,7 @@ def send_digest(rows: List[AlertRow], run_id: str) -> str:
 
     sent_ids: List[str] = []
     for recipient in recipients:
-        link = build_signed_dashboard_link(
-            base_url=dashboard_base_url,
-            user=recipient,
-            run_id=run_id,
-            ttl_days=link_ttl_days,
-            secret=link_secret,
-        )
-        body = build_email_body(link, rows, new_ui_url)
+        body = build_email_body(rows)
         msg_id = client.send_email(
             to_email=recipient,
             subject=subject,

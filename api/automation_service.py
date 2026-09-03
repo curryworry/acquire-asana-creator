@@ -56,7 +56,6 @@ def campaign_alert_defaults() -> dict[str, str]:
     return {
         "recipients": get_secret("ALERT_EMAIL_TO", ""),
         "subject": get_secret("ALERT_EMAIL_SUBJECT", ""),
-        "dashboard_base_url": get_secret("ALERT_DASHBOARD_BASE_URL", ""),
         "script": str(Path("scripts") / "campaign_not_live_alert.py"),
     }
 
@@ -84,7 +83,6 @@ def run_campaign_alert(recipients: str, force_run: bool) -> dict[str, str | int 
             "GMAIL_CLIENT_ID",
             "GMAIL_CLIENT_SECRET",
             "GMAIL_REFRESH_TOKEN",
-            "LINK_SIGNING_SECRET",
         ]),
         "BQ_PROJECT_ID": get_secret("BQ_PROJECT_ID", "sm-test-391201"),
         "BQ_DATASET": get_secret("BQ_DATASET", "supermetrics_data"),
@@ -93,9 +91,6 @@ def run_campaign_alert(recipients: str, force_run: bool) -> dict[str, str | int 
         "ALERT_EMAIL_TO": recipients,
         "ALERT_EMAIL_SUBJECT": get_secret("ALERT_EMAIL_SUBJECT", ""),
         "ALERT_FORCE_RUN": "true" if force_run else "false",
-        "ALERT_DASHBOARD_BASE_URL": get_secret("ALERT_DASHBOARD_BASE_URL", ""),
-        "ALERT_NEW_UI_URL": get_secret("ALERT_NEW_UI_URL", "https://ops.acquire.agency"),
-        "ALERT_LINK_TTL_DAYS": get_secret("ALERT_LINK_TTL_DAYS", "7"),
     }
     return run_script("scripts/campaign_not_live_alert.py", env)
 
