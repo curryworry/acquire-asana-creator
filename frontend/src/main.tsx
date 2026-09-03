@@ -9,8 +9,10 @@ import {
   Bell,
   Check,
   ChevronDown,
+  ClipboardCheck,
   Clock3,
   Download,
+  Film,
   Gauge,
   LayoutDashboard,
   Loader2,
@@ -34,7 +36,7 @@ import "./styles.css";
 
 type AlertSection = "NOT_LIVE" | "STOPPED_IMPRESSIONS" | "MISSING_OUR_REF" | "ENDED_BUT_IMPRESSIONS";
 type PacingSection = "UNDERPACING";
-type Page = "margin" | "pacing:underpacing" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "trafficking" | "automation" | "admin";
+type Page = "margin" | "pacing:underpacing" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "qa:video_on_trademe" | "trafficking" | "automation" | "admin";
 type AnyRow = Record<string, string | number | null>;
 type ApiEnvelope<T> = { rows: T[]; meta: Record<string, string> };
 type OpsBootstrapEnvelope = { alerts: ApiEnvelope<AnyRow>; pacing: ApiEnvelope<AnyRow> };
@@ -75,6 +77,9 @@ const ALERT_SECTIONS: Array<{ key: AlertSection; page: Page; label: string }> = 
 ];
 const PACING_SECTIONS: Array<{ key: PacingSection; page: Page; label: string }> = [
   { key: "UNDERPACING", page: "pacing:underpacing", label: "Underpacing" }
+];
+const QA_SECTIONS: Array<{ page: Page; label: string }> = [
+  { page: "qa:video_on_trademe", label: "Video on TradeMe" }
 ];
 const ALERT_PAGE_SIZE = 100;
 const EMPTY_ALERT_COUNTS: Record<AlertSection, number> = {
@@ -473,8 +478,10 @@ function App() {
   const [user, setUser] = React.useState<UserInfo | null>(null);
   const [alertsExpanded, setAlertsExpanded] = React.useState(true);
   const [pacingExpanded, setPacingExpanded] = React.useState(true);
+  const [qaExpanded, setQaExpanded] = React.useState(true);
   const alertsActive = page.startsWith("alerts:");
   const pacingActive = page.startsWith("pacing:");
+  const qaActive = page.startsWith("qa:");
   const activeAlertType = pageToAlertType(page);
   const activePacingType = pageToPacingType(page);
   const [alertQuery, setAlertQuery] = React.useState("");
@@ -600,6 +607,32 @@ function App() {
               </div>
             )}
           </div>
+          <div className={`nav-section ${qaActive ? "active" : ""}`}>
+            <button
+              className={`nav-button nav-section-trigger ${qaActive ? "active" : ""}`}
+              onClick={() => {
+                setQaExpanded((current) => !current);
+                if (!qaActive) setPage("qa:video_on_trademe");
+              }}
+            >
+              <ClipboardCheck size={18} />
+              <span>QA</span>
+              <ChevronDown className={`nav-chevron ${qaExpanded ? "open" : ""}`} size={16} />
+            </button>
+            {qaExpanded && (
+              <div className="nav-subsection">
+                {QA_SECTIONS.map((section) => (
+                  <button
+                    key={section.page}
+                    className={`nav-subbutton ${page === section.page ? "active" : ""}`}
+                    onClick={() => setPage(section.page)}
+                  >
+                    <span>{section.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <NavButton active={page === "trafficking"} icon={<Table2 size={18} />} label="Trafficking" onClick={() => setPage("trafficking")} />
           <NavButton active={page === "automation"} icon={<Activity size={18} />} label="Automation" onClick={() => setPage("automation")} />
           {isAdmin && <NavButton active={page === "admin"} icon={<Settings size={18} />} label="Admin" onClick={() => setPage("admin")} />}
@@ -626,6 +659,7 @@ function App() {
         {page === "alerts:stopped_impressions" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
         {page === "alerts:missing_our_ref" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
         {page === "alerts:ended_but_impressions" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
+        {page === "qa:video_on_trademe" && <QaVideoOnTrademePage />}
         {page === "trafficking" && <PlaceholderPage title="Trafficking to Asana" body="The next migration slice will bring the Gmail fetch, parse preview, Asana dedupe check, and dry-run downloads into this interface." />}
         {page === "automation" && <PlaceholderPage title="Automation Runs" body="Manual automation triggers should run as background jobs with live status and logs, instead of blocking the interface." />}
         {page === "admin" && <AdminPage isAdmin={isAdmin} />}
@@ -1372,6 +1406,76 @@ function AlertsPage(props: {
   );
 }
 
+function QaVideoOnTrademePage() {
+  const { rows, meta, loading, hasLoaded, error, refresh } = useApiRows<AnyRow>("/api/qa/video-on-trademe");
+  const [query, setQuery] = React.useState("");
+  const [selected, setSelected] = React.useState<Set<string>>(new Set());
+  const [sort, setSort] = React.useState<SortState>({ key: "IMPRESSIONS", direction: "desc" });
+  const filtered = React.useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((row) => String(row.CAMPAIGN || "").toLowerCase().includes(q));
+  }, [query, rows]);
+  const sortedRows = React.useMemo(() => sortRows(filtered, sort), [filtered, sort]);
+  const totalImpressions = sortedRows.reduce((sum, row) => sum + Number(row.IMPRESSIONS || 0), 0);
+  const columns: Array<[string, string]> = [
+    ["CAMPAIGN", "Campaign"],
+    ["IMPRESSIONS", "Impressions"]
+  ];
+
+  return (
+    <section className="qa-page">
+      <PageHeader
+        eyebrow={meta.attachment ? `Gmail attachment: ${meta.attachment}` : "DV360 Gmail report"}
+        title="Video on TradeMe"
+        subtitle="Campaigns appearing in the latest DV360 TradeMe video report."
+        loading={loading}
+        onRefresh={() => {
+          invalidateApiCache("/api/qa/video-on-trademe");
+          return refresh();
+        }}
+        onDownload={() => downloadCsv("qa-video-on-trademe.csv", sortedRows)}
+      />
+      <MetricStrip metrics={[
+        { label: "Campaigns", value: num(sortedRows.length), tone: sortedRows.length ? "warn" : "" },
+        { label: "Impressions", value: num(totalImpressions), tone: totalImpressions ? "warn" : "" },
+        { label: "Date range", value: String(meta.date_range || "N/A") },
+        { label: "Received", value: String(meta.received_at || "N/A") }
+      ]} />
+      <section className="toolbar">
+        <div className="searchbox">
+          <Search size={16} />
+          <input
+            name="qa-video-trademe-search"
+            placeholder="Search campaigns..."
+            autoComplete="off"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+        <button className="toolbar-export" onClick={() => downloadCsv("qa-video-on-trademe.csv", sortedRows)} disabled={!sortedRows.length}>
+          <Download size={15} /> CSV
+        </button>
+        <div className="selected-chip"><SlidersHorizontal size={15} /> {selected.size} selected</div>
+      </section>
+      <DataState loading={loading && !hasLoaded} error={error} empty={!sortedRows.length}>
+        <DataTable
+          rows={sortedRows}
+          selected={selected}
+          setSelected={setSelected}
+          idKey="ROW_ID"
+          sort={sort}
+          onSort={(key) => setSort((current) => nextSort(current, key))}
+          columns={columns}
+          renderCell={(key, value) => key === "CAMPAIGN" ? <span className="campaign-cell"><Film size={15} /> {String(value ?? "")}</span> : null}
+          format={(key, value) => key === "IMPRESSIONS" ? num(value) : String(value ?? "")}
+        />
+      </DataState>
+      <ActionDock selectedCount={selected.size} onClear={() => setSelected(new Set())} />
+    </section>
+  );
+}
+
 function TablePagination(props: { page: number; totalPages: number; totalRows: number; pageSize: number; onPageChange: (page: number) => void }) {
   if (props.totalRows <= props.pageSize) return null;
   const start = (props.page - 1) * props.pageSize + 1;
@@ -1626,7 +1730,7 @@ function SnoozeButton(props: {
   );
 }
 
-function ActionDock(props: { selectedCount: number; onClear: () => void; children: React.ReactNode }) {
+function ActionDock(props: { selectedCount: number; onClear: () => void; children?: React.ReactNode }) {
   return (
     <div className={`action-dock ${props.selectedCount ? "visible" : ""}`}>
       <span>{props.selectedCount} selected</span>

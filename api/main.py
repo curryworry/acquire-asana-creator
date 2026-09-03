@@ -25,6 +25,7 @@ from api.dashboard_service import (
     process_asana_comment_action_queue,
     process_snooze_action_queue,
 )
+from api.qa_service import video_on_trademe_dashboard
 from api.schemas import (
     AutomationRunResponse,
     CampaignAlertRunRequest,
@@ -126,6 +127,14 @@ def alerts(
 @app.get("/api/alerts/bootstrap")
 def alerts_bootstrap_route(_: dict[str, str] = Depends(current_user)) -> dict:
     return alerts_bootstrap()
+
+
+@app.get("/api/qa/video-on-trademe")
+def qa_video_on_trademe(_: dict[str, str] = Depends(current_user)) -> dict:
+    try:
+        return video_on_trademe_dashboard()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 def enqueue_snooze_response(

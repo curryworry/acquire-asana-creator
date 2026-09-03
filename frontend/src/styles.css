@@ -469,6 +469,21 @@ table {
   font-size: 13px;
 }
 
+.qa-page table {
+  min-width: 720px;
+}
+
+.campaign-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.campaign-cell svg {
+  flex: 0 0 auto;
+  color: var(--green);
+}
+
 th {
   position: sticky;
   top: 0;
