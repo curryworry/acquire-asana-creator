@@ -592,6 +592,7 @@ def fetch_missing_inclusion_report() -> dict[str, Any]:
         refresh_token=get_secret("DV360_REFRESH_TOKEN"),
     )
     advertisers = _select_sdf_advertisers(client, partner_id)
+    print(f"Missing inclusion QA selected {len(advertisers)} advertisers for partner {partner_id}.", flush=True)
     advertisers_by_id = {advertiser["advertiser_id"]: advertiser for advertiser in advertisers}
     timeout_seconds = _sdf_int_secret("QA_SDF_DOWNLOAD_TIMEOUT_SECONDS", 1800)
     poll_seconds = _sdf_int_secret("QA_SDF_POLL_SECONDS", 10)
@@ -599,9 +600,14 @@ def fetch_missing_inclusion_report() -> dict[str, Any]:
 
     candidate_rows: list[dict[str, Any]] = []
     errors: list[str] = []
-    for batch in _chunked(advertisers, batch_size):
+    batches = _chunked(advertisers, batch_size)
+    for batch_index, batch in enumerate(batches, start=1):
         advertiser_ids = [advertiser["advertiser_id"] for advertiser in batch]
         try:
+            print(
+                f"Downloading SDF batch {batch_index}/{len(batches)} with {len(advertiser_ids)} advertisers.",
+                flush=True,
+            )
             raw_zip = client.download_advertisers_sdf(
                 partner_id=partner_id,
                 advertiser_ids=advertiser_ids,
@@ -610,23 +616,29 @@ def fetch_missing_inclusion_report() -> dict[str, Any]:
                 timeout_seconds=timeout_seconds,
                 poll_seconds=poll_seconds,
             )
-            candidate_rows.extend(
-                _candidate_missing_inclusion_rows_from_sdf_zip(
-                    partner_id=partner_id,
-                    advertisers_by_id=advertisers_by_id,
-                    raw_zip=raw_zip,
-                    run_date=run_date,
-                    sdf_version=sdf_version,
-                    source_advertiser_count=len(advertisers),
-                    loaded_at=loaded_at,
-                )
+            batch_rows = _candidate_missing_inclusion_rows_from_sdf_zip(
+                partner_id=partner_id,
+                advertisers_by_id=advertisers_by_id,
+                raw_zip=raw_zip,
+                run_date=run_date,
+                sdf_version=sdf_version,
+                source_advertiser_count=len(advertisers),
+                loaded_at=loaded_at,
             )
+            candidate_rows.extend(batch_rows)
+            print(f"SDF batch {batch_index}/{len(batches)} produced {len(batch_rows)} candidate rows.", flush=True)
         except Exception as exc:
             errors.append(f"{','.join(advertiser_ids)}: {exc}")
+            print(f"SDF batch {batch_index}/{len(batches)} failed: {exc}", flush=True)
 
     channel_counts: dict[str, int] = {}
     rows: list[dict[str, Any]] = []
-    for advertiser_id in sorted({str(row["advertiser_id"]) for row in candidate_rows}):
+    candidate_advertiser_ids = sorted({str(row["advertiser_id"]) for row in candidate_rows})
+    print(
+        f"Checking advertiser-level channel targeting for {len(candidate_advertiser_ids)} candidate advertisers.",
+        flush=True,
+    )
+    for advertiser_id in candidate_advertiser_ids:
         try:
             channel_counts[advertiser_id] = client.advertiser_positive_channel_count(advertiser_id)
         except Exception as exc:
@@ -640,6 +652,7 @@ def fetch_missing_inclusion_report() -> dict[str, Any]:
         row["advertiser_channel_include_count"] = channel_count
         row["advertiser_has_channel_include"] = False
         rows.append(row)
+    print(f"Missing inclusion QA final row count: {len(rows)}.", flush=True)
 
     rows.sort(
         key=lambda row: (
