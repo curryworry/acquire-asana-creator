@@ -2069,10 +2069,10 @@ function AdminPage({ isAdmin }: { isAdmin: boolean }) {
 
 function AutomationOutput({ result }: { result: AutomationResult | null }) {
   if (!result) return null;
-  const ok = result.status === "ok" && result.exit_code === 0;
+  const ok = (result.status === "ok" || result.status === "queued") && result.exit_code === 0;
   return (
     <div className={`admin-output ${ok ? "success" : "failure"}`}>
-      <strong>{ok ? "Completed" : `Finished with ${result.status}`} · exit {result.exit_code}</strong>
+      <strong>{result.status === "queued" ? "Queued" : ok ? "Completed" : `Finished with ${result.status}`} · exit {result.exit_code}</strong>
       <span>{new Date(result.finished_at).toLocaleString()}</span>
       {result.output && <pre>{result.output}</pre>}
     </div>

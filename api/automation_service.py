@@ -4,11 +4,18 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from google.auth import default as google_auth_default
+from google.auth.transport.requests import AuthorizedSession
+
 from api.config import REPO_ROOT, get_secret
 
 
 ADMIN_USERNAME = "ashwin@acquirenz.com"
 SCRIPT_TIMEOUT_SECONDS = 1800
+DEFAULT_CLOUD_RUN_PROJECT_ID = "ops-control-center-503319"
+DEFAULT_CLOUD_RUN_REGION = "australia-southeast1"
+DEFAULT_QA_MISSING_INCLUSION_JOB = "qa-missing-inclusion-list"
+CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 
 
 def is_admin_user(user: dict[str, str]) -> bool:
@@ -82,6 +89,7 @@ def qa_missing_inclusion_defaults() -> dict[str, str]:
         "sdf_version": get_secret("QA_SDF_VERSION", "SDF_VERSION_10_1"),
         "table": "qa_missing_inclusion_list",
         "script": str(Path("scripts") / "load_qa_missing_inclusion_list.py"),
+        "job": get_secret("QA_MISSING_INCLUSION_JOB_NAME", DEFAULT_QA_MISSING_INCLUSION_JOB),
     }
 
 
@@ -148,23 +156,37 @@ def run_qa_video_on_trademe() -> dict[str, str | int | bool]:
 
 
 def run_qa_missing_inclusion() -> dict[str, str | int | bool]:
-    env = {
-        **_secret_env([
-            "BQ_SERVICE_ACCOUNT_JSON",
-            "DV360_CLIENT_ID",
-            "DV360_CLIENT_SECRET",
-            "DV360_REFRESH_TOKEN",
-            "DV360_PARTNER_ID",
-            "QA_SDF_VERSION",
-            "QA_SDF_TIME_ZONE",
-            "QA_SDF_ADVERTISER_IDS",
-            "QA_SDF_ADVERTISER_STATUS_FILTER",
-            "QA_SDF_ADVERTISER_LIMIT",
-            "QA_SDF_DOWNLOAD_TIMEOUT_SECONDS",
-            "QA_SDF_POLL_SECONDS",
-        ]),
-        "BQ_PROJECT_ID": get_secret("BQ_PROJECT_ID", "sm-test-391201"),
-        "BQ_DATASET": get_secret("BQ_DATASET", "supermetrics_data"),
-        "QA_SDF_FORCE_RUN": "true",
-    }
-    return run_script("scripts/load_qa_missing_inclusion_list.py", env)
+    started_at = datetime.now(timezone.utc)
+    project_id = get_secret("CLOUD_RUN_PROJECT_ID", DEFAULT_CLOUD_RUN_PROJECT_ID)
+    region = get_secret("CLOUD_RUN_REGION", DEFAULT_CLOUD_RUN_REGION)
+    job_name = get_secret("QA_MISSING_INCLUSION_JOB_NAME", DEFAULT_QA_MISSING_INCLUSION_JOB)
+    try:
+        credentials, _ = google_auth_default(scopes=[CLOUD_PLATFORM_SCOPE])
+        session = AuthorizedSession(credentials)
+        parent = f"projects/{project_id}/locations/{region}/jobs/{job_name}"
+        response = session.post(f"https://run.googleapis.com/v2/{parent}:run", json={})
+        finished_at = datetime.now(timezone.utc)
+        if response.status_code >= 400:
+            return {
+                "status": "failed",
+                "exit_code": response.status_code,
+                "output": response.text,
+                "started_at": started_at.isoformat(),
+                "finished_at": finished_at.isoformat(),
+            }
+        operation = response.json()
+        return {
+            "status": "queued",
+            "exit_code": 0,
+            "output": f"Started Cloud Run job {job_name}: {operation.get('name', '')}",
+            "started_at": started_at.isoformat(),
+            "finished_at": finished_at.isoformat(),
+        }
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "exit_code": 1,
+            "output": f"Failed to start Cloud Run job {job_name}: {exc}",
+            "started_at": started_at.isoformat(),
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        }
