@@ -42,6 +42,8 @@ jobs:
       - name: Load missing inclusion QA table
         env:
           QA_SDF_FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' && 'true' || '' }}
+          QA_SDF_DOWNLOAD_TIMEOUT_SECONDS: "1800"
+          QA_SDF_IO_BATCH_SIZE: "25"
         run: |
           APP_SECRETS_TOML="$(gcloud secrets versions access latest --secret streamlit-secrets-toml --project ops-control-center-503319)" \
             python scripts/load_qa_missing_inclusion_list.py

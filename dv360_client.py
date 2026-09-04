@@ -106,31 +106,47 @@ class DV360Client:
     def create_sdf_download(
         self,
         partner_id: str,
-        advertiser_ids: list[str],
+        filter_ids: list[str],
+        filter_type: str,
         file_types: list[str],
         sdf_version: str,
     ) -> dict[str, Any]:
-        if not advertiser_ids:
-            raise DV360Error("At least one advertiser ID is required for SDF download.")
+        if not filter_ids:
+            raise DV360Error("At least one filter ID is required for SDF download.")
         body = {
             "version": sdf_version,
             "partnerId": partner_id,
             "parentEntityFilter": {
                 "fileType": file_types,
-                "filterType": "FILTER_TYPE_ADVERTISER_ID",
-                "filterIds": advertiser_ids,
+                "filterType": filter_type,
+                "filterIds": filter_ids,
             },
         }
         return self.service.sdfdownloadtasks().create(body=body).execute()
 
-    def wait_for_operation(self, name: str, timeout_seconds: int = 1800, poll_seconds: int = 10) -> dict[str, Any]:
-        deadline = time.monotonic() + timeout_seconds
+    def wait_for_operation(
+        self,
+        name: str,
+        timeout_seconds: int = 1800,
+        poll_seconds: int = 10,
+        progress_label: str = "SDF download operation",
+    ) -> dict[str, Any]:
+        started = time.monotonic()
+        deadline = started + timeout_seconds
+        next_log = started
         while True:
             operation = self.service.sdfdownloadtasks().operations().get(name=name).execute()
             if operation.get("done"):
                 if "error" in operation:
                     raise DV360Error(f"SDF download operation failed: {operation['error']}")
+                elapsed = int(time.monotonic() - started)
+                print(f"{progress_label} completed after {elapsed}s.", flush=True)
                 return operation
+            now = time.monotonic()
+            if now >= next_log:
+                elapsed = int(now - started)
+                print(f"{progress_label} still running after {elapsed}s: {name}", flush=True)
+                next_log = now + 60
             if time.monotonic() >= deadline:
                 raise DV360Error(f"SDF download operation timed out after {timeout_seconds} seconds: {name}")
             time.sleep(poll_seconds)
@@ -171,11 +187,45 @@ class DV360Client:
         timeout_seconds: int = 1800,
         poll_seconds: int = 10,
     ) -> bytes:
-        operation = self.create_sdf_download(partner_id, advertiser_ids, file_types, sdf_version)
+        operation = self.create_sdf_download(
+            partner_id,
+            advertiser_ids,
+            "FILTER_TYPE_ADVERTISER_ID",
+            file_types,
+            sdf_version,
+        )
         completed = self.wait_for_operation(
             str(operation.get("name", "")),
             timeout_seconds=timeout_seconds,
             poll_seconds=poll_seconds,
+            progress_label=f"SDF advertiser batch ({len(advertiser_ids)} advertisers)",
+        )
+        resource_name = completed.get("response", {}).get("resourceName", "")
+        if not resource_name:
+            raise DV360Error(f"SDF download operation completed without a resource name: {completed}")
+        return self.download_sdf_zip(resource_name)
+
+    def download_insertion_orders_sdf(
+        self,
+        partner_id: str,
+        insertion_order_ids: list[str],
+        file_types: list[str],
+        sdf_version: str,
+        timeout_seconds: int = 1800,
+        poll_seconds: int = 10,
+    ) -> bytes:
+        operation = self.create_sdf_download(
+            partner_id,
+            insertion_order_ids,
+            "FILTER_TYPE_INSERTION_ORDER_ID",
+            file_types,
+            sdf_version,
+        )
+        completed = self.wait_for_operation(
+            str(operation.get("name", "")),
+            timeout_seconds=timeout_seconds,
+            poll_seconds=poll_seconds,
+            progress_label=f"SDF IO batch ({len(insertion_order_ids)} insertion orders)",
         )
         resource_name = completed.get("response", {}).get("resourceName", "")
         if not resource_name:

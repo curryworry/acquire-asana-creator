@@ -5,7 +5,7 @@ from csv import DictReader, DictWriter
 from datetime import date, datetime, timezone
 from io import BytesIO
 from io import StringIO
-from typing import Any
+from typing import Any, TypeVar
 from zipfile import ZipFile
 from zoneinfo import ZoneInfo
 
@@ -30,6 +30,11 @@ SDF_FILE_TYPES = [
     "FILE_TYPE_LINE_ITEM",
     "FILE_TYPE_LINE_ITEM_QA",
 ]
+SDF_CURRENT_IO_FILE_TYPES = [
+    "FILE_TYPE_INSERTION_ORDER",
+    "FILE_TYPE_LINE_ITEM",
+    "FILE_TYPE_LINE_ITEM_QA",
+]
 FOOTER_PREFIXES = (
     "report time",
     "date range",
@@ -38,6 +43,7 @@ FOOTER_PREFIXES = (
     "reporting numbers",
     "filter by",
 )
+T = TypeVar("T")
 
 
 def _as_int(value: str, default: int) -> int:
@@ -463,7 +469,14 @@ def _sdf_int_secret(name: str, default: int) -> int:
     return _as_int(get_secret(name, str(default)), default)
 
 
-def _chunked(items: list[dict[str, str]], size: int) -> list[list[dict[str, str]]]:
+def _sdf_bool_secret(name: str, default: bool) -> bool:
+    text = get_secret(name, "").strip().lower()
+    if not text:
+        return default
+    return text in {"1", "true", "yes", "y", "on"}
+
+
+def _chunked(items: list[T], size: int) -> list[list[T]]:
     return [items[index : index + size] for index in range(0, len(items), size)]
 
 
@@ -475,12 +488,15 @@ def _candidate_missing_inclusion_rows_from_sdf_zip(
     sdf_version: str,
     source_advertiser_count: int,
     loaded_at: str,
+    io_advertiser_ids: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    campaigns = {
-        _clean_cell(row.get("Campaign Id", "")): _clean_cell(row.get("Advertiser Id", ""))
-        for row in _as_csv_rows(raw_zip, "SDF-Campaigns.csv")
-        if _clean_cell(row.get("Campaign Id", "")) and _clean_cell(row.get("Advertiser Id", ""))
-    }
+    campaigns: dict[str, str] = {}
+    if not io_advertiser_ids:
+        campaigns = {
+            _clean_cell(row.get("Campaign Id", "")): _clean_cell(row.get("Advertiser Id", ""))
+            for row in _as_csv_rows(raw_zip, "SDF-Campaigns.csv")
+            if _clean_cell(row.get("Campaign Id", "")) and _clean_cell(row.get("Advertiser Id", ""))
+        }
     insertion_orders = {
         _clean_cell(row.get("Io Id", "")): row
         for row in _as_csv_rows(raw_zip, "SDF-InsertionOrders.csv")
@@ -505,7 +521,7 @@ def _candidate_missing_inclusion_rows_from_sdf_zip(
         io_window = _current_io_budget_window(io_row, run_date)
         if not io_window:
             continue
-        advertiser_id = campaigns.get(_clean_cell(io_row.get("Campaign Id", "")), "")
+        advertiser_id = (io_advertiser_ids or {}).get(io_id, "") or campaigns.get(_clean_cell(io_row.get("Campaign Id", "")), "")
         if not advertiser_id:
             continue
         advertiser = advertisers_by_id.get(advertiser_id, {"advertiser_id": advertiser_id, "advertiser_name": ""})
@@ -578,6 +594,32 @@ def _select_sdf_advertisers(client: DV360Client, partner_id: str) -> list[dict[s
     return advertisers
 
 
+def _current_io_scope(
+    client: DV360Client,
+    advertisers: list[dict[str, str]],
+    run_date: date,
+) -> tuple[list[dict[str, str]], dict[str, str], list[str]]:
+    advertisers_with_current_budget: list[dict[str, str]] = []
+    io_advertiser_ids: dict[str, str] = {}
+    errors: list[str] = []
+    total = len(advertisers)
+    for index, advertiser in enumerate(advertisers, start=1):
+        advertiser_id = advertiser["advertiser_id"]
+        if index == 1 or index % 25 == 0 or index == total:
+            print(f"Checking current IO budgets for advertiser {index}/{total}.", flush=True)
+        try:
+            current_io_ids = client.list_current_insertion_order_ids(advertiser_id, run_date)
+        except Exception as exc:
+            errors.append(f"{advertiser_id} current IOs: {exc}")
+            continue
+        if not current_io_ids:
+            continue
+        advertisers_with_current_budget.append(advertiser)
+        for io_id in current_io_ids:
+            io_advertiser_ids[io_id] = advertiser_id
+    return advertisers_with_current_budget, io_advertiser_ids, errors
+
+
 def fetch_missing_inclusion_report() -> dict[str, Any]:
     partner_id = get_secret("DV360_PARTNER_ID", "").strip()
     if not partner_id:
@@ -593,43 +635,88 @@ def fetch_missing_inclusion_report() -> dict[str, Any]:
     )
     advertisers = _select_sdf_advertisers(client, partner_id)
     print(f"Missing inclusion QA selected {len(advertisers)} advertisers for partner {partner_id}.", flush=True)
+    errors: list[str] = []
+    io_advertiser_ids: dict[str, str] = {}
+    if _sdf_bool_secret("QA_SDF_FILTER_CURRENT_IO_BUDGETS", True):
+        source_advertiser_count = len(advertisers)
+        advertisers, io_advertiser_ids, scope_errors = _current_io_scope(client, advertisers, run_date)
+        errors.extend(scope_errors)
+        print(
+            "Missing inclusion QA found "
+            f"{len(io_advertiser_ids)} current IOs across {len(advertisers)}/{source_advertiser_count} advertisers.",
+            flush=True,
+        )
+
     advertisers_by_id = {advertiser["advertiser_id"]: advertiser for advertiser in advertisers}
-    timeout_seconds = _sdf_int_secret("QA_SDF_DOWNLOAD_TIMEOUT_SECONDS", 1800)
+    timeout_seconds = _sdf_int_secret("QA_SDF_DOWNLOAD_TIMEOUT_SECONDS", 900)
     poll_seconds = _sdf_int_secret("QA_SDF_POLL_SECONDS", 10)
     batch_size = max(1, _sdf_int_secret("QA_SDF_ADVERTISER_BATCH_SIZE", 25))
+    io_batch_size = max(1, _sdf_int_secret("QA_SDF_IO_BATCH_SIZE", 25))
 
     candidate_rows: list[dict[str, Any]] = []
-    errors: list[str] = []
-    batches = _chunked(advertisers, batch_size)
-    for batch_index, batch in enumerate(batches, start=1):
-        advertiser_ids = [advertiser["advertiser_id"] for advertiser in batch]
-        try:
-            print(
-                f"Downloading SDF batch {batch_index}/{len(batches)} with {len(advertiser_ids)} advertisers.",
-                flush=True,
-            )
-            raw_zip = client.download_advertisers_sdf(
-                partner_id=partner_id,
-                advertiser_ids=advertiser_ids,
-                file_types=SDF_FILE_TYPES,
-                sdf_version=sdf_version,
-                timeout_seconds=timeout_seconds,
-                poll_seconds=poll_seconds,
-            )
-            batch_rows = _candidate_missing_inclusion_rows_from_sdf_zip(
-                partner_id=partner_id,
-                advertisers_by_id=advertisers_by_id,
-                raw_zip=raw_zip,
-                run_date=run_date,
-                sdf_version=sdf_version,
-                source_advertiser_count=len(advertisers),
-                loaded_at=loaded_at,
-            )
-            candidate_rows.extend(batch_rows)
-            print(f"SDF batch {batch_index}/{len(batches)} produced {len(batch_rows)} candidate rows.", flush=True)
-        except Exception as exc:
-            errors.append(f"{','.join(advertiser_ids)}: {exc}")
-            print(f"SDF batch {batch_index}/{len(batches)} failed: {exc}", flush=True)
+    if io_advertiser_ids:
+        io_ids = sorted(io_advertiser_ids)
+        io_batches = _chunked(io_ids, io_batch_size)
+        for batch_index, insertion_order_ids in enumerate(io_batches, start=1):
+            try:
+                print(
+                    f"Downloading SDF IO batch {batch_index}/{len(io_batches)} with {len(insertion_order_ids)} insertion orders.",
+                    flush=True,
+                )
+                raw_zip = client.download_insertion_orders_sdf(
+                    partner_id=partner_id,
+                    insertion_order_ids=insertion_order_ids,
+                    file_types=SDF_CURRENT_IO_FILE_TYPES,
+                    sdf_version=sdf_version,
+                    timeout_seconds=timeout_seconds,
+                    poll_seconds=poll_seconds,
+                )
+                batch_rows = _candidate_missing_inclusion_rows_from_sdf_zip(
+                    partner_id=partner_id,
+                    advertisers_by_id=advertisers_by_id,
+                    raw_zip=raw_zip,
+                    run_date=run_date,
+                    sdf_version=sdf_version,
+                    source_advertiser_count=len(advertisers),
+                    loaded_at=loaded_at,
+                    io_advertiser_ids=io_advertiser_ids,
+                )
+                candidate_rows.extend(batch_rows)
+                print(f"SDF IO batch {batch_index}/{len(io_batches)} produced {len(batch_rows)} candidate rows.", flush=True)
+            except Exception as exc:
+                errors.append(f"{','.join(insertion_order_ids)}: {exc}")
+                print(f"SDF IO batch {batch_index}/{len(io_batches)} failed: {exc}", flush=True)
+    else:
+        batches = _chunked(advertisers, batch_size)
+        for batch_index, batch in enumerate(batches, start=1):
+            advertiser_ids = [advertiser["advertiser_id"] for advertiser in batch]
+            try:
+                print(
+                    f"Downloading SDF advertiser batch {batch_index}/{len(batches)} with {len(advertiser_ids)} advertisers.",
+                    flush=True,
+                )
+                raw_zip = client.download_advertisers_sdf(
+                    partner_id=partner_id,
+                    advertiser_ids=advertiser_ids,
+                    file_types=SDF_FILE_TYPES,
+                    sdf_version=sdf_version,
+                    timeout_seconds=timeout_seconds,
+                    poll_seconds=poll_seconds,
+                )
+                batch_rows = _candidate_missing_inclusion_rows_from_sdf_zip(
+                    partner_id=partner_id,
+                    advertisers_by_id=advertisers_by_id,
+                    raw_zip=raw_zip,
+                    run_date=run_date,
+                    sdf_version=sdf_version,
+                    source_advertiser_count=len(advertisers),
+                    loaded_at=loaded_at,
+                )
+                candidate_rows.extend(batch_rows)
+                print(f"SDF advertiser batch {batch_index}/{len(batches)} produced {len(batch_rows)} candidate rows.", flush=True)
+            except Exception as exc:
+                errors.append(f"{','.join(advertiser_ids)}: {exc}")
+                print(f"SDF advertiser batch {batch_index}/{len(batches)} failed: {exc}", flush=True)
 
     channel_counts: dict[str, int] = {}
     rows: list[dict[str, Any]] = []
