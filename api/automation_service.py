@@ -8,7 +8,7 @@ from api.config import REPO_ROOT, get_secret
 
 
 ADMIN_USERNAME = "ashwin@acquirenz.com"
-SCRIPT_TIMEOUT_SECONDS = 900
+SCRIPT_TIMEOUT_SECONDS = 1800
 
 
 def is_admin_user(user: dict[str, str]) -> bool:
@@ -76,6 +76,15 @@ def qa_video_on_trademe_defaults() -> dict[str, str]:
     }
 
 
+def qa_missing_inclusion_defaults() -> dict[str, str]:
+    return {
+        "partner_id": get_secret("DV360_PARTNER_ID", ""),
+        "sdf_version": get_secret("QA_SDF_VERSION", "SDF_VERSION_10_1"),
+        "table": "qa_missing_inclusion_list",
+        "script": str(Path("scripts") / "load_qa_missing_inclusion_list.py"),
+    }
+
+
 def run_campaign_alert(recipients: str, force_run: bool) -> dict[str, str | int | bool]:
     env = {
         **_secret_env([
@@ -136,3 +145,26 @@ def run_qa_video_on_trademe() -> dict[str, str | int | bool]:
         "QA_TRADEME_VIDEO_FORCE_RUN": "true",
     }
     return run_script("scripts/load_qa_video_on_trademe.py", env)
+
+
+def run_qa_missing_inclusion() -> dict[str, str | int | bool]:
+    env = {
+        **_secret_env([
+            "BQ_SERVICE_ACCOUNT_JSON",
+            "DV360_CLIENT_ID",
+            "DV360_CLIENT_SECRET",
+            "DV360_REFRESH_TOKEN",
+            "DV360_PARTNER_ID",
+            "QA_SDF_VERSION",
+            "QA_SDF_TIME_ZONE",
+            "QA_SDF_ADVERTISER_IDS",
+            "QA_SDF_ADVERTISER_STATUS_FILTER",
+            "QA_SDF_ADVERTISER_LIMIT",
+            "QA_SDF_DOWNLOAD_TIMEOUT_SECONDS",
+            "QA_SDF_POLL_SECONDS",
+        ]),
+        "BQ_PROJECT_ID": get_secret("BQ_PROJECT_ID", "sm-test-391201"),
+        "BQ_DATASET": get_secret("BQ_DATASET", "supermetrics_data"),
+        "QA_SDF_FORCE_RUN": "true",
+    }
+    return run_script("scripts/load_qa_missing_inclusion_list.py", env)

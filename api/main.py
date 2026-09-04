@@ -10,9 +10,11 @@ from api.automation_service import (
     campaign_alert_defaults,
     daily_trafficking_defaults,
     is_admin_user,
+    qa_missing_inclusion_defaults,
     qa_video_on_trademe_defaults,
     run_campaign_alert,
     run_daily_trafficking,
+    run_qa_missing_inclusion,
     run_qa_video_on_trademe,
 )
 from api.config import REPO_ROOT, get_auth_users, get_secret
@@ -27,7 +29,7 @@ from api.dashboard_service import (
     process_asana_comment_action_queue,
     process_snooze_action_queue,
 )
-from api.qa_service import video_on_trademe_dashboard
+from api.qa_service import missing_inclusion_dashboard, video_on_trademe_dashboard
 from api.schemas import (
     AutomationRunResponse,
     CampaignAlertRunRequest,
@@ -139,6 +141,14 @@ def qa_video_on_trademe(_: dict[str, str] = Depends(current_user)) -> dict:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.get("/api/qa/missing-inclusion-list")
+def qa_missing_inclusion_list(_: dict[str, str] = Depends(current_user)) -> dict:
+    try:
+        return missing_inclusion_dashboard()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 def enqueue_snooze_response(
     background_tasks: BackgroundTasks,
     action: str,
@@ -231,6 +241,7 @@ def admin_automations(user: dict[str, str] = Depends(current_user)) -> dict:
         "campaign_alert": campaign_alert_defaults(),
         "daily_trafficking": daily_trafficking_defaults(),
         "qa_video_on_trademe": qa_video_on_trademe_defaults(),
+        "qa_missing_inclusion": qa_missing_inclusion_defaults(),
     }
 
 
@@ -279,6 +290,12 @@ def admin_daily_trafficking(
 def admin_qa_video_on_trademe(user: dict[str, str] = Depends(current_user)) -> AutomationRunResponse:
     require_admin(user)
     return AutomationRunResponse(**run_qa_video_on_trademe())
+
+
+@app.post("/api/admin/automations/qa-missing-inclusion-list", response_model=AutomationRunResponse)
+def admin_qa_missing_inclusion_list(user: dict[str, str] = Depends(current_user)) -> AutomationRunResponse:
+    require_admin(user)
+    return AutomationRunResponse(**run_qa_missing_inclusion())
 
 
 if FRONTEND_DIST.exists():

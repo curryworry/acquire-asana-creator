@@ -172,3 +172,45 @@ Columns:
 - `date_range` STRING
 - `group_by` STRING
 - `loaded_at` TIMESTAMP
+
+## QA Table: `qa_missing_inclusion_list`
+Purpose: Current DV360 SDF QA snapshot for active line items missing inclusion targeting.
+
+Load behavior:
+- Fully overwritten on each successful ingestion
+- Scheduled by `.github/workflows/qa_missing_inclusion_list.yml`
+- Dashboard endpoint `/api/qa/missing-inclusion-list` reads this table
+- Active scope is based on IO status plus an active IO budget segment covering the run date, then LI status/effective dates
+
+Columns:
+- `row_number` INT64
+- `partner_id` STRING
+- `advertiser_id` STRING
+- `advertiser_name` STRING
+- `insertion_order_id` STRING
+- `insertion_order_name` STRING
+- `insertion_order_status` STRING
+- `io_budget_start_date` DATE
+- `io_budget_end_date` DATE
+- `line_item_id` STRING
+- `line_item_name` STRING
+- `line_item_status` STRING
+- `line_item_type` STRING
+- `line_item_subtype` STRING
+- `line_item_start_date` DATE
+- `line_item_end_date` DATE
+- `effective_start_date` DATE
+- `effective_end_date` DATE
+- `li_channel_include` STRING
+- `li_site_include` STRING
+- `li_app_include` STRING
+- `li_channel_include_qa` STRING
+- `li_site_include_qa` STRING
+- `li_app_include_qa` STRING
+- `advertiser_channel_include_count` INT64
+- `advertiser_has_channel_include` BOOL
+- `missing_reason` STRING
+- `sdf_version` STRING
+- `run_date` DATE
+- `source_advertiser_count` INT64
+- `loaded_at` TIMESTAMP

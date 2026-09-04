@@ -36,7 +36,7 @@ import "./styles.css";
 
 type AlertSection = "NOT_LIVE" | "STOPPED_IMPRESSIONS" | "MISSING_OUR_REF" | "ENDED_BUT_IMPRESSIONS";
 type PacingSection = "UNDERPACING";
-type Page = "margin" | "pacing:underpacing" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "qa:video_on_trademe" | "trafficking" | "automation" | "admin";
+type Page = "margin" | "pacing:underpacing" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "qa:video_on_trademe" | "qa:missing_inclusion_list" | "trafficking" | "automation" | "admin";
 type AnyRow = Record<string, string | number | null>;
 type ApiEnvelope<T> = { rows: T[]; meta: Record<string, string> };
 type OpsBootstrapEnvelope = { alerts: ApiEnvelope<AnyRow>; pacing: ApiEnvelope<AnyRow> };
@@ -62,6 +62,12 @@ type AutomationDefaults = {
     table: string;
     script: string;
   };
+  qa_missing_inclusion: {
+    partner_id: string;
+    sdf_version: string;
+    table: string;
+    script: string;
+  };
 };
 type AutomationResult = {
   status: string;
@@ -84,7 +90,8 @@ const PACING_SECTIONS: Array<{ key: PacingSection; page: Page; label: string }> 
   { key: "UNDERPACING", page: "pacing:underpacing", label: "Underpacing" }
 ];
 const QA_SECTIONS: Array<{ page: Page; label: string }> = [
-  { page: "qa:video_on_trademe", label: "Video on TradeMe" }
+  { page: "qa:video_on_trademe", label: "Video on TradeMe" },
+  { page: "qa:missing_inclusion_list", label: "Missing Inclusion List" }
 ];
 const ALERT_PAGE_SIZE = 100;
 const EMPTY_ALERT_COUNTS: Record<AlertSection, number> = {
@@ -497,6 +504,7 @@ function App() {
   const alertsData = opsData.alerts;
   const pacingData = opsData.pacing;
   const qaVideoTrademeData = useApiRows<AnyRow>("/api/qa/video-on-trademe", Boolean(token));
+  const qaMissingInclusionData = useApiRows<AnyRow>("/api/qa/missing-inclusion-list", Boolean(token));
   const opsCountsReady = alertsData.hasLoaded && pacingData.hasLoaded;
   const opsBootstrapPending = (alertsActive || pacingActive) && Boolean(token) && !opsData.alerts.hasLoaded && !opsData.alerts.error;
   const [opsLoaderDismissed, setOpsLoaderDismissed] = React.useState(!opsBootstrapPending);
@@ -511,6 +519,12 @@ function App() {
     () => PACING_SECTIONS.reduce((total, section) => total + (pacingCounts[section.key] || 0), 0),
     [pacingCounts]
   );
+  const qaCounts = React.useMemo<Partial<Record<Page, number>>>(() => ({
+    "qa:video_on_trademe": qaVideoTrademeData.hasLoaded ? qaVideoTrademeData.rows.length : undefined,
+    "qa:missing_inclusion_list": qaMissingInclusionData.hasLoaded ? qaMissingInclusionData.rows.length : undefined
+  }), [qaVideoTrademeData.hasLoaded, qaVideoTrademeData.rows.length, qaMissingInclusionData.hasLoaded, qaMissingInclusionData.rows.length]);
+  const qaCountReady = QA_SECTIONS.some((section) => qaCounts[section.page] !== undefined);
+  const totalQaRows = QA_SECTIONS.reduce((total, section) => total + (qaCounts[section.page] || 0), 0);
   const isAdmin = user?.username.toLowerCase() === ADMIN_USERNAME;
 
   React.useEffect(() => {
@@ -623,7 +637,7 @@ function App() {
             >
               <ClipboardCheck size={18} />
               <span>QA</span>
-              {qaVideoTrademeData.hasLoaded && <span className="nav-count nav-count-parent">{num(qaVideoTrademeData.rows.length)}</span>}
+              {qaCountReady && <span className="nav-count nav-count-parent">{num(totalQaRows)}</span>}
               <ChevronDown className={`nav-chevron ${qaExpanded ? "open" : ""}`} size={16} />
             </button>
             {qaExpanded && (
@@ -635,7 +649,7 @@ function App() {
                     onClick={() => setPage(section.page)}
                   >
                     <span>{section.label}</span>
-                    {qaVideoTrademeData.hasLoaded && <span className="nav-count">{num(qaVideoTrademeData.rows.length)}</span>}
+                    {qaCounts[section.page] !== undefined && <span className="nav-count">{num(qaCounts[section.page])}</span>}
                   </button>
                 ))}
               </div>
@@ -668,6 +682,7 @@ function App() {
         {page === "alerts:missing_our_ref" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
         {page === "alerts:ended_but_impressions" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
         {page === "qa:video_on_trademe" && <QaVideoOnTrademePage {...qaVideoTrademeData} />}
+        {page === "qa:missing_inclusion_list" && <QaMissingInclusionListPage {...qaMissingInclusionData} />}
         {page === "trafficking" && <PlaceholderPage title="Trafficking to Asana" body="The next migration slice will bring the Gmail fetch, parse preview, Asana dedupe check, and dry-run downloads into this interface." />}
         {page === "automation" && <PlaceholderPage title="Automation Runs" body="Manual automation triggers should run as background jobs with live status and logs, instead of blocking the interface." />}
         {page === "admin" && <AdminPage isAdmin={isAdmin} />}
@@ -1494,6 +1509,100 @@ function QaVideoOnTrademePage(props: {
   );
 }
 
+function QaMissingInclusionListPage(props: {
+  rows: AnyRow[];
+  meta: Record<string, string>;
+  loading: boolean;
+  hasLoaded: boolean;
+  error: string;
+  refresh: () => Promise<void>;
+}) {
+  const { rows, meta, loading, hasLoaded, error, refresh } = props;
+  const [query, setQuery] = React.useState("");
+  const [selected, setSelected] = React.useState<Set<string>>(new Set());
+  const [sort, setSort] = React.useState<SortState>({ key: "ADVERTISER", direction: "asc" });
+  const filtered = React.useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((row) => [
+      row.ADVERTISER,
+      row.ADVERTISER_ID,
+      row.INSERTION_ORDER,
+      row.IO_ID,
+      row.LINE_ITEM,
+      row.LINE_ITEM_ID,
+      row.TYPE,
+      row.SUBTYPE,
+      row.REASON
+    ].some((value) => String(value || "").toLowerCase().includes(q)));
+  }, [query, rows]);
+  const sortedRows = React.useMemo(() => sortRows(filtered, sort), [filtered, sort]);
+  const advertiserCount = new Set(sortedRows.map((row) => String(row.ADVERTISER_ID || ""))).size;
+  const ioCount = new Set(sortedRows.map((row) => String(row.IO_ID || ""))).size;
+  const columns: Array<[string, string]> = [
+    ["ADVERTISER", "Advertiser"],
+    ["INSERTION_ORDER", "Insertion Order"],
+    ["LINE_ITEM", "Line Item"],
+    ["TYPE", "Type"],
+    ["SUBTYPE", "Subtype"],
+    ["EFFECTIVE_START", "Start"],
+    ["EFFECTIVE_END", "End"],
+    ["REASON", "Reason"]
+  ];
+
+  return (
+    <section className="qa-page">
+      <PageHeader
+        eyebrow={meta.table ? `${meta.project_id}.${meta.dataset}.${meta.table}` : "DV360 SDF QA"}
+        title="Missing Inclusion List"
+        subtitle="Active line items whose active IO budget segment is live, with no LI site/app/channel include and no advertiser-level channel include."
+        loading={loading}
+        onRefresh={() => {
+          invalidateApiCache("/api/qa/missing-inclusion-list");
+          return refresh();
+        }}
+        onDownload={() => downloadCsv("qa-missing-inclusion-list.csv", sortedRows)}
+      />
+      <MetricStrip metrics={[
+        { label: "Line items", value: num(sortedRows.length), tone: sortedRows.length ? "warn" : "" },
+        { label: "Advertisers", value: num(advertiserCount), tone: sortedRows.length ? "warn" : "" },
+        { label: "Insertion orders", value: num(ioCount), tone: sortedRows.length ? "warn" : "" },
+        { label: "Run date", value: String(meta.run_date || "N/A") }
+      ]} />
+      <section className="toolbar">
+        <div className="searchbox">
+          <Search size={16} />
+          <input
+            name="qa-missing-inclusion-search"
+            placeholder="Search advertisers, IOs, line items..."
+            autoComplete="off"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+        <button className="toolbar-export" onClick={() => downloadCsv("qa-missing-inclusion-list.csv", sortedRows)} disabled={!sortedRows.length}>
+          <Download size={15} /> CSV
+        </button>
+        <div className="selected-chip"><SlidersHorizontal size={15} /> {selected.size} selected</div>
+      </section>
+      <DataState loading={loading && !hasLoaded} error={error} empty={!sortedRows.length}>
+        <DataTable
+          rows={sortedRows}
+          selected={selected}
+          setSelected={setSelected}
+          idKey="ROW_ID"
+          sort={sort}
+          onSort={(key) => setSort((current) => nextSort(current, key))}
+          columns={columns}
+          renderCell={(key, value) => key === "LINE_ITEM" ? <span className="campaign-cell"><AlertTriangle size={15} /> {String(value ?? "")}</span> : null}
+          format={(_, value) => String(value ?? "")}
+        />
+      </DataState>
+      <ActionDock selectedCount={selected.size} onClear={() => setSelected(new Set())} />
+    </section>
+  );
+}
+
 function TablePagination(props: { page: number; totalPages: number; totalRows: number; pageSize: number; onPageChange: (page: number) => void }) {
   if (props.totalRows <= props.pageSize) return null;
   const start = (props.page - 1) * props.pageSize + 1;
@@ -1766,7 +1875,8 @@ function AdminPage({ isAdmin }: { isAdmin: boolean }) {
   const [campaignResult, setCampaignResult] = React.useState<AutomationResult | null>(null);
   const [dailyResult, setDailyResult] = React.useState<AutomationResult | null>(null);
   const [qaResult, setQaResult] = React.useState<AutomationResult | null>(null);
-  const [loading, setLoading] = React.useState<"campaign" | "daily" | "qa" | "defaults" | "">("defaults");
+  const [missingQaResult, setMissingQaResult] = React.useState<AutomationResult | null>(null);
+  const [loading, setLoading] = React.useState<"campaign" | "daily" | "qa" | "missingQa" | "defaults" | "">("defaults");
   const [error, setError] = React.useState("");
 
   React.useEffect(() => {
@@ -1830,6 +1940,24 @@ function AdminPage({ isAdmin }: { isAdmin: boolean }) {
       setQaResult(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : "TradeMe video QA load failed.");
+    } finally {
+      setLoading("");
+    }
+  }
+
+  async function runQaMissingInclusion() {
+    setLoading("missingQa");
+    setError("");
+    setMissingQaResult(null);
+    try {
+      const result = await apiFetch<AutomationResult>("/api/admin/automations/qa-missing-inclusion-list", {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+      invalidateApiCache("/api/qa/missing-inclusion-list");
+      setMissingQaResult(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Missing inclusion QA load failed.");
     } finally {
       setLoading("");
     }
@@ -1917,6 +2045,22 @@ function AdminPage({ isAdmin }: { isAdmin: boolean }) {
           <AutomationOutput result={qaResult} />
           {defaults?.qa_video_on_trademe.table && <p className="admin-note">Table: {defaults.qa_video_on_trademe.table}</p>}
           {defaults?.qa_video_on_trademe.script && <p className="admin-note">Script: {defaults.qa_video_on_trademe.script}</p>}
+        </article>
+
+        <article className="admin-card">
+          <div>
+            <span className="eyebrow">QA</span>
+            <h2>Missing Inclusion List</h2>
+            <p>Downloads DV360 SDFs and overwrites the BigQuery table for active LIs missing LI or advertiser-level inclusion targeting.</p>
+          </div>
+          <button className="primary-button" disabled={loading === "missingQa"} onClick={() => void runQaMissingInclusion()}>
+            {loading === "missingQa" ? <Loader2 className="spin" size={16} /> : <ClipboardCheck size={16} />}
+            Load Missing Inclusion QA Now
+          </button>
+          <AutomationOutput result={missingQaResult} />
+          {defaults?.qa_missing_inclusion.table && <p className="admin-note">Table: {defaults.qa_missing_inclusion.table}</p>}
+          {defaults?.qa_missing_inclusion.script && <p className="admin-note">Script: {defaults.qa_missing_inclusion.script}</p>}
+          {defaults?.qa_missing_inclusion.partner_id && <p className="admin-note">Partner: {defaults.qa_missing_inclusion.partner_id}</p>}
         </article>
       </section>
     </>

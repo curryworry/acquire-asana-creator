@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import re
-from csv import DictWriter
-from datetime import datetime, timezone
+from csv import DictReader, DictWriter
+from datetime import date, datetime, timezone
 from io import BytesIO
 from io import StringIO
 from typing import Any
+from zipfile import ZipFile
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from google.api_core.exceptions import NotFound
@@ -13,11 +15,20 @@ from google.cloud import bigquery
 
 from api.dashboard_service import bq_context, table_fqn
 from api.config import get_secret
+from dv360_client import DV360Client
 from gmail_client import GmailAttachment, GmailInboxClient
 
 
 DEFAULT_TRADEME_VIDEO_SUBJECT = "TradeMe On Video - Last 7 Days"
 QA_VIDEO_TRADEME_TABLE = "qa_video_on_trademe"
+QA_MISSING_INCLUSION_TABLE = "qa_missing_inclusion_list"
+DEFAULT_SDF_VERSION = "SDF_VERSION_10_1"
+DEFAULT_SDF_TIME_ZONE = "America/New_York"
+SDF_FILE_TYPES = [
+    "FILE_TYPE_INSERTION_ORDER",
+    "FILE_TYPE_LINE_ITEM",
+    "FILE_TYPE_LINE_ITEM_QA",
+]
 FOOTER_PREFIXES = (
     "report time",
     "date range",
@@ -293,5 +304,436 @@ ORDER BY last_7_day_impressions DESC, campaign
             "loaded_at": first["loaded_at"].isoformat() if first and first["loaded_at"] else "",
             "total_rows": str(len(data)),
             "total_impressions": str(sum(row["IMPRESSIONS"] for row in data)),
+        },
+    }
+
+
+def _qa_missing_inclusion_schema() -> list[bigquery.SchemaField]:
+    return [
+        bigquery.SchemaField("row_number", "INTEGER"),
+        bigquery.SchemaField("partner_id", "STRING"),
+        bigquery.SchemaField("advertiser_id", "STRING"),
+        bigquery.SchemaField("advertiser_name", "STRING"),
+        bigquery.SchemaField("insertion_order_id", "STRING"),
+        bigquery.SchemaField("insertion_order_name", "STRING"),
+        bigquery.SchemaField("insertion_order_status", "STRING"),
+        bigquery.SchemaField("io_budget_start_date", "DATE"),
+        bigquery.SchemaField("io_budget_end_date", "DATE"),
+        bigquery.SchemaField("line_item_id", "STRING"),
+        bigquery.SchemaField("line_item_name", "STRING"),
+        bigquery.SchemaField("line_item_status", "STRING"),
+        bigquery.SchemaField("line_item_type", "STRING"),
+        bigquery.SchemaField("line_item_subtype", "STRING"),
+        bigquery.SchemaField("line_item_start_date", "DATE"),
+        bigquery.SchemaField("line_item_end_date", "DATE"),
+        bigquery.SchemaField("effective_start_date", "DATE"),
+        bigquery.SchemaField("effective_end_date", "DATE"),
+        bigquery.SchemaField("li_channel_include", "STRING"),
+        bigquery.SchemaField("li_site_include", "STRING"),
+        bigquery.SchemaField("li_app_include", "STRING"),
+        bigquery.SchemaField("li_channel_include_qa", "STRING"),
+        bigquery.SchemaField("li_site_include_qa", "STRING"),
+        bigquery.SchemaField("li_app_include_qa", "STRING"),
+        bigquery.SchemaField("advertiser_channel_include_count", "INTEGER"),
+        bigquery.SchemaField("advertiser_has_channel_include", "BOOLEAN"),
+        bigquery.SchemaField("missing_reason", "STRING"),
+        bigquery.SchemaField("sdf_version", "STRING"),
+        bigquery.SchemaField("run_date", "DATE"),
+        bigquery.SchemaField("source_advertiser_count", "INTEGER"),
+        bigquery.SchemaField("loaded_at", "TIMESTAMP"),
+    ]
+
+
+def ensure_missing_inclusion_table(client: bigquery.Client, project_id: str, dataset: str) -> None:
+    table_id = f"{project_id}.{dataset}.{QA_MISSING_INCLUSION_TABLE}"
+    try:
+        client.get_table(table_id)
+        return
+    except NotFound:
+        pass
+
+    client.create_table(bigquery.Table(table_id, schema=_qa_missing_inclusion_schema()))
+
+
+def _today_for_sdf() -> date:
+    time_zone = get_secret("QA_SDF_TIME_ZONE", DEFAULT_SDF_TIME_ZONE).strip() or DEFAULT_SDF_TIME_ZONE
+    return datetime.now(timezone.utc).astimezone(ZoneInfo(time_zone)).date()
+
+
+def _as_csv_rows(raw_zip: bytes, suffix: str) -> list[dict[str, str]]:
+    with ZipFile(BytesIO(raw_zip)) as archive:
+        name = next((item for item in archive.namelist() if item.endswith(suffix)), "")
+        if not name:
+            return []
+        text = archive.read(name).decode("utf-8-sig", errors="replace")
+    return [dict(row) for row in DictReader(StringIO(text))]
+
+
+def _parse_sdf_date(value: str) -> date | None:
+    text = _clean_cell(value)
+    if not text or text.lower() == "same as insertion order":
+        return None
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _fmt_date(value: date | None) -> str:
+    return value.isoformat() if value else ""
+
+
+def _is_active_status(value: str) -> bool:
+    return _clean_cell(value).lower() == "active"
+
+
+def _parse_io_budget_windows(value: str) -> list[tuple[date | None, date | None]]:
+    windows: list[tuple[date | None, date | None]] = []
+    for raw_segment in re.findall(r"\(([^)]*)\)", _clean_cell(value)):
+        parts = [part.strip() for part in raw_segment.split(";")]
+        if len(parts) < 3:
+            continue
+        start = _parse_sdf_date(parts[1])
+        end = _parse_sdf_date(parts[2])
+        if start or end:
+            windows.append((start, end))
+    return windows
+
+
+def _contains_date(start: date | None, end: date | None, target: date) -> bool:
+    if start and target < start:
+        return False
+    if end and target > end:
+        return False
+    return True
+
+
+def _current_io_budget_window(io_row: dict[str, str], run_date: date) -> tuple[date | None, date | None] | None:
+    if not _is_active_status(io_row.get("Status", "")):
+        return None
+    current_windows = [
+        window
+        for window in _parse_io_budget_windows(io_row.get("Budget Segments", ""))
+        if _contains_date(window[0], window[1], run_date)
+    ]
+    if not current_windows:
+        return None
+    starts = [window[0] for window in current_windows if window[0]]
+    ends = [window[1] for window in current_windows if window[1]]
+    return (min(starts) if starts else None, max(ends) if ends else None)
+
+
+def _uses_io_date(value: str) -> bool:
+    return _clean_cell(value).lower() == "same as insertion order"
+
+
+def _meaningful_targeting(value: str) -> bool:
+    text = _clean_cell(value)
+    if not text:
+        return False
+    return text.lower() not in {"none", "not set", "n/a", "na", "[]", "()"}
+
+
+def _line_item_has_inclusion(line_item: dict[str, str], qa_row: dict[str, str] | None) -> bool:
+    values = [
+        line_item.get("Channel Targeting - Include", ""),
+        line_item.get("Site Targeting - Include", ""),
+        line_item.get("App Targeting - Include", ""),
+    ]
+    if qa_row:
+        values.extend(
+            [
+                qa_row.get("Channel Targeting - Include Qa", ""),
+                qa_row.get("Site Targeting - Include Qa", ""),
+                qa_row.get("App Targeting - Include Qa", ""),
+            ]
+        )
+    return any(_meaningful_targeting(value) for value in values)
+
+
+def _sdf_advertiser_ids() -> list[str]:
+    raw_ids = get_secret("QA_SDF_ADVERTISER_IDS", "")
+    return [item.strip() for item in raw_ids.split(",") if item.strip()]
+
+
+def _sdf_int_secret(name: str, default: int) -> int:
+    return _as_int(get_secret(name, str(default)), default)
+
+
+def _missing_inclusion_rows_for_advertiser(
+    partner_id: str,
+    advertiser: dict[str, str],
+    raw_zip: bytes,
+    advertiser_channel_count: int,
+    run_date: date,
+    sdf_version: str,
+    source_advertiser_count: int,
+    loaded_at: str,
+) -> list[dict[str, Any]]:
+    insertion_orders = {
+        _clean_cell(row.get("Io Id", "")): row
+        for row in _as_csv_rows(raw_zip, "SDF-InsertionOrders.csv")
+        if _clean_cell(row.get("Io Id", ""))
+    }
+    line_item_qa = {
+        _clean_cell(row.get("Line Item Id", "")): row
+        for row in _as_csv_rows(raw_zip, "SDF-LineItems-QA.csv")
+        if _clean_cell(row.get("Line Item Id", ""))
+    }
+    line_items = _as_csv_rows(raw_zip, "SDF-LineItems.csv")
+    advertiser_has_channel = advertiser_channel_count > 0
+    rows: list[dict[str, Any]] = []
+
+    for line_item in line_items:
+        if not _is_active_status(line_item.get("Status", "")):
+            continue
+
+        io_id = _clean_cell(line_item.get("Io Id", ""))
+        io_row = insertion_orders.get(io_id)
+        if not io_row:
+            continue
+        io_window = _current_io_budget_window(io_row, run_date)
+        if not io_window:
+            continue
+
+        li_start_raw = line_item.get("Start Date", "")
+        li_end_raw = line_item.get("End Date", "")
+        li_start = _parse_sdf_date(li_start_raw)
+        li_end = _parse_sdf_date(li_end_raw)
+        effective_start = io_window[0] if _uses_io_date(li_start_raw) else li_start
+        effective_end = io_window[1] if _uses_io_date(li_end_raw) else li_end
+        if not _contains_date(effective_start, effective_end, run_date):
+            continue
+
+        qa_row = line_item_qa.get(_clean_cell(line_item.get("Line Item Id", "")))
+        if _line_item_has_inclusion(line_item, qa_row) or advertiser_has_channel:
+            continue
+
+        row = {
+            "row_number": 0,
+            "partner_id": partner_id,
+            "advertiser_id": advertiser["advertiser_id"],
+            "advertiser_name": advertiser.get("advertiser_name", ""),
+            "insertion_order_id": io_id,
+            "insertion_order_name": _clean_cell(io_row.get("Name", "")) or _clean_cell(line_item.get("Io Name", "")),
+            "insertion_order_status": _clean_cell(io_row.get("Status", "")),
+            "io_budget_start_date": _fmt_date(io_window[0]),
+            "io_budget_end_date": _fmt_date(io_window[1]),
+            "line_item_id": _clean_cell(line_item.get("Line Item Id", "")),
+            "line_item_name": _clean_cell(line_item.get("Name", "")),
+            "line_item_status": _clean_cell(line_item.get("Status", "")),
+            "line_item_type": _clean_cell(line_item.get("Type", "")),
+            "line_item_subtype": _clean_cell(line_item.get("Subtype", "")),
+            "line_item_start_date": "" if _uses_io_date(li_start_raw) else _fmt_date(li_start),
+            "line_item_end_date": "" if _uses_io_date(li_end_raw) else _fmt_date(li_end),
+            "effective_start_date": _fmt_date(effective_start),
+            "effective_end_date": _fmt_date(effective_end),
+            "li_channel_include": _clean_cell(line_item.get("Channel Targeting - Include", "")),
+            "li_site_include": _clean_cell(line_item.get("Site Targeting - Include", "")),
+            "li_app_include": _clean_cell(line_item.get("App Targeting - Include", "")),
+            "li_channel_include_qa": _clean_cell((qa_row or {}).get("Channel Targeting - Include Qa", "")),
+            "li_site_include_qa": _clean_cell((qa_row or {}).get("Site Targeting - Include Qa", "")),
+            "li_app_include_qa": _clean_cell((qa_row or {}).get("App Targeting - Include Qa", "")),
+            "advertiser_channel_include_count": advertiser_channel_count,
+            "advertiser_has_channel_include": advertiser_has_channel,
+            "missing_reason": "No LI site/app/channel include and no advertiser-level positive channel include",
+            "sdf_version": sdf_version,
+            "run_date": run_date.isoformat(),
+            "source_advertiser_count": source_advertiser_count,
+            "loaded_at": loaded_at,
+        }
+        rows.append(row)
+    return rows
+
+
+def _select_sdf_advertisers(client: DV360Client, partner_id: str) -> list[dict[str, str]]:
+    configured_ids = set(_sdf_advertiser_ids())
+    if configured_ids:
+        advertisers = client.list_advertisers(partner_id, status_filter="")
+        by_id = {advertiser["advertiser_id"]: advertiser for advertiser in advertisers}
+        return [
+            by_id.get(advertiser_id, {"advertiser_id": advertiser_id, "advertiser_name": ""})
+            for advertiser_id in sorted(configured_ids)
+        ]
+
+    status_filter = get_secret("QA_SDF_ADVERTISER_STATUS_FILTER", 'entityStatus="ENTITY_STATUS_ACTIVE"')
+    advertisers = client.list_advertisers(partner_id, status_filter=status_filter)
+    limit = _sdf_int_secret("QA_SDF_ADVERTISER_LIMIT", 0)
+    return advertisers[:limit] if limit > 0 else advertisers
+
+
+def fetch_missing_inclusion_report() -> dict[str, Any]:
+    partner_id = get_secret("DV360_PARTNER_ID", "").strip()
+    if not partner_id:
+        raise ValueError("DV360_PARTNER_ID is required.")
+
+    sdf_version = get_secret("QA_SDF_VERSION", DEFAULT_SDF_VERSION).strip() or DEFAULT_SDF_VERSION
+    run_date = _today_for_sdf()
+    loaded_at = datetime.now(timezone.utc).isoformat()
+    client = DV360Client(
+        client_id=get_secret("DV360_CLIENT_ID"),
+        client_secret=get_secret("DV360_CLIENT_SECRET"),
+        refresh_token=get_secret("DV360_REFRESH_TOKEN"),
+    )
+    advertisers = _select_sdf_advertisers(client, partner_id)
+    timeout_seconds = _sdf_int_secret("QA_SDF_DOWNLOAD_TIMEOUT_SECONDS", 1800)
+    poll_seconds = _sdf_int_secret("QA_SDF_POLL_SECONDS", 10)
+
+    rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for advertiser in advertisers:
+        advertiser_id = advertiser["advertiser_id"]
+        try:
+            channel_count = client.advertiser_positive_channel_count(advertiser_id)
+            raw_zip = client.download_advertiser_sdf(
+                partner_id=partner_id,
+                advertiser_id=advertiser_id,
+                file_types=SDF_FILE_TYPES,
+                sdf_version=sdf_version,
+                timeout_seconds=timeout_seconds,
+                poll_seconds=poll_seconds,
+            )
+            rows.extend(
+                _missing_inclusion_rows_for_advertiser(
+                    partner_id=partner_id,
+                    advertiser=advertiser,
+                    raw_zip=raw_zip,
+                    advertiser_channel_count=channel_count,
+                    run_date=run_date,
+                    sdf_version=sdf_version,
+                    source_advertiser_count=len(advertisers),
+                    loaded_at=loaded_at,
+                )
+            )
+        except Exception as exc:
+            errors.append(f"{advertiser_id}: {exc}")
+
+    rows.sort(
+        key=lambda row: (
+            str(row["advertiser_name"]).lower(),
+            str(row["insertion_order_name"]).lower(),
+            str(row["line_item_name"]).lower(),
+        )
+    )
+    for index, row in enumerate(rows, start=1):
+        row["row_number"] = index
+
+    return {
+        "rows": rows,
+        "meta": {
+            "partner_id": partner_id,
+            "sdf_version": sdf_version,
+            "run_date": run_date.isoformat(),
+            "source_advertiser_count": str(len(advertisers)),
+            "errors": "\n".join(errors),
+            "loaded_at": loaded_at,
+        },
+    }
+
+
+def load_missing_inclusion_table(report: dict[str, Any]) -> dict[str, str | int]:
+    client, project_id, dataset = bq_context()
+    ensure_missing_inclusion_table(client, project_id, dataset)
+    table_id = f"{project_id}.{dataset}.{QA_MISSING_INCLUSION_TABLE}"
+    fieldnames = [field.name for field in _qa_missing_inclusion_schema()]
+    output = StringIO()
+    writer = DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in report.get("rows", []):
+        writer.writerow({field: row.get(field, "") for field in fieldnames})
+
+    job_config = bigquery.LoadJobConfig(
+        source_format=bigquery.SourceFormat.CSV,
+        skip_leading_rows=1,
+        schema=_qa_missing_inclusion_schema(),
+        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+    )
+    csv_bytes = output.getvalue().encode("utf-8")
+    client.load_table_from_file(BytesIO(csv_bytes), table_id, job_config=job_config).result()
+    return {
+        "project_id": project_id,
+        "dataset": dataset,
+        "table": QA_MISSING_INCLUSION_TABLE,
+        "rows": len(report.get("rows", [])),
+        "source_advertiser_count": int(report.get("meta", {}).get("source_advertiser_count", "0") or 0),
+    }
+
+
+def ingest_missing_inclusion_report() -> dict[str, str | int]:
+    report = fetch_missing_inclusion_report()
+    return load_missing_inclusion_table(report)
+
+
+def missing_inclusion_dashboard() -> dict[str, Any]:
+    client, project_id, dataset = bq_context()
+    ensure_missing_inclusion_table(client, project_id, dataset)
+    rows = list(
+        client.query(
+            f"""
+SELECT
+  row_number,
+  partner_id,
+  advertiser_id,
+  advertiser_name,
+  insertion_order_id,
+  insertion_order_name,
+  insertion_order_status,
+  io_budget_start_date,
+  io_budget_end_date,
+  line_item_id,
+  line_item_name,
+  line_item_status,
+  line_item_type,
+  line_item_subtype,
+  line_item_start_date,
+  line_item_end_date,
+  effective_start_date,
+  effective_end_date,
+  advertiser_channel_include_count,
+  missing_reason,
+  sdf_version,
+  run_date,
+  source_advertiser_count,
+  loaded_at
+FROM {table_fqn(project_id, dataset, QA_MISSING_INCLUSION_TABLE)}
+ORDER BY advertiser_name, insertion_order_name, line_item_name
+"""
+        ).result()
+    )
+    data = [
+        {
+            "ROW_ID": f"{r['advertiser_id']}:{r['line_item_id']}",
+            "ADVERTISER": str(r["advertiser_name"] or ""),
+            "ADVERTISER_ID": str(r["advertiser_id"] or ""),
+            "INSERTION_ORDER": str(r["insertion_order_name"] or ""),
+            "IO_ID": str(r["insertion_order_id"] or ""),
+            "LINE_ITEM": str(r["line_item_name"] or ""),
+            "LINE_ITEM_ID": str(r["line_item_id"] or ""),
+            "TYPE": str(r["line_item_type"] or ""),
+            "SUBTYPE": str(r["line_item_subtype"] or ""),
+            "EFFECTIVE_START": r["effective_start_date"].isoformat() if r["effective_start_date"] else "",
+            "EFFECTIVE_END": r["effective_end_date"].isoformat() if r["effective_end_date"] else "",
+            "IO_BUDGET_START": r["io_budget_start_date"].isoformat() if r["io_budget_start_date"] else "",
+            "IO_BUDGET_END": r["io_budget_end_date"].isoformat() if r["io_budget_end_date"] else "",
+            "REASON": str(r["missing_reason"] or ""),
+            "ADVERTISER_CHANNEL_INCLUDES": int(r["advertiser_channel_include_count"] or 0),
+        }
+        for r in rows
+    ]
+    first = rows[0] if rows else None
+    return {
+        "rows": data,
+        "meta": {
+            "project_id": project_id,
+            "dataset": dataset,
+            "table": QA_MISSING_INCLUSION_TABLE,
+            "partner_id": str(first["partner_id"] or "") if first else get_secret("DV360_PARTNER_ID", ""),
+            "sdf_version": str(first["sdf_version"] or "") if first else get_secret("QA_SDF_VERSION", DEFAULT_SDF_VERSION),
+            "run_date": first["run_date"].isoformat() if first and first["run_date"] else "",
+            "source_advertiser_count": str(first["source_advertiser_count"] or "") if first else "",
+            "loaded_at": first["loaded_at"].isoformat() if first and first["loaded_at"] else "",
+            "total_rows": str(len(data)),
         },
     }
