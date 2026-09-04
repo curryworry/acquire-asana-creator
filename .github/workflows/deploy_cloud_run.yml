@@ -38,6 +38,7 @@ jobs:
             --region australia-southeast1 \
             --source . \
             --service-account acquire-ops-runner@ops-control-center-503319.iam.gserviceaccount.com \
+            --timeout 1800 \
             --set-env-vars REQUIRE_AUTH=true,BQ_PROJECT_ID=sm-test-391201,BQ_DATASET=supermetrics_data \
             --set-secrets STREAMLIT_SECRETS_TOML=streamlit-secrets-toml:latest \
             --quiet
