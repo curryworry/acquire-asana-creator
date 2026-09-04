@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from datetime import date
 from io import BytesIO
 from typing import Any
 
@@ -61,6 +62,46 @@ class DV360Client:
                 break
             request["pageToken"] = token
         return [advertiser for advertiser in advertisers if advertiser["advertiser_id"]]
+
+    def list_current_insertion_order_ids(self, advertiser_id: str, run_date: date) -> list[str]:
+        insertion_order_ids: list[str] = []
+        request: dict[str, Any] = {
+            "advertiserId": advertiser_id,
+            "pageSize": 200,
+            "filter": 'entityStatus="ENTITY_STATUS_ACTIVE"',
+        }
+        while True:
+            response = self.service.advertisers().insertionOrders().list(**request).execute()
+            for insertion_order in response.get("insertionOrders", []):
+                if self._insertion_order_has_current_budget(insertion_order, run_date):
+                    insertion_order_ids.append(str(insertion_order.get("insertionOrderId", "")).strip())
+            token = response.get("nextPageToken")
+            if not token:
+                break
+            request["pageToken"] = token
+        return [item for item in insertion_order_ids if item]
+
+    @staticmethod
+    def _api_date(value: dict[str, int] | None) -> date | None:
+        if not value:
+            return None
+        try:
+            return date(int(value["year"]), int(value["month"]), int(value["day"]))
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _insertion_order_has_current_budget(cls, insertion_order: dict[str, Any], run_date: date) -> bool:
+        for segment in insertion_order.get("budget", {}).get("budgetSegments", []):
+            date_range = segment.get("dateRange", {})
+            start = cls._api_date(date_range.get("startDate"))
+            end = cls._api_date(date_range.get("endDate"))
+            if start and run_date < start:
+                continue
+            if end and run_date > end:
+                continue
+            return True
+        return False
 
     def create_sdf_download(
         self,

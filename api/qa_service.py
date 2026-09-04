@@ -548,7 +548,7 @@ def _missing_inclusion_rows_for_advertiser(
     return rows
 
 
-def _select_sdf_advertisers(client: DV360Client, partner_id: str) -> list[dict[str, str]]:
+def _select_sdf_advertisers(client: DV360Client, partner_id: str, run_date: date) -> list[dict[str, str]]:
     configured_ids = set(_sdf_advertiser_ids())
     if configured_ids:
         advertisers = client.list_advertisers(partner_id, status_filter="")
@@ -561,7 +561,16 @@ def _select_sdf_advertisers(client: DV360Client, partner_id: str) -> list[dict[s
     status_filter = get_secret("QA_SDF_ADVERTISER_STATUS_FILTER", 'entityStatus="ENTITY_STATUS_ACTIVE"')
     advertisers = client.list_advertisers(partner_id, status_filter=status_filter)
     limit = _sdf_int_secret("QA_SDF_ADVERTISER_LIMIT", 0)
-    return advertisers[:limit] if limit > 0 else advertisers
+    if limit > 0:
+        advertisers = advertisers[:limit]
+    if get_secret("QA_SDF_SKIP_IO_PREFILTER", "").strip().lower() in {"1", "true", "yes", "y", "on"}:
+        return advertisers
+    current_advertisers: list[dict[str, str]] = []
+    for advertiser in advertisers:
+        current_io_ids = client.list_current_insertion_order_ids(advertiser["advertiser_id"], run_date)
+        if current_io_ids:
+            current_advertisers.append({**advertiser, "current_io_count": str(len(current_io_ids))})
+    return current_advertisers
 
 
 def fetch_missing_inclusion_report() -> dict[str, Any]:
@@ -577,7 +586,7 @@ def fetch_missing_inclusion_report() -> dict[str, Any]:
         client_secret=get_secret("DV360_CLIENT_SECRET"),
         refresh_token=get_secret("DV360_REFRESH_TOKEN"),
     )
-    advertisers = _select_sdf_advertisers(client, partner_id)
+    advertisers = _select_sdf_advertisers(client, partner_id, run_date)
     timeout_seconds = _sdf_int_secret("QA_SDF_DOWNLOAD_TIMEOUT_SECONDS", 1800)
     poll_seconds = _sdf_int_secret("QA_SDF_POLL_SECONDS", 10)
 

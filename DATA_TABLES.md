@@ -180,6 +180,7 @@ Load behavior:
 - Fully overwritten on each successful ingestion
 - Scheduled by `.github/workflows/qa_missing_inclusion_list.yml`
 - Dashboard endpoint `/api/qa/missing-inclusion-list` reads this table
+- Advertisers are prefiltered to those with at least one active IO budget segment covering the run date
 - Active scope is based on IO status plus an active IO budget segment covering the run date, then LI status/effective dates
 
 Columns:
