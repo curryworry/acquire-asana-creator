@@ -106,17 +106,19 @@ class DV360Client:
     def create_sdf_download(
         self,
         partner_id: str,
-        advertiser_id: str,
+        advertiser_ids: list[str],
         file_types: list[str],
         sdf_version: str,
     ) -> dict[str, Any]:
+        if not advertiser_ids:
+            raise DV360Error("At least one advertiser ID is required for SDF download.")
         body = {
             "version": sdf_version,
             "partnerId": partner_id,
             "parentEntityFilter": {
                 "fileType": file_types,
                 "filterType": "FILTER_TYPE_ADVERTISER_ID",
-                "filterIds": [advertiser_id],
+                "filterIds": advertiser_ids,
             },
         }
         return self.service.sdfdownloadtasks().create(body=body).execute()
@@ -151,7 +153,25 @@ class DV360Client:
         timeout_seconds: int = 1800,
         poll_seconds: int = 10,
     ) -> bytes:
-        operation = self.create_sdf_download(partner_id, advertiser_id, file_types, sdf_version)
+        return self.download_advertisers_sdf(
+            partner_id=partner_id,
+            advertiser_ids=[advertiser_id],
+            file_types=file_types,
+            sdf_version=sdf_version,
+            timeout_seconds=timeout_seconds,
+            poll_seconds=poll_seconds,
+        )
+
+    def download_advertisers_sdf(
+        self,
+        partner_id: str,
+        advertiser_ids: list[str],
+        file_types: list[str],
+        sdf_version: str,
+        timeout_seconds: int = 1800,
+        poll_seconds: int = 10,
+    ) -> bytes:
+        operation = self.create_sdf_download(partner_id, advertiser_ids, file_types, sdf_version)
         completed = self.wait_for_operation(
             str(operation.get("name", "")),
             timeout_seconds=timeout_seconds,

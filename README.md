@@ -139,8 +139,7 @@ Script:
 
 Behavior:
 - Runs daily at 9 AM America/New_York.
-- Prefilters partner advertisers to those with an active DV360 insertion order budget segment covering the run date.
-- Downloads DV360 SDF insertion order, line item, and line item QA files for those advertisers.
+- Downloads DV360 SDF campaign, insertion order, line item, and line item QA files in advertiser batches.
 - Treats an insertion order as live only when its SDF status is `Active` and a budget segment covers the run date.
 - Flags active line items under those live IOs when there is no LI-level channel/site/app include and no advertiser-level positive channel include.
 - Overwrites `supermetrics_data.qa_missing_inclusion_list`.

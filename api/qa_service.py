@@ -25,6 +25,7 @@ QA_MISSING_INCLUSION_TABLE = "qa_missing_inclusion_list"
 DEFAULT_SDF_VERSION = "SDF_VERSION_10_1"
 DEFAULT_SDF_TIME_ZONE = "America/New_York"
 SDF_FILE_TYPES = [
+    "FILE_TYPE_CAMPAIGN",
     "FILE_TYPE_INSERTION_ORDER",
     "FILE_TYPE_LINE_ITEM",
     "FILE_TYPE_LINE_ITEM_QA",
@@ -462,16 +463,24 @@ def _sdf_int_secret(name: str, default: int) -> int:
     return _as_int(get_secret(name, str(default)), default)
 
 
-def _missing_inclusion_rows_for_advertiser(
+def _chunked(items: list[dict[str, str]], size: int) -> list[list[dict[str, str]]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def _candidate_missing_inclusion_rows_from_sdf_zip(
     partner_id: str,
-    advertiser: dict[str, str],
+    advertisers_by_id: dict[str, dict[str, str]],
     raw_zip: bytes,
-    advertiser_channel_count: int,
     run_date: date,
     sdf_version: str,
     source_advertiser_count: int,
     loaded_at: str,
 ) -> list[dict[str, Any]]:
+    campaigns = {
+        _clean_cell(row.get("Campaign Id", "")): _clean_cell(row.get("Advertiser Id", ""))
+        for row in _as_csv_rows(raw_zip, "SDF-Campaigns.csv")
+        if _clean_cell(row.get("Campaign Id", "")) and _clean_cell(row.get("Advertiser Id", ""))
+    }
     insertion_orders = {
         _clean_cell(row.get("Io Id", "")): row
         for row in _as_csv_rows(raw_zip, "SDF-InsertionOrders.csv")
@@ -483,7 +492,6 @@ def _missing_inclusion_rows_for_advertiser(
         if _clean_cell(row.get("Line Item Id", ""))
     }
     line_items = _as_csv_rows(raw_zip, "SDF-LineItems.csv")
-    advertiser_has_channel = advertiser_channel_count > 0
     rows: list[dict[str, Any]] = []
 
     for line_item in line_items:
@@ -497,6 +505,10 @@ def _missing_inclusion_rows_for_advertiser(
         io_window = _current_io_budget_window(io_row, run_date)
         if not io_window:
             continue
+        advertiser_id = campaigns.get(_clean_cell(io_row.get("Campaign Id", "")), "")
+        if not advertiser_id:
+            continue
+        advertiser = advertisers_by_id.get(advertiser_id, {"advertiser_id": advertiser_id, "advertiser_name": ""})
 
         li_start_raw = line_item.get("Start Date", "")
         li_end_raw = line_item.get("End Date", "")
@@ -508,13 +520,13 @@ def _missing_inclusion_rows_for_advertiser(
             continue
 
         qa_row = line_item_qa.get(_clean_cell(line_item.get("Line Item Id", "")))
-        if _line_item_has_inclusion(line_item, qa_row) or advertiser_has_channel:
+        if _line_item_has_inclusion(line_item, qa_row):
             continue
 
         row = {
             "row_number": 0,
             "partner_id": partner_id,
-            "advertiser_id": advertiser["advertiser_id"],
+            "advertiser_id": advertiser_id,
             "advertiser_name": advertiser.get("advertiser_name", ""),
             "insertion_order_id": io_id,
             "insertion_order_name": _clean_cell(io_row.get("Name", "")) or _clean_cell(line_item.get("Io Name", "")),
@@ -536,8 +548,8 @@ def _missing_inclusion_rows_for_advertiser(
             "li_channel_include_qa": _clean_cell((qa_row or {}).get("Channel Targeting - Include Qa", "")),
             "li_site_include_qa": _clean_cell((qa_row or {}).get("Site Targeting - Include Qa", "")),
             "li_app_include_qa": _clean_cell((qa_row or {}).get("App Targeting - Include Qa", "")),
-            "advertiser_channel_include_count": advertiser_channel_count,
-            "advertiser_has_channel_include": advertiser_has_channel,
+            "advertiser_channel_include_count": 0,
+            "advertiser_has_channel_include": False,
             "missing_reason": "No LI site/app/channel include and no advertiser-level positive channel include",
             "sdf_version": sdf_version,
             "run_date": run_date.isoformat(),
@@ -548,7 +560,7 @@ def _missing_inclusion_rows_for_advertiser(
     return rows
 
 
-def _select_sdf_advertisers(client: DV360Client, partner_id: str, run_date: date) -> list[dict[str, str]]:
+def _select_sdf_advertisers(client: DV360Client, partner_id: str) -> list[dict[str, str]]:
     configured_ids = set(_sdf_advertiser_ids())
     if configured_ids:
         advertisers = client.list_advertisers(partner_id, status_filter="")
@@ -563,14 +575,7 @@ def _select_sdf_advertisers(client: DV360Client, partner_id: str, run_date: date
     limit = _sdf_int_secret("QA_SDF_ADVERTISER_LIMIT", 0)
     if limit > 0:
         advertisers = advertisers[:limit]
-    if get_secret("QA_SDF_SKIP_IO_PREFILTER", "").strip().lower() in {"1", "true", "yes", "y", "on"}:
-        return advertisers
-    current_advertisers: list[dict[str, str]] = []
-    for advertiser in advertisers:
-        current_io_ids = client.list_current_insertion_order_ids(advertiser["advertiser_id"], run_date)
-        if current_io_ids:
-            current_advertisers.append({**advertiser, "current_io_count": str(len(current_io_ids))})
-    return current_advertisers
+    return advertisers
 
 
 def fetch_missing_inclusion_report() -> dict[str, Any]:
@@ -586,30 +591,30 @@ def fetch_missing_inclusion_report() -> dict[str, Any]:
         client_secret=get_secret("DV360_CLIENT_SECRET"),
         refresh_token=get_secret("DV360_REFRESH_TOKEN"),
     )
-    advertisers = _select_sdf_advertisers(client, partner_id, run_date)
+    advertisers = _select_sdf_advertisers(client, partner_id)
+    advertisers_by_id = {advertiser["advertiser_id"]: advertiser for advertiser in advertisers}
     timeout_seconds = _sdf_int_secret("QA_SDF_DOWNLOAD_TIMEOUT_SECONDS", 1800)
     poll_seconds = _sdf_int_secret("QA_SDF_POLL_SECONDS", 10)
+    batch_size = max(1, _sdf_int_secret("QA_SDF_ADVERTISER_BATCH_SIZE", 25))
 
-    rows: list[dict[str, Any]] = []
+    candidate_rows: list[dict[str, Any]] = []
     errors: list[str] = []
-    for advertiser in advertisers:
-        advertiser_id = advertiser["advertiser_id"]
+    for batch in _chunked(advertisers, batch_size):
+        advertiser_ids = [advertiser["advertiser_id"] for advertiser in batch]
         try:
-            channel_count = client.advertiser_positive_channel_count(advertiser_id)
-            raw_zip = client.download_advertiser_sdf(
+            raw_zip = client.download_advertisers_sdf(
                 partner_id=partner_id,
-                advertiser_id=advertiser_id,
+                advertiser_ids=advertiser_ids,
                 file_types=SDF_FILE_TYPES,
                 sdf_version=sdf_version,
                 timeout_seconds=timeout_seconds,
                 poll_seconds=poll_seconds,
             )
-            rows.extend(
-                _missing_inclusion_rows_for_advertiser(
+            candidate_rows.extend(
+                _candidate_missing_inclusion_rows_from_sdf_zip(
                     partner_id=partner_id,
-                    advertiser=advertiser,
+                    advertisers_by_id=advertisers_by_id,
                     raw_zip=raw_zip,
-                    advertiser_channel_count=channel_count,
                     run_date=run_date,
                     sdf_version=sdf_version,
                     source_advertiser_count=len(advertisers),
@@ -617,7 +622,24 @@ def fetch_missing_inclusion_report() -> dict[str, Any]:
                 )
             )
         except Exception as exc:
-            errors.append(f"{advertiser_id}: {exc}")
+            errors.append(f"{','.join(advertiser_ids)}: {exc}")
+
+    channel_counts: dict[str, int] = {}
+    rows: list[dict[str, Any]] = []
+    for advertiser_id in sorted({str(row["advertiser_id"]) for row in candidate_rows}):
+        try:
+            channel_counts[advertiser_id] = client.advertiser_positive_channel_count(advertiser_id)
+        except Exception as exc:
+            errors.append(f"{advertiser_id} channel targeting: {exc}")
+            channel_counts[advertiser_id] = 0
+
+    for row in candidate_rows:
+        channel_count = channel_counts.get(str(row["advertiser_id"]), 0)
+        if channel_count > 0:
+            continue
+        row["advertiser_channel_include_count"] = channel_count
+        row["advertiser_has_channel_include"] = False
+        rows.append(row)
 
     rows.sort(
         key=lambda row: (
