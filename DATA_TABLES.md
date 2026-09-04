@@ -1,6 +1,6 @@
 # Data Tables and Alert Context
 
-Last updated: 2026-05-26
+Last updated: 2026-09-04
 
 ## BigQuery Dataset
 - Project: `sm-test-391201`
@@ -149,7 +149,7 @@ Data recency check on 2026-06-02:
 ## Snapshot and Dashboard
 - Snapshot table: `supermetrics_data.live_alert_snapshots`
 - Each email run stores row-level snapshot data keyed by `run_id`
-- Email includes signed dashboard link using `mode=live_alerts&user&run_id&exp&sig`
+- Email includes one dashboard link: `https://ops.acquire.agency`
 
 ## QA Table: `qa_video_on_trademe`
 Purpose: Current rolling 7-day DV360 TradeMe video QA snapshot, loaded from the daily Gmail CSV attachment.

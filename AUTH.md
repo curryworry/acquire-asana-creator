@@ -1,10 +1,10 @@
 # Dashboard Auth
 
-Last updated: 2026-06-15
+Last updated: 2026-09-04
 
 ## Purpose
 
-The app can use a simple built-in username/password login for dashboard access.
+The app uses a simple built-in username/password login for dashboard access.
 
 This is intended for:
 - small internal teams
@@ -13,14 +13,14 @@ This is intended for:
 
 ## How It Works
 
-- users are defined in `.streamlit/secrets.toml`
-- passwords are stored in plain text in `.streamlit/secrets.toml`
-- once signed in, the username/display name is kept in Streamlit session state
-- dashboard actions use the authenticated user automatically
+- Users are defined in the TOML secrets file.
+- Passwords are currently stored in plain text in that TOML secret.
+- Once signed in, the React frontend stores a bearer token in browser local storage.
+- Dashboard actions use the authenticated user automatically.
 
 ## Secrets Format
 
-Add entries like this to `.streamlit/secrets.toml`:
+The production Secret Manager value still uses the existing TOML shape. Locally, the ignored compatibility path is `.streamlit/secrets.toml`.
 
 ```toml
 [auth.users.ashwin]
@@ -33,35 +33,27 @@ password = "rachel-password"
 ```
 
 Notes:
-- `ashwin` / `rachel` are the login usernames
-- `display_name` is what appears in the app audit trail
-- `password` is the plain-text password used for login
+- `ashwin` / `rachel` are the login usernames.
+- `display_name` is what appears in the app audit trail.
+- `password` is the plain-text password used for login.
+- `API_SESSION_SECRET` is the preferred token signing secret.
+- `LINK_SIGNING_SECRET` remains accepted as a compatibility fallback so existing production login behavior does not change.
+- `ADMIN_PASS` remains the final fallback.
 
 ## Behaviour
 
 When auth is configured:
 - users see a login page first
-- after login they land on a home page
-- from there they can open:
-  - Margin Dashboard
-  - Alerts Dashboard
-  - Pacing Dashboard
+- after login they land in the React/FastAPI dashboard
+- dashboard actions use the authenticated session user
 
 When auth is not configured:
-- the app stays accessible in preview mode
-- it shows an informational message that auth is not enabled
-
-## Notes On Existing Alerts Email Links
-
-- signed alert links still work
-- if auth is enabled, the user must log in first
-- after login, the signed link context can still be opened
-- audit actions use the authenticated session user, not the email link recipient
+- the app stays accessible only if `REQUIRE_AUTH` is false
 
 ## Operational Management
 
 To remove a user:
-- delete that user block from `secrets.toml`
+- delete that user block from the TOML secret
 
 To rotate a password:
 - replace the stored `password`

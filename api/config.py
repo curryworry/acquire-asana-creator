@@ -9,8 +9,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @lru_cache(maxsize=1)
-def _streamlit_secrets() -> dict[str, Any]:
-    env_toml = os.environ.get("STREAMLIT_SECRETS_TOML", "").strip()
+def _toml_secrets() -> dict[str, Any]:
+    env_toml = (os.environ.get("APP_SECRETS_TOML") or os.environ.get("STREAMLIT_SECRETS_TOML") or "").strip()
     if env_toml:
         try:
             return tomllib.loads(env_toml)
@@ -31,13 +31,13 @@ def get_secret(name: str, default: str = "") -> str:
     if env_value is not None:
         return env_value
 
-    secrets = _streamlit_secrets()
+    secrets = _toml_secrets()
     value = secrets.get(name, default)
     return str(value if value is not None else default)
 
 
 def get_auth_users() -> dict[str, dict[str, str]]:
-    auth_block = _streamlit_secrets().get("auth", {})
+    auth_block = _toml_secrets().get("auth", {})
     if not isinstance(auth_block, Mapping):
         return {}
 

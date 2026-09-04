@@ -106,7 +106,7 @@ Use Google Secret Manager in `ops-control-center-503319`.
 
 ### App Login Users
 
-The production app uses the same TOML login format as `.streamlit/secrets.toml`.
+The production app uses the existing TOML login format. The local compatibility path is `.streamlit/secrets.toml`.
 
 Create/update the production TOML secret from the local file:
 
@@ -124,7 +124,7 @@ gcloud secrets versions add streamlit-secrets-toml \
   --data-file=.streamlit/secrets.toml
 ```
 
-This keeps production login management in one Google Secret Manager secret while preserving the existing TOML format.
+This keeps production login management in one Google Secret Manager secret while preserving the existing TOML format. The app no longer runs Streamlit; the secret and local path names are retained for compatibility.
 
 ### Session Signing Secret
 
@@ -215,10 +215,10 @@ curl "$(gcloud run services describe acquire-ops \
 
 ## Email Links
 
-Once the Cloud Run URL is confirmed, update the GitHub Actions variable/secret:
+Alert digest emails use one static dashboard URL:
 
 ```text
-ALERT_DASHBOARD_BASE_URL=https://...
+https://ops.acquire.agency
 ```
 
-This makes alert email links open the hosted React/FastAPI interface.
+The old signed dashboard link variables are no longer used by the alert email script.
