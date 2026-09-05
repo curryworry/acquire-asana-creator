@@ -26,6 +26,7 @@ QA_VIDEO_TRADEME_TABLE = "qa_video_on_trademe"
 QA_MISSING_INCLUSION_TABLE = "qa_missing_inclusion_list"
 DEFAULT_SDF_VERSION = "SDF_VERSION_10_1"
 DEFAULT_SDF_TIME_ZONE = "America/New_York"
+MAX_MISSING_INCLUSION_INVENTORY_SOURCE_INCLUDES = 5
 SDF_FILE_TYPES = [
     "FILE_TYPE_CAMPAIGN",
     "FILE_TYPE_INSERTION_ORDER",
@@ -487,6 +488,17 @@ def _line_item_has_inclusion(line_item: dict[str, str], qa_row: dict[str, str] |
     return any(_meaningful_targeting(value) for value in values)
 
 
+def _inventory_source_include_count(line_item: dict[str, str]) -> int:
+    value = _clean_cell(line_item.get("Inventory Source Targeting - Include", ""))
+    if not _meaningful_targeting(value):
+        return 0
+    return len([item for item in (_clean_cell(part) for part in value.split(";")) if item])
+
+
+def _line_item_has_broad_inventory_source_include(line_item: dict[str, str]) -> bool:
+    return _inventory_source_include_count(line_item) > MAX_MISSING_INCLUSION_INVENTORY_SOURCE_INCLUDES
+
+
 def _sdf_advertiser_ids() -> list[str]:
     raw_ids = get_secret("QA_SDF_ADVERTISER_IDS", "")
     return [item.strip() for item in raw_ids.split(",") if item.strip()]
@@ -564,6 +576,8 @@ def _candidate_missing_inclusion_rows_from_sdf_zip(
 
         qa_row = line_item_qa.get(_clean_cell(line_item.get("Line Item Id", "")))
         if _line_item_has_inclusion(line_item, qa_row):
+            continue
+        if _line_item_has_broad_inventory_source_include(line_item):
             continue
 
         row = {
@@ -716,6 +730,8 @@ def _candidate_missing_inclusion_rows_from_line_item_sdf_zip(
 
         qa_row = line_item_qa.get(line_item_id)
         if _line_item_has_inclusion(line_item, qa_row):
+            continue
+        if _line_item_has_broad_inventory_source_include(line_item):
             continue
 
         li_start_raw = line_item.get("Start Date", "")
