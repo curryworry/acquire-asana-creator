@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 import os
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 # Ensure repo root is importable when executed as a script in CI.
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -25,17 +23,7 @@ def as_bool(value: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "y", "on"}
 
 
-def should_run_now_eastern() -> bool:
-    now_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
-    return now_et.hour == 9
-
-
 def main() -> int:
-    if not as_bool(env("QA_SDF_FORCE_RUN"), default=False) and not should_run_now_eastern():
-        now_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
-        print(f"Skipping missing inclusion QA ingestion. Current New York time is {now_et:%Y-%m-%d %H:%M %Z}.")
-        return 0
-
     if as_bool(env("QA_SDF_DRY_RUN"), default=False):
         report = fetch_missing_inclusion_report()
         meta = report["meta"]

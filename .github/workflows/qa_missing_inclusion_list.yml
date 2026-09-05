@@ -3,7 +3,6 @@ name: QA Missing Inclusion List
 on:
   schedule:
     # 9:00 AM America/New_York is 13:00 UTC during EDT and 14:00 UTC during EST.
-    # The script checks local New York time and exits unless it is 9 AM.
     - cron: "0 13 * * *"
     - cron: "0 14 * * *"
   workflow_dispatch:
