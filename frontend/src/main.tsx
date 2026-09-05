@@ -139,6 +139,20 @@ function unitCurrency(value: unknown) {
   }).format(number);
 }
 
+function currencyCode(value: unknown, code: unknown) {
+  const number = Number(value || 0);
+  const currencyCode = String(code || "NZD");
+  try {
+    return new Intl.NumberFormat("en-NZ", {
+      style: "currency",
+      currency: currencyCode,
+      maximumFractionDigits: Math.abs(number) < 10 ? 2 : 0
+    }).format(number);
+  } catch {
+    return `${num(number)} ${currencyCode}`;
+  }
+}
+
 function costPerUnit(value: unknown, unit: unknown) {
   if (value === null || value === undefined || value === "") return "N/A";
   return `${unitCurrency(value)} ${String(unit || "CPU")}`;
@@ -1533,16 +1547,21 @@ function QaMissingInclusionListPage(props: {
       row.LINE_ITEM_ID,
       row.TYPE,
       row.SUBTYPE,
+      row.YESTERDAY_SPEND,
+      row.ADVERTISER_CURRENCY,
       row.REASON
     ].some((value) => String(value || "").toLowerCase().includes(q)));
   }, [query, rows]);
   const sortedRows = React.useMemo(() => sortRows(filtered, sort), [filtered, sort]);
   const advertiserCount = new Set(sortedRows.map((row) => String(row.ADVERTISER_ID || ""))).size;
   const ioCount = new Set(sortedRows.map((row) => String(row.IO_ID || ""))).size;
+  const totalSpend = sortedRows.reduce((sum, row) => sum + Number(row.YESTERDAY_SPEND || 0), 0);
+  const visibleCurrencies = new Set(sortedRows.map((row) => String(row.ADVERTISER_CURRENCY || "")).filter(Boolean));
   const columns: Array<[string, string]> = [
     ["ADVERTISER", "Advertiser"],
     ["INSERTION_ORDER", "Insertion Order"],
     ["LINE_ITEM", "Line Item"],
+    ["YESTERDAY_SPEND", "Yesterday Spend"],
     ["TYPE", "Type"],
     ["SUBTYPE", "Subtype"],
     ["EFFECTIVE_START", "Start"],
@@ -1555,7 +1574,7 @@ function QaMissingInclusionListPage(props: {
       <PageHeader
         eyebrow={meta.table ? `${meta.project_id}.${meta.dataset}.${meta.table}` : "DV360 SDF QA"}
         title="Missing Inclusion List"
-        subtitle="Active line items whose active IO budget segment is live, with no LI site/app/channel include and no advertiser-level channel include."
+        subtitle="Line items with spend yesterday, no LI site/app/channel include, and no advertiser-level channel include."
         loading={loading}
         onRefresh={() => {
           invalidateApiCache("/api/qa/missing-inclusion-list");
@@ -1567,7 +1586,12 @@ function QaMissingInclusionListPage(props: {
         { label: "Line items", value: num(sortedRows.length), tone: sortedRows.length ? "warn" : "" },
         { label: "Advertisers", value: num(advertiserCount), tone: sortedRows.length ? "warn" : "" },
         { label: "Insertion orders", value: num(ioCount), tone: sortedRows.length ? "warn" : "" },
-        { label: "Run date", value: String(meta.run_date || "N/A") }
+        { label: "Spend date", value: String(meta.spend_date || meta.run_date || "N/A") },
+        {
+          label: "Yesterday spend",
+          value: visibleCurrencies.size <= 1 ? currencyCode(totalSpend, sortedRows[0]?.ADVERTISER_CURRENCY) : "Mixed currencies",
+          tone: sortedRows.length ? "warn" : ""
+        }
       ]} />
       <section className="toolbar">
         <div className="searchbox">
@@ -1595,7 +1619,7 @@ function QaMissingInclusionListPage(props: {
           onSort={(key) => setSort((current) => nextSort(current, key))}
           columns={columns}
           renderCell={(key, value) => key === "LINE_ITEM" ? <span className="campaign-cell"><AlertTriangle size={15} /> {String(value ?? "")}</span> : null}
-          format={(_, value) => String(value ?? "")}
+          format={(key, value, row) => key === "YESTERDAY_SPEND" ? currencyCode(value, row.ADVERTISER_CURRENCY) : String(value ?? "")}
         />
       </DataState>
       <ActionDock selectedCount={selected.size} onClear={() => setSelected(new Set())} />

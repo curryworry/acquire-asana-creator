@@ -232,6 +232,33 @@ class DV360Client:
             raise DV360Error(f"SDF download operation completed without a resource name: {completed}")
         return self.download_sdf_zip(resource_name)
 
+    def download_line_items_sdf(
+        self,
+        partner_id: str,
+        line_item_ids: list[str],
+        file_types: list[str],
+        sdf_version: str,
+        timeout_seconds: int = 1800,
+        poll_seconds: int = 10,
+    ) -> bytes:
+        operation = self.create_sdf_download(
+            partner_id,
+            line_item_ids,
+            "FILTER_TYPE_LINE_ITEM_ID",
+            file_types,
+            sdf_version,
+        )
+        completed = self.wait_for_operation(
+            str(operation.get("name", "")),
+            timeout_seconds=timeout_seconds,
+            poll_seconds=poll_seconds,
+            progress_label=f"SDF LI batch ({len(line_item_ids)} line items)",
+        )
+        resource_name = completed.get("response", {}).get("resourceName", "")
+        if not resource_name:
+            raise DV360Error(f"SDF download operation completed without a resource name: {completed}")
+        return self.download_sdf_zip(resource_name)
+
     def advertiser_positive_channel_count(self, advertiser_id: str) -> int:
         request: dict[str, Any] = {
             "advertiserId": advertiser_id,

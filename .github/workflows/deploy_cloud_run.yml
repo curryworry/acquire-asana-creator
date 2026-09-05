@@ -60,6 +60,6 @@ jobs:
             --args scripts/load_qa_missing_inclusion_list.py \
             --task-timeout 10800 \
             --max-retries 0 \
-            --set-env-vars REQUIRE_AUTH=true,BQ_PROJECT_ID=sm-test-391201,BQ_DATASET=supermetrics_data,QA_SDF_FORCE_RUN=true,QA_SDF_DOWNLOAD_TIMEOUT_SECONDS=1800,QA_SDF_IO_BATCH_SIZE=25 \
+            --set-env-vars REQUIRE_AUTH=true,BQ_PROJECT_ID=sm-test-391201,BQ_DATASET=supermetrics_data,QA_SDF_FORCE_RUN=true,QA_SDF_USE_BID_MANAGER_SPEND=true,QA_BID_MANAGER_REPORT_TIMEOUT_SECONDS=900,QA_SDF_DOWNLOAD_TIMEOUT_SECONDS=1800,QA_SDF_LINE_ITEM_BATCH_SIZE=100,QA_SDF_IO_BATCH_SIZE=25 \
             --set-secrets STREAMLIT_SECRETS_TOML=streamlit-secrets-toml:latest \
             --quiet
