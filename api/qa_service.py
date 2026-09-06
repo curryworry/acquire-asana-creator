@@ -577,7 +577,7 @@ def _candidate_missing_inclusion_rows_from_sdf_zip(
         qa_row = line_item_qa.get(_clean_cell(line_item.get("Line Item Id", "")))
         if _line_item_has_inclusion(line_item, qa_row):
             continue
-        if _line_item_has_broad_inventory_source_include(line_item):
+        if not _line_item_has_broad_inventory_source_include(line_item):
             continue
 
         row = {
@@ -731,7 +731,7 @@ def _candidate_missing_inclusion_rows_from_line_item_sdf_zip(
         qa_row = line_item_qa.get(line_item_id)
         if _line_item_has_inclusion(line_item, qa_row):
             continue
-        if _line_item_has_broad_inventory_source_include(line_item):
+        if not _line_item_has_broad_inventory_source_include(line_item):
             continue
 
         li_start_raw = line_item.get("Start Date", "")

@@ -41,7 +41,7 @@ def test_inventory_source_include_count_uses_sdf_semicolon_list():
     assert _inventory_source_include_count({"Inventory Source Targeting - Include": "1; 2; 6; 8; 9;"}) == 5
 
 
-def test_broad_inventory_source_include_skips_more_than_five_sources():
+def test_broad_inventory_source_include_requires_more_than_five_sources():
     assert not _line_item_has_broad_inventory_source_include(
         {"Inventory Source Targeting - Include": "1; 2; 6; 8; 9;"}
     )
