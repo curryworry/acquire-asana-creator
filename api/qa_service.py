@@ -93,14 +93,20 @@ def _read_raw_attachment(attachment: GmailAttachment) -> pd.DataFrame:
     raise ValueError("Unsupported QA attachment type. Expected .csv, .xls, or .xlsx.")
 
 
-def _find_report_columns(raw_df: pd.DataFrame) -> tuple[int, int, int]:
+def _find_report_columns(raw_df: pd.DataFrame) -> tuple[int, dict[str, int]]:
     for row_idx, row in raw_df.iterrows():
         normalized = [_normalize_header(value) for value in row.tolist()]
-        campaign_col = next((idx for idx, value in enumerate(normalized) if value == "campaign"), None)
-        impressions_col = next((idx for idx, value in enumerate(normalized) if value == "impressions"), None)
-        if campaign_col is not None and impressions_col is not None:
-            return int(row_idx), campaign_col, impressions_col
+        columns = {value: idx for idx, value in enumerate(normalized) if value}
+        if "campaign" in columns and "impressions" in columns:
+            return int(row_idx), columns
     raise ValueError("Could not find Campaign and Impressions columns in the DV360 report.")
+
+
+def _report_value(row: pd.Series, columns: dict[str, int], header: str) -> str:
+    column_index = columns.get(header)
+    if column_index is None or column_index >= len(row):
+        return ""
+    return _clean_cell(row.iloc[column_index])
 
 
 def _parse_impressions(value: Any) -> int:
@@ -142,13 +148,13 @@ def _extract_metadata(raw_df: pd.DataFrame) -> dict[str, str]:
 
 def parse_video_trademe_attachment(attachment: GmailAttachment) -> dict[str, Any]:
     raw_df = _read_raw_attachment(attachment).fillna("")
-    header_idx, campaign_col, impressions_col = _find_report_columns(raw_df)
+    header_idx, columns = _find_report_columns(raw_df)
     metadata = _extract_metadata(raw_df)
 
     rows: list[dict[str, Any]] = []
     total_impressions = 0
     for source_row_number, row in raw_df.iloc[header_idx + 1 :].iterrows():
-        campaign = _clean_cell(row.iloc[campaign_col] if campaign_col < len(row) else "")
+        campaign = _report_value(row, columns, "campaign")
         first_cell = _normalize_header(row.iloc[0] if len(row) > 0 else "")
 
         if first_cell.startswith(FOOTER_PREFIXES):
@@ -156,7 +162,7 @@ def parse_video_trademe_attachment(attachment: GmailAttachment) -> dict[str, Any
         if not campaign:
             continue
 
-        impressions = _parse_impressions(row.iloc[impressions_col] if impressions_col < len(row) else "")
+        impressions = _parse_impressions(_report_value(row, columns, "impressions"))
         if impressions <= 0:
             continue
 
@@ -164,7 +170,14 @@ def parse_video_trademe_attachment(attachment: GmailAttachment) -> dict[str, Any
         rows.append(
             {
                 "ROW_ID": f"{attachment.message_id}:{source_row_number}",
+                "ADVERTISER": _report_value(row, columns, "advertiser"),
+                "ADVERTISER_ID": _report_value(row, columns, "advertiser id"),
                 "CAMPAIGN": campaign,
+                "CAMPAIGN_ID": _report_value(row, columns, "campaign id"),
+                "INSERTION_ORDER": _report_value(row, columns, "insertion order"),
+                "INSERTION_ORDER_ID": _report_value(row, columns, "insertion order id"),
+                "LINE_ITEM": _report_value(row, columns, "line item"),
+                "LINE_ITEM_ID": _report_value(row, columns, "line item id"),
                 "IMPRESSIONS": impressions,
             }
         )
@@ -209,7 +222,15 @@ def fetch_video_on_trademe_gmail_report() -> dict[str, Any]:
 def _qa_video_schema() -> list[bigquery.SchemaField]:
     return [
         bigquery.SchemaField("row_number", "INTEGER"),
+        bigquery.SchemaField("partner_id", "STRING"),
+        bigquery.SchemaField("advertiser", "STRING"),
+        bigquery.SchemaField("advertiser_id", "STRING"),
         bigquery.SchemaField("campaign", "STRING"),
+        bigquery.SchemaField("campaign_id", "STRING"),
+        bigquery.SchemaField("insertion_order", "STRING"),
+        bigquery.SchemaField("insertion_order_id", "STRING"),
+        bigquery.SchemaField("line_item", "STRING"),
+        bigquery.SchemaField("line_item_id", "STRING"),
         bigquery.SchemaField("last_7_day_impressions", "INTEGER"),
         bigquery.SchemaField("source_subject", "STRING"),
         bigquery.SchemaField("source_message_id", "STRING"),
@@ -225,7 +246,12 @@ def _qa_video_schema() -> list[bigquery.SchemaField]:
 def ensure_video_on_trademe_table(client: bigquery.Client, project_id: str, dataset: str) -> None:
     table_id = f"{project_id}.{dataset}.{QA_VIDEO_TRADEME_TABLE}"
     try:
-        client.get_table(table_id)
+        table = client.get_table(table_id)
+        existing_fields = {field.name for field in table.schema}
+        missing_fields = [field for field in _qa_video_schema() if field.name not in existing_fields]
+        if missing_fields:
+            table.schema = list(table.schema) + missing_fields
+            client.update_table(table, ["schema"])
         return
     except NotFound:
         pass
@@ -238,9 +264,11 @@ def load_video_on_trademe_table(report: dict[str, Any]) -> dict[str, str | int]:
     client, project_id, dataset = bq_context()
     ensure_video_on_trademe_table(client, project_id, dataset)
     table_id = f"{project_id}.{dataset}.{QA_VIDEO_TRADEME_TABLE}"
+    table = client.get_table(table_id)
     meta = report.get("meta", {})
     loaded_at = datetime.now(timezone.utc).isoformat()
-    fieldnames = [field.name for field in _qa_video_schema()]
+    partner_id = get_secret("DV360_PARTNER_ID", "").strip() or "360441"
+    fieldnames = [field.name for field in table.schema]
     output = StringIO()
     writer = DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
@@ -248,7 +276,15 @@ def load_video_on_trademe_table(report: dict[str, Any]) -> dict[str, str | int]:
         writer.writerow(
             {
                 "row_number": index,
+                "partner_id": partner_id,
+                "advertiser": row.get("ADVERTISER", ""),
+                "advertiser_id": row.get("ADVERTISER_ID", ""),
                 "campaign": row.get("CAMPAIGN", ""),
+                "campaign_id": row.get("CAMPAIGN_ID", ""),
+                "insertion_order": row.get("INSERTION_ORDER", ""),
+                "insertion_order_id": row.get("INSERTION_ORDER_ID", ""),
+                "line_item": row.get("LINE_ITEM", ""),
+                "line_item_id": row.get("LINE_ITEM_ID", ""),
                 "last_7_day_impressions": int(row.get("IMPRESSIONS", 0) or 0),
                 "source_subject": meta.get("subject", ""),
                 "source_message_id": meta.get("message_id", ""),
@@ -264,7 +300,7 @@ def load_video_on_trademe_table(report: dict[str, Any]) -> dict[str, str | int]:
     job_config = bigquery.LoadJobConfig(
         source_format=bigquery.SourceFormat.CSV,
         skip_leading_rows=1,
-        schema=_qa_video_schema(),
+        schema=table.schema,
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
     )
     csv_bytes = output.getvalue().encode("utf-8")
@@ -283,6 +319,42 @@ def ingest_video_on_trademe_report() -> dict[str, str | int]:
     return load_video_on_trademe_table(report)
 
 
+def _dv360_advertiser_url(partner_id: str, advertiser_id: str) -> str:
+    if not partner_id or not advertiser_id:
+        return ""
+    return f"https://displayvideo.google.com/ng_nav/p/{partner_id}/a/{advertiser_id}/cs"
+
+
+def _dv360_campaign_url(partner_id: str, advertiser_id: str, campaign_id: str) -> str:
+    if not partner_id or not advertiser_id or not campaign_id:
+        return ""
+    return f"https://displayvideo.google.com/ng_nav/p/{partner_id}/a/{advertiser_id}/c/{campaign_id}/explorer"
+
+
+def _dv360_insertion_order_url(partner_id: str, advertiser_id: str, campaign_id: str, insertion_order_id: str) -> str:
+    if not partner_id or not advertiser_id or not campaign_id or not insertion_order_id:
+        return ""
+    return (
+        "https://displayvideo.google.com/ng_nav/"
+        f"p/{partner_id}/a/{advertiser_id}/c/{campaign_id}/io/{insertion_order_id}/explorerlis"
+    )
+
+
+def _dv360_line_item_url(
+    partner_id: str,
+    advertiser_id: str,
+    campaign_id: str,
+    insertion_order_id: str,
+    line_item_id: str,
+) -> str:
+    if not partner_id or not advertiser_id or not campaign_id or not insertion_order_id or not line_item_id:
+        return ""
+    return (
+        "https://displayvideo.google.com/ng_nav/"
+        f"p/{partner_id}/a/{advertiser_id}/c/{campaign_id}/io/{insertion_order_id}/li/{line_item_id}/details"
+    )
+
+
 def video_on_trademe_dashboard() -> dict[str, Any]:
     client, project_id, dataset = bq_context()
     ensure_video_on_trademe_table(client, project_id, dataset)
@@ -291,7 +363,15 @@ def video_on_trademe_dashboard() -> dict[str, Any]:
             f"""
 SELECT
   row_number,
+  partner_id,
+  advertiser,
+  advertiser_id,
   campaign,
+  campaign_id,
+  insertion_order,
+  insertion_order_id,
+  line_item,
+  line_item_id,
   last_7_day_impressions,
   source_subject,
   source_message_id,
@@ -302,15 +382,45 @@ SELECT
   group_by,
   loaded_at
 FROM {table_fqn(project_id, dataset, QA_VIDEO_TRADEME_TABLE)}
-ORDER BY last_7_day_impressions DESC, campaign
+ORDER BY last_7_day_impressions DESC, campaign, insertion_order, line_item
 """
         ).result()
     )
     data = [
         {
             "ROW_ID": f"{r['source_message_id']}:{r['row_number']}",
+            "PARTNER_ID": str(r["partner_id"] or ""),
+            "ADVERTISER": str(r["advertiser"] or ""),
+            "ADVERTISER_ID": str(r["advertiser_id"] or ""),
             "CAMPAIGN": str(r["campaign"] or ""),
+            "CAMPAIGN_ID": str(r["campaign_id"] or ""),
+            "INSERTION_ORDER": str(r["insertion_order"] or ""),
+            "INSERTION_ORDER_ID": str(r["insertion_order_id"] or ""),
+            "LINE_ITEM": str(r["line_item"] or ""),
+            "LINE_ITEM_ID": str(r["line_item_id"] or ""),
             "IMPRESSIONS": int(r["last_7_day_impressions"] or 0),
+            "ADVERTISER_URL": _dv360_advertiser_url(
+                str(r["partner_id"] or ""),
+                str(r["advertiser_id"] or ""),
+            ),
+            "CAMPAIGN_URL": _dv360_campaign_url(
+                str(r["partner_id"] or ""),
+                str(r["advertiser_id"] or ""),
+                str(r["campaign_id"] or ""),
+            ),
+            "INSERTION_ORDER_URL": _dv360_insertion_order_url(
+                str(r["partner_id"] or ""),
+                str(r["advertiser_id"] or ""),
+                str(r["campaign_id"] or ""),
+                str(r["insertion_order_id"] or ""),
+            ),
+            "LINE_ITEM_URL": _dv360_line_item_url(
+                str(r["partner_id"] or ""),
+                str(r["advertiser_id"] or ""),
+                str(r["campaign_id"] or ""),
+                str(r["insertion_order_id"] or ""),
+                str(r["line_item_id"] or ""),
+            ),
         }
         for r in rows
     ]

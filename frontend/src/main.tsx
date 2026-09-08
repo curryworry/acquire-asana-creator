@@ -12,6 +12,7 @@ import {
   ClipboardCheck,
   Clock3,
   Download,
+  ExternalLink,
   Film,
   Gauge,
   LayoutDashboard,
@@ -205,6 +206,23 @@ function rowsForCsv(
       .filter(([key]) => key !== "__PROGRESS")
       .map(([key, label]) => [label, format(key, row[key], row)])
   ));
+}
+
+function LinkedCell(props: { href?: unknown; icon: React.ReactNode; children: React.ReactNode }) {
+  const href = String(props.href || "");
+  const content = (
+    <span className="linked-cell-content">
+      {props.icon}
+      <span>{props.children}</span>
+      {href && <ExternalLink size={13} />}
+    </span>
+  );
+  if (!href) return <span className="campaign-cell">{content}</span>;
+  return (
+    <a className="table-link" href={href} target="_blank" rel="noreferrer">
+      {content}
+    </a>
+  );
 }
 
 function todayInTimeZone(timeZone: string) {
@@ -1461,12 +1479,21 @@ function QaVideoOnTrademePage(props: {
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return rows;
-    return rows.filter((row) => String(row.CAMPAIGN || "").toLowerCase().includes(q));
+    return rows.filter((row) => [
+      row.CAMPAIGN,
+      row.CAMPAIGN_ID,
+      row.INSERTION_ORDER,
+      row.INSERTION_ORDER_ID,
+      row.LINE_ITEM,
+      row.LINE_ITEM_ID
+    ].some((value) => String(value || "").toLowerCase().includes(q)));
   }, [query, rows]);
   const sortedRows = React.useMemo(() => sortRows(filtered, sort), [filtered, sort]);
   const totalImpressions = sortedRows.reduce((sum, row) => sum + Number(row.IMPRESSIONS || 0), 0);
   const columns: Array<[string, string]> = [
     ["CAMPAIGN", "Campaign"],
+    ["INSERTION_ORDER", "Insertion Order"],
+    ["LINE_ITEM", "Line Item"],
     ["IMPRESSIONS", "Last 7-day impressions"]
   ];
 
@@ -1494,7 +1521,7 @@ function QaVideoOnTrademePage(props: {
           <Search size={16} />
           <input
             name="qa-video-trademe-search"
-            placeholder="Search campaigns..."
+            placeholder="Search campaigns, IOs, line items..."
             autoComplete="off"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -1514,7 +1541,18 @@ function QaVideoOnTrademePage(props: {
           sort={sort}
           onSort={(key) => setSort((current) => nextSort(current, key))}
           columns={columns}
-          renderCell={(key, value) => key === "CAMPAIGN" ? <span className="campaign-cell"><Film size={15} /> {String(value ?? "")}</span> : null}
+          renderCell={(key, value, row) => {
+            if (key === "CAMPAIGN") {
+              return <LinkedCell href={row.CAMPAIGN_URL} icon={<Film size={15} />}>{String(value ?? "")}</LinkedCell>;
+            }
+            if (key === "INSERTION_ORDER") {
+              return <LinkedCell href={row.INSERTION_ORDER_URL} icon={<ClipboardCheck size={15} />}>{String(value ?? "")}</LinkedCell>;
+            }
+            if (key === "LINE_ITEM") {
+              return <LinkedCell href={row.LINE_ITEM_URL} icon={<Table2 size={15} />}>{String(value ?? "")}</LinkedCell>;
+            }
+            return null;
+          }}
           format={(key, value) => key === "IMPRESSIONS" ? num(value) : String(value ?? "")}
         />
       </DataState>
