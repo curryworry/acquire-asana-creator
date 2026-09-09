@@ -215,6 +215,42 @@ def alerts_unsnooze(
     return enqueue_snooze_response(background_tasks, "unsnooze", payload, user)
 
 
+@app.post("/api/qa/video-on-trademe/snooze")
+def qa_video_on_trademe_snooze(
+    payload: SnoozeActionRequest,
+    background_tasks: BackgroundTasks,
+    user: dict[str, str] = Depends(current_user),
+) -> dict[str, str | int]:
+    return enqueue_snooze_response(background_tasks, "snooze", payload, user, payload.reason, payload.end_date)
+
+
+@app.post("/api/qa/video-on-trademe/unsnooze")
+def qa_video_on_trademe_unsnooze(
+    payload: SnoozeActionRequest,
+    background_tasks: BackgroundTasks,
+    user: dict[str, str] = Depends(current_user),
+) -> dict[str, str | int]:
+    return enqueue_snooze_response(background_tasks, "unsnooze", payload, user)
+
+
+@app.post("/api/qa/missing-inclusion-list/snooze")
+def qa_missing_inclusion_list_snooze(
+    payload: SnoozeActionRequest,
+    background_tasks: BackgroundTasks,
+    user: dict[str, str] = Depends(current_user),
+) -> dict[str, str | int]:
+    return enqueue_snooze_response(background_tasks, "snooze", payload, user, payload.reason, payload.end_date)
+
+
+@app.post("/api/qa/missing-inclusion-list/unsnooze")
+def qa_missing_inclusion_list_unsnooze(
+    payload: SnoozeActionRequest,
+    background_tasks: BackgroundTasks,
+    user: dict[str, str] = Depends(current_user),
+) -> dict[str, str | int]:
+    return enqueue_snooze_response(background_tasks, "unsnooze", payload, user)
+
+
 @app.post("/api/alerts/dismiss")
 def alerts_dismiss(
     payload: DismissActionRequest,

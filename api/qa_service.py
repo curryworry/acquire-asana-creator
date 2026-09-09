@@ -15,7 +15,7 @@ from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
 
 from bid_manager_client import DEFAULT_SPEND_METRIC, BidManagerClient
-from api.dashboard_service import bq_context, table_fqn
+from api.dashboard_service import bq_context, latest_snoozes, make_alert_key, table_fqn, today_nz
 from api.config import get_secret
 from dv360_client import DV360Client
 from gmail_client import GmailAttachment, GmailInboxClient
@@ -24,6 +24,8 @@ from gmail_client import GmailAttachment, GmailInboxClient
 DEFAULT_TRADEME_VIDEO_SUBJECT = "TradeMe On Video - Last 7 Days"
 QA_VIDEO_TRADEME_TABLE = "qa_video_on_trademe"
 QA_MISSING_INCLUSION_TABLE = "qa_missing_inclusion_list"
+QA_VIDEO_TRADEME_ALERT_TYPE = "QA_VIDEO_ON_TRADEME"
+QA_MISSING_INCLUSION_ALERT_TYPE = "QA_MISSING_INCLUSION_LIST"
 DEFAULT_SDF_VERSION = "SDF_VERSION_10_1"
 DEFAULT_SDF_TIME_ZONE = "America/New_York"
 MAX_MISSING_INCLUSION_INVENTORY_SOURCE_INCLUDES = 5
@@ -66,6 +68,100 @@ def _clean_cell(value: Any) -> str:
     if pd.isna(value):
         return ""
     return str(value).strip()
+
+
+def _qa_video_alert_key(row: dict[str, Any]) -> str:
+    line_item_id = _clean_cell(row.get("LINE_ITEM_ID", ""))
+    if line_item_id:
+        return make_alert_key(QA_VIDEO_TRADEME_ALERT_TYPE, ["line_item", line_item_id])
+    return make_alert_key(
+        QA_VIDEO_TRADEME_ALERT_TYPE,
+        [
+            "fallback",
+            _clean_cell(row.get("CAMPAIGN_ID", "")),
+            _clean_cell(row.get("INSERTION_ORDER_ID", "")),
+            _clean_cell(row.get("CAMPAIGN", "")),
+            _clean_cell(row.get("INSERTION_ORDER", "")),
+            _clean_cell(row.get("LINE_ITEM", "")),
+        ],
+    )
+
+
+def _qa_missing_inclusion_alert_key(row: dict[str, Any]) -> str:
+    line_item_id = _clean_cell(row.get("LINE_ITEM_ID", ""))
+    if line_item_id:
+        return make_alert_key(QA_MISSING_INCLUSION_ALERT_TYPE, ["line_item", line_item_id])
+    return make_alert_key(
+        QA_MISSING_INCLUSION_ALERT_TYPE,
+        [
+            "fallback",
+            _clean_cell(row.get("ADVERTISER_ID", "")),
+            _clean_cell(row.get("CAMPAIGN_ID", "")),
+            _clean_cell(row.get("IO_ID", "")),
+            _clean_cell(row.get("LINE_ITEM", "")),
+        ],
+    )
+
+
+def _apply_qa_snoozes(
+    client: bigquery.Client,
+    project_id: str,
+    dataset: str,
+    data: list[dict[str, Any]],
+    alert_type: str,
+) -> list[dict[str, Any]]:
+    if not data:
+        return data
+
+    for row in data:
+        row["ALERT_TYPE"] = alert_type
+        row["OUR_REF"] = ""
+        row.setdefault("SNOOZE_STATUS", "")
+        row.setdefault("SNOOZE_REASON", "")
+        row.setdefault("SNOOZE_START_DATE", "")
+        row.setdefault("SNOOZE_END_DATE", "")
+        row.setdefault("SNOOZED_BY", "")
+        row.setdefault("UPDATED_AT", "")
+        row.setdefault("STATE_VERSION", "")
+        row["QA_SNOOZE_STATE"] = "OPEN"
+
+    snooze_df = latest_snoozes(
+        client,
+        project_id,
+        dataset,
+        alert_keys=sorted({str(row["ALERT_KEY"]) for row in data if row.get("ALERT_KEY")}),
+        alert_types=[alert_type],
+    )
+    if snooze_df.empty:
+        return data
+
+    snoozes = {
+        (str(row["ALERT_TYPE"]), str(row["ALERT_KEY"])): row
+        for row in snooze_df.fillna("").to_dict(orient="records")
+    }
+    current_date = today_nz()
+    for row in data:
+        snooze = snoozes.get((str(row["ALERT_TYPE"]), str(row["ALERT_KEY"])))
+        if not snooze:
+            continue
+        for column in [
+            "SNOOZE_STATUS",
+            "SNOOZE_REASON",
+            "SNOOZE_START_DATE",
+            "SNOOZE_END_DATE",
+            "SNOOZED_BY",
+            "UPDATED_AT",
+        ]:
+            row[column] = str(snooze.get(column, "") or "")
+
+        status = str(row.get("SNOOZE_STATUS", "") or "").upper()
+        end_date_raw = str(row.get("SNOOZE_END_DATE", "") or "").strip()
+        end_date = pd.to_datetime(end_date_raw, errors="coerce")
+        if status == "ACTIVE" and (not end_date_raw or (not pd.isna(end_date) and end_date.date() >= current_date)):
+            row["QA_SNOOZE_STATE"] = "SNOOZED"
+        row["STATE_VERSION"] = str(row.get("UPDATED_AT", "") or "")
+
+    return data
 
 
 def _normalize_header(value: Any) -> str:
@@ -424,7 +520,12 @@ ORDER BY last_7_day_impressions DESC, campaign, insertion_order, line_item
         }
         for r in rows
     ]
+    for row in data:
+        row["ALERT_KEY"] = _qa_video_alert_key(row)
+    data = _apply_qa_snoozes(client, project_id, dataset, data, QA_VIDEO_TRADEME_ALERT_TYPE)
     first = rows[0] if rows else None
+    open_count = sum(1 for row in data if row.get("QA_SNOOZE_STATE") == "OPEN")
+    snoozed_count = sum(1 for row in data if row.get("QA_SNOOZE_STATE") == "SNOOZED")
     return {
         "rows": data,
         "meta": {
@@ -440,6 +541,8 @@ ORDER BY last_7_day_impressions DESC, campaign, insertion_order, line_item
             "group_by": str(first["group_by"] or "") if first else "",
             "loaded_at": first["loaded_at"].isoformat() if first and first["loaded_at"] else "",
             "total_rows": str(len(data)),
+            "open_count": str(open_count),
+            "snoozed_count": str(snoozed_count),
             "total_impressions": str(sum(row["IMPRESSIONS"] for row in data)),
         },
     }
@@ -1284,7 +1387,12 @@ ORDER BY advertiser_name, insertion_order_name, line_item_name
         }
         for r in rows
     ]
+    for row in data:
+        row["ALERT_KEY"] = _qa_missing_inclusion_alert_key(row)
+    data = _apply_qa_snoozes(client, project_id, dataset, data, QA_MISSING_INCLUSION_ALERT_TYPE)
     first = rows[0] if rows else None
+    open_count = sum(1 for row in data if row.get("QA_SNOOZE_STATE") == "OPEN")
+    snoozed_count = sum(1 for row in data if row.get("QA_SNOOZE_STATE") == "SNOOZED")
     return {
         "rows": data,
         "meta": {
@@ -1298,5 +1406,7 @@ ORDER BY advertiser_name, insertion_order_name, line_item_name
             "source_advertiser_count": str(first["source_advertiser_count"] or "") if first else "",
             "loaded_at": first["loaded_at"].isoformat() if first and first["loaded_at"] else "",
             "total_rows": str(len(data)),
+            "open_count": str(open_count),
+            "snoozed_count": str(snoozed_count),
         },
     }

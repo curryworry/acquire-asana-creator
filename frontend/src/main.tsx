@@ -92,6 +92,8 @@ const QA_SECTIONS: Array<{ page: Page; label: string }> = [
   { page: "qa:video_on_trademe", label: "Video on TradeMe" },
   { page: "qa:missing_inclusion_list", label: "Missing Inclusion List" }
 ];
+const QA_VIDEO_TRADEME_ALERT_TYPE = "QA_VIDEO_ON_TRADEME";
+const QA_MISSING_INCLUSION_ALERT_TYPE = "QA_MISSING_INCLUSION_LIST";
 const ALERT_PAGE_SIZE = 100;
 const EMPTY_ALERT_COUNTS: Record<AlertSection, number> = {
   NOT_LIVE: 0,
@@ -507,6 +509,10 @@ function alertStateCounts(rows: AnyRow[]) {
   };
 }
 
+function qaOpenRowCount(rows: AnyRow[]) {
+  return rows.filter((row) => String(row.QA_SNOOZE_STATE || "OPEN") === "OPEN").length;
+}
+
 function App() {
   const [page, setPage] = React.useState<Page>("alerts:not_live");
   const [token, setToken] = React.useState(localStorage.getItem(TOKEN_KEY) || "");
@@ -543,9 +549,9 @@ function App() {
     [pacingCounts]
   );
   const qaCounts = React.useMemo<Partial<Record<Page, number>>>(() => ({
-    "qa:video_on_trademe": qaVideoTrademeData.hasLoaded ? qaVideoTrademeData.rows.length : undefined,
-    "qa:missing_inclusion_list": qaMissingInclusionData.hasLoaded ? qaMissingInclusionData.rows.length : undefined
-  }), [qaVideoTrademeData.hasLoaded, qaVideoTrademeData.rows.length, qaMissingInclusionData.hasLoaded, qaMissingInclusionData.rows.length]);
+    "qa:video_on_trademe": qaVideoTrademeData.hasLoaded ? qaOpenRowCount(qaVideoTrademeData.rows) : undefined,
+    "qa:missing_inclusion_list": qaMissingInclusionData.hasLoaded ? qaOpenRowCount(qaMissingInclusionData.rows) : undefined
+  }), [qaVideoTrademeData.hasLoaded, qaVideoTrademeData.rows, qaMissingInclusionData.hasLoaded, qaMissingInclusionData.rows]);
   const qaCountReady = QA_SECTIONS.some((section) => qaCounts[section.page] !== undefined);
   const totalQaRows = QA_SECTIONS.reduce((total, section) => total + (qaCounts[section.page] || 0), 0);
   const isAdmin = user?.username.toLowerCase() === ADMIN_USERNAME;
@@ -1462,31 +1468,120 @@ function QaVideoOnTrademePage(props: {
   hasLoaded: boolean;
   error: string;
   refresh: () => Promise<void>;
+  updateRows: (updater: RowUpdater) => void;
 }) {
-  const { rows, meta, loading, hasLoaded, error, refresh } = props;
+  const { rows, meta, loading, hasLoaded, error, refresh, updateRows } = props;
   const [query, setQuery] = React.useState("");
+  const [status, setStatus] = React.useState("OPEN");
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
+  const [actionError, setActionError] = React.useState("");
+  const [actionLoading, setActionLoading] = React.useState(false);
   const [sort, setSort] = React.useState<SortState>({ key: "IMPRESSIONS", direction: "desc" });
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter((row) => [
+    return rows.filter((row) => {
+      const state = String(row.QA_SNOOZE_STATE || "OPEN");
+      const stateMatch = status === "ALL" || state === status;
+      if (!stateMatch) return false;
+      if (!q) return true;
+      return [
       row.CAMPAIGN,
       row.CAMPAIGN_ID,
       row.INSERTION_ORDER,
       row.INSERTION_ORDER_ID,
       row.LINE_ITEM,
       row.LINE_ITEM_ID
-    ].some((value) => String(value || "").toLowerCase().includes(q)));
-  }, [query, rows]);
+      ].some((value) => String(value || "").toLowerCase().includes(q));
+    });
+  }, [query, rows, status]);
   const sortedRows = React.useMemo(() => sortRows(filtered, sort), [filtered, sort]);
   const totalImpressions = sortedRows.reduce((sum, row) => sum + Number(row.IMPRESSIONS || 0), 0);
+  const selectedRows = sortedRows.filter((row) => selected.has(String(row.ROW_ID)));
+  const selectedAlerts = selectedRows.map((row) => ({
+    alert_type: String(row.ALERT_TYPE || QA_VIDEO_TRADEME_ALERT_TYPE),
+    alert_key: String(row.ALERT_KEY || row.ROW_ID),
+    our_ref: "",
+    state_version: String(row.STATE_VERSION || "")
+  }));
+  const selectedSnoozedAlerts = selectedRows
+    .filter((row) => row.QA_SNOOZE_STATE === "SNOOZED")
+    .map((row) => ({
+      alert_type: String(row.ALERT_TYPE || QA_VIDEO_TRADEME_ALERT_TYPE),
+      alert_key: String(row.ALERT_KEY || row.ROW_ID),
+      our_ref: "",
+      state_version: String(row.STATE_VERSION || "")
+    }));
   const columns: Array<[string, string]> = [
     ["CAMPAIGN", "Campaign"],
     ["INSERTION_ORDER", "Insertion Order"],
     ["LINE_ITEM", "Line Item"],
     ["IMPRESSIONS", "Last 7-day impressions"]
   ];
+  const snoozeColumns: Array<[string, string]> = [
+    ["SNOOZE_REASON", "Snooze reason"],
+    ["SNOOZE_END_DATE", "Snooze expiry"],
+    ["SNOOZED_BY", "Snoozed by"],
+    ["UPDATED_AT", "Snoozed at"]
+  ];
+  const visibleColumns = [...columns, ...(status === "SNOOZED" ? snoozeColumns : [])];
+
+  React.useEffect(() => {
+    setSelected(new Set());
+    setActionError("");
+    setActionLoading(false);
+  }, [status]);
+
+  function applyOptimisticSnooze(alerts: Array<Record<string, string>>, reason: string, endDate: string | null) {
+    const selectedKeys = new Set(alerts.map((alert) => String(alert.alert_key)));
+    updateRows((currentRows) => currentRows.map((row) => {
+      if (!selectedKeys.has(String(row.ALERT_KEY || row.ROW_ID))) return row;
+      return {
+        ...row,
+        QA_SNOOZE_STATE: "SNOOZED",
+        SNOOZE_STATUS: "ACTIVE",
+        SNOOZE_REASON: reason,
+        SNOOZE_START_DATE: todayInTimeZone("Pacific/Auckland"),
+        SNOOZE_END_DATE: endDate || "",
+        SNOOZED_BY: "Saving...",
+        UPDATED_AT: "Saving..."
+      };
+    }));
+    setSelected(new Set());
+  }
+
+  function applyOptimisticUnsnooze(alerts: Array<Record<string, string>>) {
+    const selectedKeys = new Set(alerts.map((alert) => String(alert.alert_key)));
+    updateRows((currentRows) => currentRows.map((row) => {
+      if (!selectedKeys.has(String(row.ALERT_KEY || row.ROW_ID))) return row;
+      return {
+        ...row,
+        QA_SNOOZE_STATE: "OPEN",
+        SNOOZE_STATUS: "UNSNOOZED",
+        SNOOZE_REASON: "Manual unsnooze",
+        SNOOZED_BY: "",
+        UPDATED_AT: "Saving..."
+      };
+    }));
+    setSelected(new Set());
+  }
+
+  async function postAction(path: string, body: Record<string, unknown>) {
+    if (actionLoading) return;
+    setActionLoading(true);
+    setActionError("");
+    try {
+      await apiFetch(path, { method: "POST", body: JSON.stringify(body) });
+      invalidateApiCache("/api/qa/video-on-trademe");
+      setSelected(new Set());
+      await refresh();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Action failed";
+      setActionError(message);
+      if (err instanceof ApiError && err.status === 409) await refresh();
+    } finally {
+      setActionLoading(false);
+    }
+  }
 
   return (
     <section className="qa-page">
@@ -1502,7 +1597,7 @@ function QaVideoOnTrademePage(props: {
         onDownload={() => downloadCsv("qa-video-on-trademe.csv", sortedRows)}
       />
       <MetricStrip metrics={[
-        { label: "Campaigns", value: num(sortedRows.length), tone: sortedRows.length ? "warn" : "" },
+        { label: "Campaigns", value: num(sortedRows.length), tone: sortedRows.length && status !== "SNOOZED" ? "warn" : "" },
         { label: "Impressions", value: num(totalImpressions), tone: totalImpressions ? "warn" : "" },
         { label: "Date range", value: String(meta.date_range || "N/A") },
         { label: "Received", value: String(meta.received_at || "N/A") }
@@ -1518,10 +1613,15 @@ function QaVideoOnTrademePage(props: {
             onChange={(event) => setQuery(event.target.value)}
           />
         </div>
+        <div className="segmented">
+          {["OPEN", "SNOOZED", "ALL"].map((option) => (
+            <button key={option} className={status === option ? "active" : ""} onClick={() => setStatus(option)}>{option}</button>
+          ))}
+        </div>
         <button className="toolbar-export" onClick={() => downloadCsv("qa-video-on-trademe.csv", sortedRows)} disabled={!sortedRows.length}>
           <Download size={15} /> CSV
         </button>
-        <div className="selected-chip"><SlidersHorizontal size={15} /> {selected.size} selected</div>
+        <div className="selected-chip"><SlidersHorizontal size={15} /> {selectedAlerts.length} selected</div>
       </section>
       <DataState loading={loading && !hasLoaded} error={error} empty={!sortedRows.length}>
         <DataTable
@@ -1531,7 +1631,7 @@ function QaVideoOnTrademePage(props: {
           idKey="ROW_ID"
           sort={sort}
           onSort={(key) => setSort((current) => nextSort(current, key))}
-          columns={columns}
+          columns={visibleColumns}
           renderCell={(key, value, row) => {
             if (key === "CAMPAIGN") {
               return <LinkedCell href={row.CAMPAIGN_URL}>{String(value ?? "")}</LinkedCell>;
@@ -1544,10 +1644,33 @@ function QaVideoOnTrademePage(props: {
             }
             return null;
           }}
-          format={(key, value) => key === "IMPRESSIONS" ? num(value) : String(value ?? "")}
+          rowClassName={(row) => row.QA_SNOOZE_STATE === "SNOOZED" ? "snoozed-row" : ""}
+          format={(key, value, row) => {
+            if (key === "IMPRESSIONS") return num(value);
+            if (key === "SNOOZE_END_DATE" && !value && row.QA_SNOOZE_STATE === "SNOOZED") return "Permanent";
+            return String(value ?? "");
+          }}
         />
       </DataState>
-      <ActionDock selectedCount={selected.size} onClear={() => setSelected(new Set())} />
+      <ActionDock selectedCount={selectedAlerts.length} onClear={() => setSelected(new Set())}>
+        <SnoozeButton
+          endpoint="/api/qa/video-on-trademe/snooze"
+          alerts={selectedAlerts}
+          onSubmitStart={(alerts, reason, endDate) => applyOptimisticSnooze(alerts, reason, endDate)}
+          onDone={() => { void refresh(); }}
+          onError={(message) => { setActionError(message); void refresh(); }}
+          onConflict={() => void refresh()}
+        />
+        {status !== "OPEN" && (
+          <button className="dock-button" disabled={!selectedSnoozedAlerts.length || actionLoading} onClick={() => {
+            applyOptimisticUnsnooze(selectedSnoozedAlerts);
+            void postAction("/api/qa/video-on-trademe/unsnooze", { alerts: selectedSnoozedAlerts });
+          }}>
+            {actionLoading ? <Loader2 className="spin" size={15} /> : <Check size={15} />} Unsnooze
+          </button>
+        )}
+        {actionError && <span className="dock-error">{actionError}</span>}
+      </ActionDock>
     </section>
   );
 }
@@ -1559,33 +1682,57 @@ function QaMissingInclusionListPage(props: {
   hasLoaded: boolean;
   error: string;
   refresh: () => Promise<void>;
+  updateRows: (updater: RowUpdater) => void;
 }) {
-  const { rows, meta, loading, hasLoaded, error, refresh } = props;
+  const { rows, meta, loading, hasLoaded, error, refresh, updateRows } = props;
   const [query, setQuery] = React.useState("");
+  const [status, setStatus] = React.useState("OPEN");
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
+  const [actionError, setActionError] = React.useState("");
+  const [actionLoading, setActionLoading] = React.useState(false);
   const [sort, setSort] = React.useState<SortState>({ key: "ADVERTISER", direction: "asc" });
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter((row) => [
-      row.ADVERTISER,
-      row.ADVERTISER_ID,
-      row.INSERTION_ORDER,
-      row.IO_ID,
-      row.LINE_ITEM,
-      row.LINE_ITEM_ID,
-      row.TYPE,
-      row.SUBTYPE,
-      row.YESTERDAY_SPEND,
-      row.ADVERTISER_CURRENCY,
-      row.REASON
-    ].some((value) => String(value || "").toLowerCase().includes(q)));
-  }, [query, rows]);
+    return rows.filter((row) => {
+      const state = String(row.QA_SNOOZE_STATE || "OPEN");
+      const stateMatch = status === "ALL" || state === status;
+      if (!stateMatch) return false;
+      if (!q) return true;
+      return [
+        row.ADVERTISER,
+        row.ADVERTISER_ID,
+        row.INSERTION_ORDER,
+        row.IO_ID,
+        row.LINE_ITEM,
+        row.LINE_ITEM_ID,
+        row.TYPE,
+        row.SUBTYPE,
+        row.YESTERDAY_SPEND,
+        row.ADVERTISER_CURRENCY,
+        row.REASON
+      ].some((value) => String(value || "").toLowerCase().includes(q));
+    });
+  }, [query, rows, status]);
   const sortedRows = React.useMemo(() => sortRows(filtered, sort), [filtered, sort]);
   const advertiserCount = new Set(sortedRows.map((row) => String(row.ADVERTISER_ID || ""))).size;
   const ioCount = new Set(sortedRows.map((row) => String(row.IO_ID || ""))).size;
   const totalSpend = sortedRows.reduce((sum, row) => sum + Number(row.YESTERDAY_SPEND || 0), 0);
   const visibleCurrencies = new Set(sortedRows.map((row) => String(row.ADVERTISER_CURRENCY || "")).filter(Boolean));
+  const selectedRows = sortedRows.filter((row) => selected.has(String(row.ROW_ID)));
+  const selectedAlerts = selectedRows.map((row) => ({
+    alert_type: String(row.ALERT_TYPE || QA_MISSING_INCLUSION_ALERT_TYPE),
+    alert_key: String(row.ALERT_KEY || row.ROW_ID),
+    our_ref: "",
+    state_version: String(row.STATE_VERSION || "")
+  }));
+  const selectedSnoozedAlerts = selectedRows
+    .filter((row) => row.QA_SNOOZE_STATE === "SNOOZED")
+    .map((row) => ({
+      alert_type: String(row.ALERT_TYPE || QA_MISSING_INCLUSION_ALERT_TYPE),
+      alert_key: String(row.ALERT_KEY || row.ROW_ID),
+      our_ref: "",
+      state_version: String(row.STATE_VERSION || "")
+    }));
   const columns: Array<[string, string]> = [
     ["ADVERTISER", "Advertiser"],
     ["INSERTION_ORDER", "Insertion Order"],
@@ -1597,6 +1744,71 @@ function QaMissingInclusionListPage(props: {
     ["EFFECTIVE_END", "End"],
     ["REASON", "Reason"]
   ];
+  const snoozeColumns: Array<[string, string]> = [
+    ["SNOOZE_REASON", "Snooze reason"],
+    ["SNOOZE_END_DATE", "Snooze expiry"],
+    ["SNOOZED_BY", "Snoozed by"],
+    ["UPDATED_AT", "Snoozed at"]
+  ];
+  const visibleColumns = [...columns, ...(status === "SNOOZED" ? snoozeColumns : [])];
+
+  React.useEffect(() => {
+    setSelected(new Set());
+    setActionError("");
+    setActionLoading(false);
+  }, [status]);
+
+  function applyOptimisticSnooze(alerts: Array<Record<string, string>>, reason: string, endDate: string | null) {
+    const selectedKeys = new Set(alerts.map((alert) => String(alert.alert_key)));
+    updateRows((currentRows) => currentRows.map((row) => {
+      if (!selectedKeys.has(String(row.ALERT_KEY || row.ROW_ID))) return row;
+      return {
+        ...row,
+        QA_SNOOZE_STATE: "SNOOZED",
+        SNOOZE_STATUS: "ACTIVE",
+        SNOOZE_REASON: reason,
+        SNOOZE_START_DATE: todayInTimeZone("Pacific/Auckland"),
+        SNOOZE_END_DATE: endDate || "",
+        SNOOZED_BY: "Saving...",
+        UPDATED_AT: "Saving..."
+      };
+    }));
+    setSelected(new Set());
+  }
+
+  function applyOptimisticUnsnooze(alerts: Array<Record<string, string>>) {
+    const selectedKeys = new Set(alerts.map((alert) => String(alert.alert_key)));
+    updateRows((currentRows) => currentRows.map((row) => {
+      if (!selectedKeys.has(String(row.ALERT_KEY || row.ROW_ID))) return row;
+      return {
+        ...row,
+        QA_SNOOZE_STATE: "OPEN",
+        SNOOZE_STATUS: "UNSNOOZED",
+        SNOOZE_REASON: "Manual unsnooze",
+        SNOOZED_BY: "",
+        UPDATED_AT: "Saving..."
+      };
+    }));
+    setSelected(new Set());
+  }
+
+  async function postAction(path: string, body: Record<string, unknown>) {
+    if (actionLoading) return;
+    setActionLoading(true);
+    setActionError("");
+    try {
+      await apiFetch(path, { method: "POST", body: JSON.stringify(body) });
+      invalidateApiCache("/api/qa/missing-inclusion-list");
+      setSelected(new Set());
+      await refresh();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Action failed";
+      setActionError(message);
+      if (err instanceof ApiError && err.status === 409) await refresh();
+    } finally {
+      setActionLoading(false);
+    }
+  }
 
   return (
     <section className="qa-page">
@@ -1612,9 +1824,9 @@ function QaMissingInclusionListPage(props: {
         onDownload={() => downloadCsv("qa-missing-inclusion-list.csv", sortedRows)}
       />
       <MetricStrip metrics={[
-        { label: "Line items", value: num(sortedRows.length), tone: sortedRows.length ? "warn" : "" },
-        { label: "Advertisers", value: num(advertiserCount), tone: sortedRows.length ? "warn" : "" },
-        { label: "Insertion orders", value: num(ioCount), tone: sortedRows.length ? "warn" : "" },
+        { label: "Line items", value: num(sortedRows.length), tone: sortedRows.length && status !== "SNOOZED" ? "warn" : "" },
+        { label: "Advertisers", value: num(advertiserCount), tone: sortedRows.length && status !== "SNOOZED" ? "warn" : "" },
+        { label: "Insertion orders", value: num(ioCount), tone: sortedRows.length && status !== "SNOOZED" ? "warn" : "" },
         { label: "Spend date", value: String(meta.spend_date || meta.run_date || "N/A") },
         {
           label: "Yesterday spend",
@@ -1633,10 +1845,15 @@ function QaMissingInclusionListPage(props: {
             onChange={(event) => setQuery(event.target.value)}
           />
         </div>
+        <div className="segmented">
+          {["OPEN", "SNOOZED", "ALL"].map((option) => (
+            <button key={option} className={status === option ? "active" : ""} onClick={() => setStatus(option)}>{option}</button>
+          ))}
+        </div>
         <button className="toolbar-export" onClick={() => downloadCsv("qa-missing-inclusion-list.csv", sortedRows)} disabled={!sortedRows.length}>
           <Download size={15} /> CSV
         </button>
-        <div className="selected-chip"><SlidersHorizontal size={15} /> {selected.size} selected</div>
+        <div className="selected-chip"><SlidersHorizontal size={15} /> {selectedAlerts.length} selected</div>
       </section>
       <DataState loading={loading && !hasLoaded} error={error} empty={!sortedRows.length}>
         <DataTable
@@ -1646,7 +1863,7 @@ function QaMissingInclusionListPage(props: {
           idKey="ROW_ID"
           sort={sort}
           onSort={(key) => setSort((current) => nextSort(current, key))}
-          columns={columns}
+          columns={visibleColumns}
           renderCell={(key, value, row) => {
             if (key === "ADVERTISER") {
               return <LinkedCell href={row.ADVERTISER_URL}>{String(value ?? "")}</LinkedCell>;
@@ -1659,10 +1876,33 @@ function QaMissingInclusionListPage(props: {
             }
             return null;
           }}
-          format={(key, value, row) => key === "YESTERDAY_SPEND" ? currencyCode(value, row.ADVERTISER_CURRENCY) : String(value ?? "")}
+          rowClassName={(row) => row.QA_SNOOZE_STATE === "SNOOZED" ? "snoozed-row" : ""}
+          format={(key, value, row) => {
+            if (key === "YESTERDAY_SPEND") return currencyCode(value, row.ADVERTISER_CURRENCY);
+            if (key === "SNOOZE_END_DATE" && !value && row.QA_SNOOZE_STATE === "SNOOZED") return "Permanent";
+            return String(value ?? "");
+          }}
         />
       </DataState>
-      <ActionDock selectedCount={selected.size} onClear={() => setSelected(new Set())} />
+      <ActionDock selectedCount={selectedAlerts.length} onClear={() => setSelected(new Set())}>
+        <SnoozeButton
+          endpoint="/api/qa/missing-inclusion-list/snooze"
+          alerts={selectedAlerts}
+          onSubmitStart={(alerts, reason, endDate) => applyOptimisticSnooze(alerts, reason, endDate)}
+          onDone={() => { void refresh(); }}
+          onError={(message) => { setActionError(message); void refresh(); }}
+          onConflict={() => void refresh()}
+        />
+        {status !== "OPEN" && (
+          <button className="dock-button" disabled={!selectedSnoozedAlerts.length || actionLoading} onClick={() => {
+            applyOptimisticUnsnooze(selectedSnoozedAlerts);
+            void postAction("/api/qa/missing-inclusion-list/unsnooze", { alerts: selectedSnoozedAlerts });
+          }}>
+            {actionLoading ? <Loader2 className="spin" size={15} /> : <Check size={15} />} Unsnooze
+          </button>
+        )}
+        {actionError && <span className="dock-error">{actionError}</span>}
+      </ActionDock>
     </section>
   );
 }
