@@ -451,6 +451,8 @@ def _qa_missing_inclusion_schema() -> list[bigquery.SchemaField]:
         bigquery.SchemaField("partner_id", "STRING"),
         bigquery.SchemaField("advertiser_id", "STRING"),
         bigquery.SchemaField("advertiser_name", "STRING"),
+        bigquery.SchemaField("campaign_id", "STRING"),
+        bigquery.SchemaField("campaign_name", "STRING"),
         bigquery.SchemaField("insertion_order_id", "STRING"),
         bigquery.SchemaField("insertion_order_name", "STRING"),
         bigquery.SchemaField("insertion_order_status", "STRING"),
@@ -695,6 +697,8 @@ def _candidate_missing_inclusion_rows_from_sdf_zip(
             "partner_id": partner_id,
             "advertiser_id": advertiser_id,
             "advertiser_name": advertiser.get("advertiser_name", ""),
+            "campaign_id": _clean_cell(io_row.get("Campaign Id", "")),
+            "campaign_name": "",
             "insertion_order_id": io_id,
             "insertion_order_name": _clean_cell(io_row.get("Name", "")) or _clean_cell(line_item.get("Io Name", "")),
             "insertion_order_status": _clean_cell(io_row.get("Status", "")),
@@ -807,6 +811,8 @@ def _line_item_spend_scope(
             "advertiser_id": advertiser_id,
             "advertiser_name": _clean_cell(report_row.get("Advertiser", "")),
             "advertiser_currency": _clean_cell(report_row.get("Advertiser Currency", "")),
+            "campaign_id": _clean_cell(report_row.get("Campaign ID", "")),
+            "campaign_name": _clean_cell(report_row.get("Campaign", "")),
             "insertion_order_id": insertion_order_id,
             "insertion_order_name": _clean_cell(report_row.get("Insertion Order", "")),
             "line_item_id": line_item_id,
@@ -853,6 +859,8 @@ def _candidate_missing_inclusion_rows_from_line_item_sdf_zip(
             "partner_id": partner_id,
             "advertiser_id": spend_row["advertiser_id"],
             "advertiser_name": spend_row["advertiser_name"],
+            "campaign_id": spend_row["campaign_id"],
+            "campaign_name": spend_row["campaign_name"],
             "insertion_order_id": spend_row["insertion_order_id"] or _clean_cell(line_item.get("Io Id", "")),
             "insertion_order_name": spend_row["insertion_order_name"] or _clean_cell(line_item.get("Io Name", "")),
             "insertion_order_status": "",
@@ -1157,7 +1165,8 @@ def load_missing_inclusion_table(report: dict[str, Any]) -> dict[str, str | int]
     client, project_id, dataset = bq_context()
     ensure_missing_inclusion_table(client, project_id, dataset)
     table_id = f"{project_id}.{dataset}.{QA_MISSING_INCLUSION_TABLE}"
-    fieldnames = [field.name for field in _qa_missing_inclusion_schema()]
+    table = client.get_table(table_id)
+    fieldnames = [field.name for field in table.schema]
     output = StringIO()
     writer = DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
@@ -1167,7 +1176,7 @@ def load_missing_inclusion_table(report: dict[str, Any]) -> dict[str, str | int]
     job_config = bigquery.LoadJobConfig(
         source_format=bigquery.SourceFormat.CSV,
         skip_leading_rows=1,
-        schema=_qa_missing_inclusion_schema(),
+        schema=table.schema,
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
     )
     csv_bytes = output.getvalue().encode("utf-8")
@@ -1197,6 +1206,8 @@ SELECT
   partner_id,
   advertiser_id,
   advertiser_name,
+  campaign_id,
+  campaign_name,
   insertion_order_id,
   insertion_order_name,
   insertion_order_status,
@@ -1228,8 +1239,11 @@ ORDER BY advertiser_name, insertion_order_name, line_item_name
     data = [
         {
             "ROW_ID": f"{r['advertiser_id']}:{r['line_item_id']}",
+            "PARTNER_ID": str(r["partner_id"] or ""),
             "ADVERTISER": str(r["advertiser_name"] or ""),
             "ADVERTISER_ID": str(r["advertiser_id"] or ""),
+            "CAMPAIGN": str(r["campaign_name"] or ""),
+            "CAMPAIGN_ID": str(r["campaign_id"] or ""),
             "INSERTION_ORDER": str(r["insertion_order_name"] or ""),
             "IO_ID": str(r["insertion_order_id"] or ""),
             "LINE_ITEM": str(r["line_item_name"] or ""),
@@ -1245,6 +1259,28 @@ ORDER BY advertiser_name, insertion_order_name, line_item_name
             "SPEND_DATE": r["spend_date"].isoformat() if r["spend_date"] else "",
             "REASON": str(r["missing_reason"] or ""),
             "ADVERTISER_CHANNEL_INCLUDES": int(r["advertiser_channel_include_count"] or 0),
+            "ADVERTISER_URL": _dv360_advertiser_url(
+                str(r["partner_id"] or ""),
+                str(r["advertiser_id"] or ""),
+            ),
+            "CAMPAIGN_URL": _dv360_campaign_url(
+                str(r["partner_id"] or ""),
+                str(r["advertiser_id"] or ""),
+                str(r["campaign_id"] or ""),
+            ),
+            "INSERTION_ORDER_URL": _dv360_insertion_order_url(
+                str(r["partner_id"] or ""),
+                str(r["advertiser_id"] or ""),
+                str(r["campaign_id"] or ""),
+                str(r["insertion_order_id"] or ""),
+            ),
+            "LINE_ITEM_URL": _dv360_line_item_url(
+                str(r["partner_id"] or ""),
+                str(r["advertiser_id"] or ""),
+                str(r["campaign_id"] or ""),
+                str(r["insertion_order_id"] or ""),
+                str(r["line_item_id"] or ""),
+            ),
         }
         for r in rows
     ]

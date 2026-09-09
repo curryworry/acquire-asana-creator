@@ -12,8 +12,6 @@ import {
   ClipboardCheck,
   Clock3,
   Download,
-  ExternalLink,
-  Film,
   Gauge,
   LayoutDashboard,
   Loader2,
@@ -208,19 +206,12 @@ function rowsForCsv(
   ));
 }
 
-function LinkedCell(props: { href?: unknown; icon: React.ReactNode; children: React.ReactNode }) {
+function LinkedCell(props: { href?: unknown; children: React.ReactNode }) {
   const href = String(props.href || "");
-  const content = (
-    <span className="linked-cell-content">
-      {props.icon}
-      <span>{props.children}</span>
-      {href && <ExternalLink size={13} />}
-    </span>
-  );
-  if (!href) return <span className="campaign-cell">{content}</span>;
+  if (!href) return <span>{props.children}</span>;
   return (
     <a className="table-link" href={href} target="_blank" rel="noreferrer">
-      {content}
+      {props.children}
     </a>
   );
 }
@@ -1543,13 +1534,13 @@ function QaVideoOnTrademePage(props: {
           columns={columns}
           renderCell={(key, value, row) => {
             if (key === "CAMPAIGN") {
-              return <LinkedCell href={row.CAMPAIGN_URL} icon={<Film size={15} />}>{String(value ?? "")}</LinkedCell>;
+              return <LinkedCell href={row.CAMPAIGN_URL}>{String(value ?? "")}</LinkedCell>;
             }
             if (key === "INSERTION_ORDER") {
-              return <LinkedCell href={row.INSERTION_ORDER_URL} icon={<ClipboardCheck size={15} />}>{String(value ?? "")}</LinkedCell>;
+              return <LinkedCell href={row.INSERTION_ORDER_URL}>{String(value ?? "")}</LinkedCell>;
             }
             if (key === "LINE_ITEM") {
-              return <LinkedCell href={row.LINE_ITEM_URL} icon={<Table2 size={15} />}>{String(value ?? "")}</LinkedCell>;
+              return <LinkedCell href={row.LINE_ITEM_URL}>{String(value ?? "")}</LinkedCell>;
             }
             return null;
           }}
@@ -1656,7 +1647,18 @@ function QaMissingInclusionListPage(props: {
           sort={sort}
           onSort={(key) => setSort((current) => nextSort(current, key))}
           columns={columns}
-          renderCell={(key, value) => key === "LINE_ITEM" ? <span className="campaign-cell"><AlertTriangle size={15} /> {String(value ?? "")}</span> : null}
+          renderCell={(key, value, row) => {
+            if (key === "ADVERTISER") {
+              return <LinkedCell href={row.ADVERTISER_URL}>{String(value ?? "")}</LinkedCell>;
+            }
+            if (key === "INSERTION_ORDER") {
+              return <LinkedCell href={row.INSERTION_ORDER_URL}>{String(value ?? "")}</LinkedCell>;
+            }
+            if (key === "LINE_ITEM") {
+              return <LinkedCell href={row.LINE_ITEM_URL}>{String(value ?? "")}</LinkedCell>;
+            }
+            return null;
+          }}
           format={(key, value, row) => key === "YESTERDAY_SPEND" ? currencyCode(value, row.ADVERTISER_CURRENCY) : String(value ?? "")}
         />
       </DataState>

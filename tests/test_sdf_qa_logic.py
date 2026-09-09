@@ -1,7 +1,9 @@
 from datetime import date
 
+from bid_manager_client import SPEND_GROUP_BYS
 from api.qa_service import (
     _current_io_budget_window,
+    _dv360_advertiser_url,
     _dv360_campaign_url,
     _dv360_insertion_order_url,
     _dv360_line_item_url,
@@ -90,6 +92,9 @@ def test_parse_video_trademe_attachment_reads_expanded_dv360_columns():
 
 
 def test_dv360_video_trademe_urls_match_expected_formats():
+    assert _dv360_advertiser_url("360441", "725811497") == (
+        "https://displayvideo.google.com/ng_nav/p/360441/a/725811497/cs"
+    )
     assert _dv360_campaign_url("360441", "725811497", "56929417") == (
         "https://displayvideo.google.com/ng_nav/p/360441/a/725811497/c/56929417/explorer"
     )
@@ -99,3 +104,8 @@ def test_dv360_video_trademe_urls_match_expected_formats():
     assert _dv360_line_item_url("360441", "725811497", "56929417", "1028293889", "23882683852") == (
         "https://displayvideo.google.com/ng_nav/p/360441/a/725811497/c/56929417/io/1028293889/li/23882683852/details"
     )
+
+
+def test_missing_inclusion_spend_report_includes_campaign_dimensions():
+    assert "FILTER_MEDIA_PLAN" in SPEND_GROUP_BYS
+    assert "FILTER_MEDIA_PLAN_NAME" in SPEND_GROUP_BYS

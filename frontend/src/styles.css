@@ -473,23 +473,6 @@ table {
   min-width: 720px;
 }
 
-.campaign-cell {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.linked-cell-content {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.campaign-cell svg {
-  flex: 0 0 auto;
-  color: var(--green);
-}
-
 .table-link {
   color: var(--ink);
   text-decoration: none;
@@ -499,12 +482,6 @@ table {
   color: var(--green);
   text-decoration: underline;
   text-underline-offset: 3px;
-}
-
-.table-link svg,
-.linked-cell-content svg {
-  flex: 0 0 auto;
-  color: var(--green);
 }
 
 th {
