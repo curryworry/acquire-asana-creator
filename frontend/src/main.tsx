@@ -35,7 +35,7 @@ import "./styles.css";
 
 type AlertSection = "NOT_LIVE" | "STOPPED_IMPRESSIONS" | "MISSING_OUR_REF" | "ENDED_BUT_IMPRESSIONS";
 type PacingSection = "UNDERPACING";
-type Page = "margin" | "pacing:underpacing" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "qa:video_on_trademe" | "qa:missing_inclusion_list" | "trafficking" | "automation" | "admin";
+type Page = "margin" | "pacing:underpacing" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "qa:pacing_overview" | "qa:video_on_trademe" | "qa:missing_inclusion_list" | "trafficking" | "automation" | "admin";
 type AnyRow = Record<string, string | number | null>;
 type ApiEnvelope<T> = { rows: T[]; meta: Record<string, string> };
 type OpsBootstrapEnvelope = { alerts: ApiEnvelope<AnyRow>; pacing: ApiEnvelope<AnyRow> };
@@ -89,6 +89,7 @@ const PACING_SECTIONS: Array<{ key: PacingSection; page: Page; label: string }> 
   { key: "UNDERPACING", page: "pacing:underpacing", label: "Underpacing" }
 ];
 const QA_SECTIONS: Array<{ page: Page; label: string }> = [
+  { page: "qa:pacing_overview", label: "Overview" },
   { page: "qa:video_on_trademe", label: "Video on TradeMe" },
   { page: "qa:missing_inclusion_list", label: "Missing Inclusion List" }
 ];
@@ -532,6 +533,7 @@ function App() {
   const opsData = useOpsBootstrap(Boolean(token));
   const alertsData = opsData.alerts;
   const pacingData = opsData.pacing;
+  const qaPacingOverviewData = useApiRows<AnyRow>("/api/qa/pacing-overview", Boolean(token));
   const qaVideoTrademeData = useApiRows<AnyRow>("/api/qa/video-on-trademe", Boolean(token));
   const qaMissingInclusionData = useApiRows<AnyRow>("/api/qa/missing-inclusion-list", Boolean(token));
   const opsCountsReady = alertsData.hasLoaded && pacingData.hasLoaded;
@@ -549,9 +551,10 @@ function App() {
     [pacingCounts]
   );
   const qaCounts = React.useMemo<Partial<Record<Page, number>>>(() => ({
+    "qa:pacing_overview": qaPacingOverviewData.hasLoaded ? qaPacingOverviewData.rows.length : undefined,
     "qa:video_on_trademe": qaVideoTrademeData.hasLoaded ? qaOpenRowCount(qaVideoTrademeData.rows) : undefined,
     "qa:missing_inclusion_list": qaMissingInclusionData.hasLoaded ? qaOpenRowCount(qaMissingInclusionData.rows) : undefined
-  }), [qaVideoTrademeData.hasLoaded, qaVideoTrademeData.rows, qaMissingInclusionData.hasLoaded, qaMissingInclusionData.rows]);
+  }), [qaPacingOverviewData.hasLoaded, qaPacingOverviewData.rows, qaVideoTrademeData.hasLoaded, qaVideoTrademeData.rows, qaMissingInclusionData.hasLoaded, qaMissingInclusionData.rows]);
   const qaCountReady = QA_SECTIONS.some((section) => qaCounts[section.page] !== undefined);
   const totalQaRows = QA_SECTIONS.reduce((total, section) => total + (qaCounts[section.page] || 0), 0);
   const isAdmin = user?.username.toLowerCase() === ADMIN_USERNAME;
@@ -661,7 +664,7 @@ function App() {
               className={`nav-button nav-section-trigger ${qaActive ? "active" : ""}`}
               onClick={() => {
                 setQaExpanded((current) => !current);
-                if (!qaActive) setPage("qa:video_on_trademe");
+                if (!qaActive) setPage("qa:pacing_overview");
               }}
             >
               <ClipboardCheck size={18} />
@@ -710,6 +713,7 @@ function App() {
         {page === "alerts:stopped_impressions" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
         {page === "alerts:missing_our_ref" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
         {page === "alerts:ended_but_impressions" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
+        {page === "qa:pacing_overview" && <PacingPage pacingType="UNDERPACING" title="Overview" subtitle="OUR_REF-level pacing for all active rows, rolled up across data sources with one row per reference." downloadFilename="pacing-overview.csv" cachePath="/api/qa/pacing-overview" filterBucket={false} {...qaPacingOverviewData} />}
         {page === "qa:video_on_trademe" && <QaVideoOnTrademePage {...qaVideoTrademeData} />}
         {page === "qa:missing_inclusion_list" && <QaMissingInclusionListPage {...qaMissingInclusionData} />}
         {page === "trafficking" && <PlaceholderPage title="Trafficking to Asana" body="The next migration slice will bring the Gmail fetch, parse preview, Asana dedupe check, and dry-run downloads into this interface." />}
@@ -952,6 +956,11 @@ function MarginPage() {
 
 function PacingPage(props: {
   pacingType: PacingSection;
+  title?: string;
+  subtitle?: string;
+  downloadFilename?: string;
+  cachePath?: string;
+  filterBucket?: boolean;
   rows: AnyRow[];
   meta: Record<string, string>;
   loading: boolean;
@@ -972,8 +981,9 @@ function PacingPage(props: {
     const text = `${row.OUR_REF} ${row.JOB_NUMBER} ${row.CAMPAIGN_NAME} ${row.ADVERTISER_NAME} ${row.ACCOUNT_MANAGER} ${row.SNOOZE_REASON}`.toLowerCase();
     const state = String(row.PACING_SNOOZE_STATE || "OPEN");
     const stateMatch = status === "ALL" || state === status;
-    return row.PACING_BUCKET === props.pacingType && stateMatch && text.includes(query.toLowerCase());
-  }), [props.pacingType, props.rows, query, status]);
+    const bucketMatch = props.filterBucket === false || row.PACING_BUCKET === props.pacingType;
+    return bucketMatch && stateMatch && text.includes(query.toLowerCase());
+  }), [props.filterBucket, props.pacingType, props.rows, query, status]);
   const sortedRows = React.useMemo(() => sortRows(filtered, sort), [filtered, sort]);
 
   const activeRows = filtered.filter((row) => Number(row.EXPECTED_DELIVERY_TO_DATE || 0) > 0);
@@ -1091,7 +1101,7 @@ function PacingPage(props: {
     setActionError("");
     try {
       await apiFetch(path, { method: "POST", body: JSON.stringify(body) });
-      invalidateApiCache("/api/pacing");
+      invalidateApiCache(props.cachePath || "/api/pacing");
       setSelected(new Set());
       await props.refresh();
     } catch (err) {
@@ -1107,8 +1117,8 @@ function PacingPage(props: {
     <>
       <PageHeader
         eyebrow={props.meta.source_table ? `${props.meta.project_id}.${props.meta.dataset}.${props.meta.source_table}` : "BigQuery pacing model"}
-        title="Underpacing"
-        subtitle="OUR_REF-level pacing, rolled up across data sources with one row per reference."
+        title={props.title || "Underpacing"}
+        subtitle={props.subtitle || "OUR_REF-level pacing, rolled up across data sources with one row per reference."}
         loading={props.loading}
         onRefresh={props.refresh}
       />
@@ -1126,7 +1136,7 @@ function PacingPage(props: {
         setStatus={setStatus}
         statuses={["OPEN", "SNOOZED", "ALL"]}
         selectedCount={selectedAlerts.length}
-        onDownload={() => downloadCsv("pacing-dashboard.csv", rowsForCsv(sortedRows, visibleColumns, formatPacingValue))}
+        onDownload={() => downloadCsv(props.downloadFilename || "pacing-dashboard.csv", rowsForCsv(sortedRows, visibleColumns, formatPacingValue))}
         downloadDisabled={!sortedRows.length}
       />
       <DataState loading={props.loading && !props.hasLoaded} error={props.error} empty={!filtered.length}>

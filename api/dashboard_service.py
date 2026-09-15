@@ -817,8 +817,11 @@ ORDER BY margin_amount ASC, our_ref
     }
 
 
-def pacing_dashboard() -> dict[str, Any]:
+def pacing_dashboard(include_all: bool = False) -> dict[str, Any]:
     client, project_id, dataset = bq_context()
+    delivery_pacing_filter = "" if include_all else """
+  AND SAFE_DIVIDE(actual_delivery, SAFE_MULTIPLY(goal_delivery, SAFE_DIVIDE(elapsed_days, total_days))) < 1
+"""
     rows = list(
         client.query(
             f"""
@@ -1024,7 +1027,7 @@ SELECT
 FROM base
 WHERE SAFE_MULTIPLY(goal_delivery, SAFE_DIVIDE(elapsed_days, total_days)) > 0
   AND SAFE_DIVIDE(elapsed_days, total_days) < 1
-  AND SAFE_DIVIDE(actual_delivery, SAFE_MULTIPLY(goal_delivery, SAFE_DIVIDE(elapsed_days, total_days))) <= 0.9
+{delivery_pacing_filter}
 ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
 """
         ).result()
@@ -1038,6 +1041,7 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
         time_progress_ratio = float(r["pacing_ratio"] or 0)
         delivery_pacing_ratio = float(r["delivery_pacing_ratio"]) if r["delivery_pacing_ratio"] is not None else None
         delivery_delta = float(r["delivery_delta"] or 0)
+        pacing_status = "UNDER" if delivery_pacing_ratio is not None and delivery_pacing_ratio < 1 else "ON_TRACK"
 
         data.append(
             {
@@ -1079,7 +1083,7 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
                 "CURRENT_DAILY_COST_PER_UNIT": float(r["current_daily_cost_per_unit"]) if r["current_daily_cost_per_unit"] is not None else None,
                 "DELIVERY_DELTA": delivery_delta,
                 "DELIVERY_PACING_RATIO": delivery_pacing_ratio,
-                "PACING_STATUS": "UNDER",
+                "PACING_STATUS": pacing_status,
                 "PACING_BUCKET": PACING_TYPE_UNDER,
                 "TOTAL_IMPRESSIONS": float(r["total_impressions"] or 0),
                 "TOTAL_LINK_CLICKS": float(r["total_link_clicks"] or 0),
@@ -1123,6 +1127,7 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
 
     open_count = sum(1 for row in data if row.get("PACING_SNOOZE_STATE") == "OPEN")
     snoozed_count = sum(1 for row in data if row.get("PACING_SNOOZE_STATE") == "SNOOZED")
+    underpacing_count = sum(1 for row in data if row.get("PACING_STATUS") == "UNDER")
 
     return {
         "rows": data,
@@ -1130,7 +1135,9 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
             "project_id": project_id,
             "dataset": dataset,
             "source_table": "master_overview",
-            "count_underpacing": str(len(data)),
+            "mode": "overview" if include_all else "underpacing",
+            "count_underpacing": str(underpacing_count),
+            "count_total": str(len(data)),
             "open_count": str(open_count),
             "snoozed_count": str(snoozed_count),
         },

@@ -149,6 +149,11 @@ def qa_missing_inclusion_list(_: dict[str, str] = Depends(current_user)) -> dict
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.get("/api/qa/pacing-overview")
+def qa_pacing_overview(_: dict[str, str] = Depends(current_user)) -> dict:
+    return pacing_dashboard(include_all=True)
+
+
 def enqueue_snooze_response(
     background_tasks: BackgroundTasks,
     action: str,
