@@ -551,10 +551,9 @@ function App() {
     [pacingCounts]
   );
   const qaCounts = React.useMemo<Partial<Record<Page, number>>>(() => ({
-    "qa:pacing_overview": qaPacingOverviewData.hasLoaded ? qaPacingOverviewData.rows.length : undefined,
     "qa:video_on_trademe": qaVideoTrademeData.hasLoaded ? qaOpenRowCount(qaVideoTrademeData.rows) : undefined,
     "qa:missing_inclusion_list": qaMissingInclusionData.hasLoaded ? qaOpenRowCount(qaMissingInclusionData.rows) : undefined
-  }), [qaPacingOverviewData.hasLoaded, qaPacingOverviewData.rows, qaVideoTrademeData.hasLoaded, qaVideoTrademeData.rows, qaMissingInclusionData.hasLoaded, qaMissingInclusionData.rows]);
+  }), [qaVideoTrademeData.hasLoaded, qaVideoTrademeData.rows, qaMissingInclusionData.hasLoaded, qaMissingInclusionData.rows]);
   const qaCountReady = QA_SECTIONS.some((section) => qaCounts[section.page] !== undefined);
   const totalQaRows = QA_SECTIONS.reduce((total, section) => total + (qaCounts[section.page] || 0), 0);
   const isAdmin = user?.username.toLowerCase() === ADMIN_USERNAME;
