@@ -1065,6 +1065,7 @@ function MarginPage(props: {
       ["OUR_REF", "Line item"],
       ["ADVERTISER_NAME", "Advertiser"],
       ["CAMPAIGN_NAME", "Campaign"],
+      ["PROPERTY_NAME", "Acquire Property"],
       ["BOOKING_STATUS", "Booking"],
       ["BUDGET", "Budget"],
       ["ACTUAL_NETT_SPEND", "Spend"],

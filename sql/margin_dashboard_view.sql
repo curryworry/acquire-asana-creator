@@ -106,17 +106,36 @@ SELECT
   total_days,
   elapsed_days,
   SAFE_DIVIDE(elapsed_days, total_days) AS pacing_ratio,
-  actual_nett_spend,
+  -- Margin-dashboard-only rule: Acquire Fee rows are revenue fees paid to Acquire,
+  -- not media delivery spend. Keep this logic out of pacing dashboards.
+  CASE
+    WHEN LOWER(TRIM(property_name)) = 'acquire fee' THEN 0
+    ELSE actual_nett_spend
+  END AS actual_nett_spend,
   total_impressions,
   total_clicks,
   first_delivery_date,
   last_delivery_date,
   SAFE_MULTIPLY(budget, SAFE_DIVIDE(elapsed_days, total_days)) AS expected_gross_spend_to_date,
-  SAFE_MULTIPLY(budget, SAFE_DIVIDE(elapsed_days, total_days)) - actual_nett_spend AS margin_amount,
+  SAFE_MULTIPLY(budget, SAFE_DIVIDE(elapsed_days, total_days)) -
+    CASE
+      WHEN LOWER(TRIM(property_name)) = 'acquire fee' THEN 0
+      ELSE actual_nett_spend
+    END AS margin_amount,
   CASE
+    WHEN LOWER(TRIM(property_name)) = 'acquire fee' THEN 1
     WHEN SAFE_MULTIPLY(budget, SAFE_DIVIDE(elapsed_days, total_days)) > 0
-    THEN 1 - SAFE_DIVIDE(actual_nett_spend, SAFE_MULTIPLY(budget, SAFE_DIVIDE(elapsed_days, total_days)))
+    THEN 1 - SAFE_DIVIDE(
+      CASE
+        WHEN LOWER(TRIM(property_name)) = 'acquire fee' THEN 0
+        ELSE actual_nett_spend
+      END,
+      SAFE_MULTIPLY(budget, SAFE_DIVIDE(elapsed_days, total_days))
+    )
     ELSE NULL
   END AS margin_pct,
-  SAFE_DIVIDE(actual_nett_spend, budget) AS spend_vs_budget_ratio
+  CASE
+    WHEN LOWER(TRIM(property_name)) = 'acquire fee' THEN 0
+    ELSE SAFE_DIVIDE(actual_nett_spend, budget)
+  END AS spend_vs_budget_ratio
 FROM base;
