@@ -1039,7 +1039,8 @@ function MarginPage(props: {
         ["ADVERTISER_NAME", "Advertiser"],
         ["CAMPAIGN_COUNT", "Campaigns"],
         ["LINE_ITEM_COUNT", "Line items"],
-        ["BUDGET", "Budget"],
+        ["BUDGET", "Gross Budget"],
+        ["EXPECTED_GROSS_SPEND_TO_DATE", "Expected gross spend to date"],
         ["ACTUAL_NETT_SPEND", "Spend"],
         ["MARGIN_AMOUNT", "Margin"],
         ["MARGIN_PCT", "Margin %"],
@@ -1053,7 +1054,8 @@ function MarginPage(props: {
         ["CAMPAIGN_NAME", "Campaign"],
         ["ADVERTISER_NAME", "Advertiser"],
         ["LINE_ITEM_COUNT", "Line items"],
-        ["BUDGET", "Budget"],
+        ["BUDGET", "Gross Budget"],
+        ["EXPECTED_GROSS_SPEND_TO_DATE", "Expected gross spend to date"],
         ["ACTUAL_NETT_SPEND", "Spend"],
         ["MARGIN_AMOUNT", "Margin"],
         ["MARGIN_PCT", "Margin %"],
@@ -1070,7 +1072,8 @@ function MarginPage(props: {
       ["PROPERTY_NAME", "Acquire Property"],
       ["ACCOUNT_MANAGER", "Account Manager"],
       ["BOOKING_STATUS", "Booking"],
-      ["BUDGET", "Budget"],
+      ["BUDGET", "Gross Budget"],
+      ["EXPECTED_GROSS_SPEND_TO_DATE", "Expected gross spend to date"],
       ["ACTUAL_NETT_SPEND", "Spend"],
       ["MARGIN_AMOUNT", "Margin"],
       ["MARGIN_PCT", "Margin %"],
@@ -1101,7 +1104,7 @@ function MarginPage(props: {
   }), [columnExclusions, viewRows, query]);
   const sortedRows = React.useMemo(() => sortRows(filtered, sort), [filtered, sort]);
   const formatMarginValue = (key: string, value: unknown) => {
-    if (["BUDGET", "ACTUAL_NETT_SPEND", "MARGIN_AMOUNT"].includes(key)) return currency(value);
+    if (["BUDGET", "EXPECTED_GROSS_SPEND_TO_DATE", "ACTUAL_NETT_SPEND", "MARGIN_AMOUNT"].includes(key)) return currency(value);
     if (["MARGIN_PCT", "PACING_RATIO"].includes(key)) return pct(value);
     if (["LINE_ITEM_COUNT", "CAMPAIGN_COUNT"].includes(key)) return num(value);
     return String(value ?? "");
