@@ -558,6 +558,14 @@ function App() {
   const alertsData = opsData.alerts;
   const marginData = opsData.margin;
   const pacingData = opsData.pacing;
+  const notLiveRefs = React.useMemo(() => new Set(alertsData.rows
+    .filter((row) => {
+      const state = String(row.LIVE_ALERT_STATE || "OPEN").toUpperCase();
+      return row.ALERT_TYPE === "NOT_LIVE" && state !== "DISMISSED";
+    })
+    .map((row) => String(row.OUR_REF || ""))
+    .filter(Boolean)
+  ), [alertsData.rows]);
   const qaPacingOverviewData = useApiRows<AnyRow>("/api/qa/pacing-overview", Boolean(token));
   const qaVideoTrademeData = useApiRows<AnyRow>("/api/qa/video-on-trademe", Boolean(token));
   const qaMissingInclusionData = useApiRows<AnyRow>("/api/qa/missing-inclusion-list", Boolean(token));
@@ -731,7 +739,7 @@ function App() {
         {showOpsBootstrapLoader && <OpsLoadingScreen complete={!opsBootstrapPending} />}
         {!showOpsBootstrapLoader && (
           <>
-        {page === "margin" && <MarginPage {...marginData} />}
+        {page === "margin" && <MarginPage {...marginData} notLiveRefs={notLiveRefs} />}
         {page === "pacing:underpacing" && activePacingType && <PacingPage pacingType={activePacingType} {...pacingData} />}
         {page === "alerts:not_live" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
         {page === "alerts:stopped_impressions" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
@@ -1019,6 +1027,7 @@ function MarginPage(props: {
   error: string;
   refresh: () => Promise<void>;
   updateRows: (updater: RowUpdater) => void;
+  notLiveRefs: Set<string>;
 }) {
   const [query, setQuery] = React.useState("");
   const [view, setView] = React.useState<MarginView>("Campaign");
@@ -1126,6 +1135,7 @@ function MarginPage(props: {
     return acc;
   }, { budget: 0, spend: 0, expected: 0, margin: 0 });
   const blendedMarginPct = totals.expected > 0 ? 1 - (totals.spend / totals.expected) : null;
+  const isNotLiveLineItem = (row: AnyRow) => view === "Line item" && props.notLiveRefs.has(String(row.OUR_REF || ""));
 
   React.useEffect(() => {
     setSelected(new Set());
@@ -1238,7 +1248,19 @@ function MarginPage(props: {
           columnFilterExclusions={columnExclusions}
           onColumnFilterToggle={toggleColumnFilterValue}
           onColumnFilterClear={clearColumnFilter}
-          rowClassName={(row) => row.MARGIN_SNOOZE_STATE === "ACTIVE" ? "snoozed-row" : ""}
+          rowClassName={(row) => [
+            row.MARGIN_SNOOZE_STATE === "ACTIVE" ? "snoozed-row" : "",
+            isNotLiveLineItem(row) ? "not-live-row" : ""
+          ].filter(Boolean).join(" ")}
+          renderCell={(key, value, row) => {
+            if (key !== "LOCATION_TEXT" || !isNotLiveLineItem(row)) return null;
+            return (
+              <span className="not-live-cell">
+                <span className="not-live-badge" title="Also flagged as Not live" aria-label="Also flagged as Not live">!</span>
+                <span>{String(value ?? "")}</span>
+              </span>
+            );
+          }}
           format={formatMarginValue}
         />
       </DataState>

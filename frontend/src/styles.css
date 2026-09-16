@@ -487,7 +487,8 @@ button:disabled {
 
 .table-wrap {
   position: relative;
-  overflow-x: auto;
+  max-height: calc(100vh - 330px);
+  overflow: auto;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -519,7 +520,7 @@ table {
 th {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 5;
   background: #24302d;
   color: #f8f1df;
   text-align: left;
@@ -808,6 +809,39 @@ tr.snoozed-row .progress-track {
 tr.snoozed-row .progress-fill {
   background: #89928c;
   opacity: 0.48;
+}
+
+tr.not-live-row td {
+  background: #fff6ea;
+}
+
+tr.not-live-row:hover td,
+tr.not-live-row.selected td {
+  background: #ffe9d2;
+}
+
+tr.not-live-row.snoozed-row td {
+  background: #f5eee1;
+}
+
+.not-live-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.not-live-badge {
+  width: 19px;
+  height: 19px;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  background: var(--coral);
+  color: #fffdf7;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
 }
 
 .ref-cell {
@@ -1121,6 +1155,10 @@ tr.snoozed-row .progress-fill {
   .table-pagination {
     display: grid;
     justify-items: start;
+  }
+
+  .table-wrap {
+    max-height: none;
   }
 
   .admin-grid {
