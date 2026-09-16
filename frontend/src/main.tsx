@@ -12,6 +12,7 @@ import {
   ClipboardCheck,
   Clock3,
   Download,
+  Filter,
   Gauge,
   LayoutDashboard,
   Loader2,
@@ -885,6 +886,10 @@ function marginNumber(row: AnyRow, key: string) {
   return Number(row[key] || 0);
 }
 
+function marginFilterValue(row: AnyRow, key: string) {
+  return String(row[key] ?? "").trim();
+}
+
 function marginDateValue(row: AnyRow, key: string) {
   const value = marginText(row, key);
   return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : "";
@@ -1020,19 +1025,13 @@ function MarginPage(props: {
   const [liveOnly, setLiveOnly] = React.useState(true);
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [sort, setSort] = React.useState<SortState>(null);
+  const [columnExclusions, setColumnExclusions] = React.useState<Record<string, Set<string>>>({});
 
   const todayNz = React.useMemo(() => todayInTimeZone("Pacific/Auckland"), []);
   const sourceRows = React.useMemo(
     () => liveOnly ? props.rows.filter((row) => isLiveMarginRow(row, todayNz)) : props.rows,
     [props.rows, liveOnly, todayNz]
   );
-  const viewRows = React.useMemo(() => groupedMarginRows(sourceRows, view), [sourceRows, view]);
-  const filtered = React.useMemo(() => viewRows.filter((row) => {
-    const text = `${row.__MARGIN_SEARCH || ""} ${row.OUR_REF} ${row.JOB_NUMBER} ${row.CAMPAIGN_NAME} ${row.ADVERTISER_NAME}`.toLowerCase();
-    return text.includes(query.toLowerCase());
-  }), [viewRows, query]);
-  const sortedRows = React.useMemo(() => sortRows(filtered, sort), [filtered, sort]);
-
   const marginColumns: Array<[string, string]> = React.useMemo(() => {
     if (view === "Advertiser") {
       return [
@@ -1063,9 +1062,11 @@ function MarginPage(props: {
     }
     return [
       ["OUR_REF", "Line item"],
+      ["JOB_NUMBER", "Job number"],
       ["ADVERTISER_NAME", "Advertiser"],
       ["CAMPAIGN_NAME", "Campaign"],
       ["PROPERTY_NAME", "Acquire Property"],
+      ["ACCOUNT_MANAGER", "Account Manager"],
       ["BOOKING_STATUS", "Booking"],
       ["BUDGET", "Budget"],
       ["ACTUAL_NETT_SPEND", "Spend"],
@@ -1075,6 +1076,24 @@ function MarginPage(props: {
       ["MARGIN_SNOOZE_STATE", "State"]
     ];
   }, [view]);
+  const marginFilterableColumns = React.useMemo(() => {
+    if (view === "Advertiser") return ["ADVERTISER_NAME", "MARGIN_SNOOZE_STATE"];
+    if (view === "Campaign") return ["JOB_NUMBER", "CAMPAIGN_NAME", "ADVERTISER_NAME", "MARGIN_SNOOZE_STATE"];
+    return ["OUR_REF", "JOB_NUMBER", "ADVERTISER_NAME", "CAMPAIGN_NAME", "PROPERTY_NAME", "ACCOUNT_MANAGER", "BOOKING_STATUS", "MARGIN_SNOOZE_STATE"];
+  }, [view]);
+  const viewRows = React.useMemo(() => groupedMarginRows(sourceRows, view), [sourceRows, view]);
+  const columnFilterOptions = React.useMemo(() => Object.fromEntries(
+    marginFilterableColumns.map((key) => [
+      key,
+      Array.from(new Set(viewRows.map((row) => marginFilterValue(row, key)))).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }))
+    ])
+  ), [marginFilterableColumns, viewRows]);
+  const filtered = React.useMemo(() => viewRows.filter((row) => {
+    const text = `${row.__MARGIN_SEARCH || ""} ${row.OUR_REF} ${row.JOB_NUMBER} ${row.CAMPAIGN_NAME} ${row.ADVERTISER_NAME}`.toLowerCase();
+    const dimensionMatch = Object.entries(columnExclusions).every(([key, excluded]) => !excluded.has(marginFilterValue(row, key)));
+    return dimensionMatch && text.includes(query.toLowerCase());
+  }), [columnExclusions, viewRows, query]);
+  const sortedRows = React.useMemo(() => sortRows(filtered, sort), [filtered, sort]);
   const formatMarginValue = (key: string, value: unknown) => {
     if (["BUDGET", "ACTUAL_NETT_SPEND", "MARGIN_AMOUNT"].includes(key)) return currency(value);
     if (["MARGIN_PCT", "PACING_RATIO"].includes(key)) return pct(value);
@@ -1102,7 +1121,30 @@ function MarginPage(props: {
   React.useEffect(() => {
     setSelected(new Set());
     setSort(null);
+    setColumnExclusions({});
   }, [view, liveOnly]);
+
+  function toggleColumnFilterValue(key: string, value: string) {
+    setColumnExclusions((current) => {
+      const next = { ...current };
+      const values = new Set(next[key] || []);
+      if (values.has(value)) values.delete(value);
+      else values.add(value);
+      if (values.size) next[key] = values;
+      else delete next[key];
+      return next;
+    });
+    setSelected(new Set());
+  }
+
+  function clearColumnFilter(key: string) {
+    setColumnExclusions((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+    setSelected(new Set());
+  }
 
   function applyOptimisticMarginSnooze(alerts: Array<Record<string, string>>, reason: string, endDate: string | null) {
     const selectedRefs = new Set(alerts.map((alert) => String(alert.our_ref || alert.alert_key)));
@@ -1157,6 +1199,10 @@ function MarginPage(props: {
           sort={sort}
           onSort={(key) => setSort((current) => nextSort(current, key))}
           columns={marginColumns}
+          columnFilterOptions={columnFilterOptions}
+          columnFilterExclusions={columnExclusions}
+          onColumnFilterToggle={toggleColumnFilterValue}
+          onColumnFilterClear={clearColumnFilter}
           rowClassName={(row) => row.MARGIN_SNOOZE_STATE === "ACTIVE" ? "snoozed-row" : ""}
           format={formatMarginValue}
         />
@@ -2215,7 +2261,13 @@ function DataTable(props: {
   headerHelp?: Record<string, string>;
   trailingControl?: { expanded: boolean; label: string; onToggle: () => void };
   rowClassName?: (row: AnyRow) => string;
+  columnFilterOptions?: Record<string, string[]>;
+  columnFilterExclusions?: Record<string, Set<string>>;
+  onColumnFilterToggle?: (key: string, value: string) => void;
+  onColumnFilterClear?: (key: string) => void;
 }) {
+  const [openFilterKey, setOpenFilterKey] = React.useState<string | null>(null);
+
   return (
     <div className="table-wrap">
       {props.trailingControl && (
@@ -2235,26 +2287,68 @@ function DataTable(props: {
             <th className="select-col"><ArrowDownUp size={14} /></th>
             {props.columns.map(([key, label]) => {
               const active = props.sort?.key === key;
+              const filterOptions = props.columnFilterOptions?.[key] || [];
+              const excludedValues = props.columnFilterExclusions?.[key] || new Set<string>();
+              const filterActive = excludedValues.size > 0;
               return (
                 <th key={key}>
-                  <button
-                    className={`sort-header ${active ? "active" : ""}`}
-                    type="button"
-                    onClick={() => props.onSort(key)}
-                    aria-sort={active ? (props.sort?.direction === "asc" ? "ascending" : "descending") : "none"}
-                  >
-                    <span className="header-label">
-                      {label}
-                      {props.headerHelp?.[key] && (
-                        <span className="header-help" title={props.headerHelp[key]} aria-label={props.headerHelp[key]}>?</span>
+                  <div className="header-control">
+                    <button
+                      className={`sort-header ${active ? "active" : ""}`}
+                      type="button"
+                      onClick={() => props.onSort(key)}
+                      aria-sort={active ? (props.sort?.direction === "asc" ? "ascending" : "descending") : "none"}
+                    >
+                      <span className="header-label">
+                        {label}
+                        {props.headerHelp?.[key] && (
+                          <span className="header-help" title={props.headerHelp[key]} aria-label={props.headerHelp[key]}>?</span>
+                        )}
+                      </span>
+                      {active ? (
+                        props.sort?.direction === "asc" ? <ArrowUp size={13} /> : <ArrowDown size={13} />
+                      ) : (
+                        <ArrowDownUp size={13} />
                       )}
-                    </span>
-                    {active ? (
-                      props.sort?.direction === "asc" ? <ArrowUp size={13} /> : <ArrowDown size={13} />
-                    ) : (
-                      <ArrowDownUp size={13} />
+                    </button>
+                    {filterOptions.length > 0 && props.onColumnFilterToggle && (
+                      <div className="column-filter">
+                        <button
+                          className={`column-filter-button ${filterActive ? "active" : ""}`}
+                          type="button"
+                          title={`Filter ${label}`}
+                          aria-label={`Filter ${label}`}
+                          onClick={() => setOpenFilterKey((current) => current === key ? null : key)}
+                        >
+                          <Filter size={13} />
+                        </button>
+                        {openFilterKey === key && (
+                          <div className="column-filter-menu">
+                            <div className="column-filter-head">
+                              <strong>{label}</strong>
+                              <button type="button" onClick={() => setOpenFilterKey(null)} aria-label="Close filter"><X size={13} /></button>
+                            </div>
+                            <div className="column-filter-actions">
+                              <span>{num(excludedValues.size)} hidden</span>
+                              <button type="button" onClick={() => props.onColumnFilterClear?.(key)}>Show all</button>
+                            </div>
+                            <div className="column-filter-options">
+                              {filterOptions.map((option) => (
+                                <label key={option || "__blank__"} className="column-filter-option">
+                                  <input
+                                    type="checkbox"
+                                    checked={!excludedValues.has(option)}
+                                    onChange={() => props.onColumnFilterToggle?.(key, option)}
+                                  />
+                                  <span>{option || "(blank)"}</span>
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     )}
-                  </button>
+                  </div>
                 </th>
               );
             })}

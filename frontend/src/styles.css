@@ -511,8 +511,16 @@ th {
   text-transform: uppercase;
 }
 
+.header-control {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .sort-header {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   border: 0;
   background: transparent;
   color: inherit;
@@ -526,6 +534,101 @@ th {
   letter-spacing: inherit;
   font-size: inherit;
   font-weight: 800;
+}
+
+.column-filter {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.column-filter-button {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(248, 241, 223, 0.1);
+  color: #f8f1df;
+}
+
+.column-filter-button:hover,
+.column-filter-button.active {
+  background: rgba(248, 241, 223, 0.24);
+}
+
+.column-filter-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  width: 280px;
+  max-width: min(280px, calc(100vw - 40px));
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  text-transform: none;
+  letter-spacing: 0;
+  box-shadow: var(--shadow);
+}
+
+.column-filter-head,
+.column-filter-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.column-filter-head strong {
+  font-size: 13px;
+}
+
+.column-filter-head button,
+.column-filter-actions button {
+  border: 0;
+  background: transparent;
+  color: var(--green-strong);
+  font-weight: 800;
+}
+
+.column-filter-actions {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.column-filter-options {
+  max-height: 260px;
+  overflow: auto;
+  display: grid;
+  gap: 2px;
+  margin-top: 8px;
+}
+
+.column-filter-option {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.column-filter-option:hover {
+  background: #edf5ee;
+}
+
+.column-filter-option span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sort-header svg {
