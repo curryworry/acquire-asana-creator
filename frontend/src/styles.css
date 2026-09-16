@@ -467,6 +467,24 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.column-chooser {
+  position: relative;
+}
+
+.column-chooser-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 25;
+  width: 260px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+
 .table-wrap {
   position: relative;
   overflow-x: auto;

@@ -1026,6 +1026,7 @@ function MarginPage(props: {
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [sort, setSort] = React.useState<SortState>(null);
   const [columnExclusions, setColumnExclusions] = React.useState<Record<string, Set<string>>>({});
+  const [hiddenColumns, setHiddenColumns] = React.useState<Set<string>>(new Set());
 
   const todayNz = React.useMemo(() => todayInTimeZone("Pacific/Auckland"), []);
   const sourceRows = React.useMemo(
@@ -1063,6 +1064,7 @@ function MarginPage(props: {
     return [
       ["OUR_REF", "Line item"],
       ["JOB_NUMBER", "Job number"],
+      ["LOCATION_TEXT", "Line item name"],
       ["ADVERTISER_NAME", "Advertiser"],
       ["CAMPAIGN_NAME", "Campaign"],
       ["PROPERTY_NAME", "Acquire Property"],
@@ -1079,8 +1081,12 @@ function MarginPage(props: {
   const marginFilterableColumns = React.useMemo(() => {
     if (view === "Advertiser") return ["ADVERTISER_NAME", "MARGIN_SNOOZE_STATE"];
     if (view === "Campaign") return ["JOB_NUMBER", "CAMPAIGN_NAME", "ADVERTISER_NAME", "MARGIN_SNOOZE_STATE"];
-    return ["OUR_REF", "JOB_NUMBER", "ADVERTISER_NAME", "CAMPAIGN_NAME", "PROPERTY_NAME", "ACCOUNT_MANAGER", "BOOKING_STATUS", "MARGIN_SNOOZE_STATE"];
+    return ["OUR_REF", "JOB_NUMBER", "LOCATION_TEXT", "ADVERTISER_NAME", "CAMPAIGN_NAME", "PROPERTY_NAME", "ACCOUNT_MANAGER", "BOOKING_STATUS", "MARGIN_SNOOZE_STATE"];
   }, [view]);
+  const visibleMarginColumns = React.useMemo(
+    () => marginColumns.filter(([key]) => !hiddenColumns.has(key)),
+    [hiddenColumns, marginColumns]
+  );
   const viewRows = React.useMemo(() => groupedMarginRows(sourceRows, view), [sourceRows, view]);
   const columnFilterOptions = React.useMemo(() => Object.fromEntries(
     marginFilterableColumns.map((key) => [
@@ -1122,6 +1128,7 @@ function MarginPage(props: {
     setSelected(new Set());
     setSort(null);
     setColumnExclusions({});
+    setHiddenColumns(new Set());
   }, [view, liveOnly]);
 
   function toggleColumnFilterValue(key: string, value: string) {
@@ -1144,6 +1151,24 @@ function MarginPage(props: {
       return next;
     });
     setSelected(new Set());
+  }
+
+  function toggleMarginColumn(key: string) {
+    const willHide = !hiddenColumns.has(key);
+    setHiddenColumns((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+    if (willHide) {
+      setColumnExclusions((currentFilters) => {
+        const nextFilters = { ...currentFilters };
+        delete nextFilters[key];
+        return nextFilters;
+      });
+      setSort((currentSort) => currentSort?.key === key ? null : currentSort);
+    }
   }
 
   function applyOptimisticMarginSnooze(alerts: Array<Record<string, string>>, reason: string, endDate: string | null) {
@@ -1172,7 +1197,7 @@ function MarginPage(props: {
         subtitle="Margin, pacing, budget, and snooze state by campaign, advertiser, or line item."
         loading={props.loading}
         onRefresh={props.refresh}
-        onDownload={() => downloadCsv(`margin-dashboard-${view.toLowerCase().replaceAll(" ", "-")}.csv`, rowsForCsv(sortedRows, marginColumns, formatMarginValue))}
+        onDownload={() => downloadCsv(`margin-dashboard-${view.toLowerCase().replaceAll(" ", "-")}.csv`, rowsForCsv(sortedRows, visibleMarginColumns, formatMarginValue))}
       />
       <MetricStrip metrics={[
         { label: `${view} rows`, value: num(filtered.length) },
@@ -1189,6 +1214,13 @@ function MarginPage(props: {
         selectedCount={selected.size}
         liveOnly={liveOnly}
         setLiveOnly={setLiveOnly}
+        extraControls={
+          <ColumnChooser
+            columns={marginColumns}
+            hiddenColumns={hiddenColumns}
+            onToggle={toggleMarginColumn}
+          />
+        }
       />
       <DataState loading={props.loading && !props.hasLoaded} error={props.error} empty={!filtered.length}>
         <DataTable
@@ -1198,7 +1230,7 @@ function MarginPage(props: {
           idKey="__MARGIN_GROUP_ID"
           sort={sort}
           onSort={(key) => setSort((current) => nextSort(current, key))}
-          columns={marginColumns}
+          columns={visibleMarginColumns}
           columnFilterOptions={columnFilterOptions}
           columnFilterExclusions={columnExclusions}
           onColumnFilterToggle={toggleColumnFilterValue}
@@ -2203,6 +2235,47 @@ function TablePagination(props: { page: number; totalPages: number; totalRows: n
   );
 }
 
+function ColumnChooser(props: {
+  columns: Array<[string, string]>;
+  hiddenColumns: Set<string>;
+  onToggle: (key: string) => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const visibleCount = props.columns.filter(([key]) => !props.hiddenColumns.has(key)).length;
+
+  return (
+    <div className="column-chooser">
+      <button className="toolbar-export" type="button" onClick={() => setOpen((current) => !current)}>
+        <SlidersHorizontal size={15} /> Columns
+      </button>
+      {open && (
+        <div className="column-chooser-menu">
+          <div className="column-filter-head">
+            <strong>Columns</strong>
+            <button type="button" onClick={() => setOpen(false)} aria-label="Close columns"><X size={13} /></button>
+          </div>
+          <div className="column-filter-options">
+            {props.columns.map(([key, label]) => {
+              const checked = !props.hiddenColumns.has(key);
+              return (
+                <label key={key} className="column-filter-option">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    disabled={checked && visibleCount <= 1}
+                    onChange={() => props.onToggle(key)}
+                  />
+                  <span>{label}</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Toolbar(props: {
   query: string;
   setQuery: (value: string) => void;
@@ -2214,6 +2287,7 @@ function Toolbar(props: {
   downloadDisabled?: boolean;
   liveOnly?: boolean;
   setLiveOnly?: (value: boolean) => void;
+  extraControls?: React.ReactNode;
 }) {
   return (
     <section className="toolbar">
@@ -2238,6 +2312,7 @@ function Toolbar(props: {
           Live only
         </label>
       )}
+      {props.extraControls}
       {props.onDownload && (
         <button className="toolbar-export" onClick={props.onDownload} disabled={props.downloadDisabled}>
           <Download size={15} /> CSV
