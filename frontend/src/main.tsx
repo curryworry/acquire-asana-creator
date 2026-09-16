@@ -44,6 +44,7 @@ type RowUpdater = (rows: AnyRow[]) => AnyRow[];
 type SortDirection = "asc" | "desc";
 type SortState = { key: string; direction: SortDirection } | null;
 type UserInfo = { username: string; displayName: string };
+type MarginView = "Campaign" | "Advertiser" | "Line item";
 type AutomationDefaults = {
   campaign_alert: {
     recipients: string;
@@ -95,6 +96,7 @@ const QA_SECTIONS: Array<{ page: Page; label: string }> = [
 ];
 const QA_VIDEO_TRADEME_ALERT_TYPE = "QA_VIDEO_ON_TRADEME";
 const QA_MISSING_INCLUSION_ALERT_TYPE = "QA_MISSING_INCLUSION_LIST";
+const MARGIN_VIEWS: MarginView[] = ["Campaign", "Advertiser", "Line item"];
 const ALERT_PAGE_SIZE = 100;
 const EMPTY_ALERT_COUNTS: Record<AlertSection, number> = {
   NOT_LIVE: 0,
@@ -853,29 +855,224 @@ function MetricStrip({ metrics }: { metrics: Array<{ label: string; value: strin
   );
 }
 
+function marginText(row: AnyRow, key: string) {
+  return String(row[key] ?? "").trim();
+}
+
+function marginNumber(row: AnyRow, key: string) {
+  return Number(row[key] || 0);
+}
+
+function marginDateValue(row: AnyRow, key: string) {
+  const value = marginText(row, key);
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : "";
+}
+
+function isLiveMarginRow(row: AnyRow, today: string) {
+  const startDate = marginDateValue(row, "START_DATE");
+  const endDate = marginDateValue(row, "END_DATE");
+  return Boolean(startDate && endDate && startDate <= today && today <= endDate);
+}
+
+function marginUnique(rows: AnyRow[], key: string) {
+  return Array.from(new Set(rows.map((row) => marginText(row, key)).filter(Boolean)));
+}
+
+function marginMixedValue(rows: AnyRow[], key: string) {
+  const values = marginUnique(rows, key);
+  if (!values.length) return "";
+  return values.length === 1 ? values[0] : "Mixed";
+}
+
+function marginMinDate(rows: AnyRow[], key: string) {
+  const values = marginUnique(rows, key).sort();
+  return values[0] || "";
+}
+
+function marginMaxDate(rows: AnyRow[], key: string) {
+  const values = marginUnique(rows, key).sort();
+  return values[values.length - 1] || "";
+}
+
+function marginGroupId(row: AnyRow, view: MarginView) {
+  if (view === "Line item") return `line:${marginText(row, "OUR_REF")}`;
+  if (view === "Advertiser") return `advertiser:${marginText(row, "ADVERTISER_NAME") || "Unknown advertiser"}`;
+  return [
+    "campaign",
+    marginText(row, "JOB_NUMBER"),
+    marginText(row, "CAMPAIGN_NAME"),
+    marginText(row, "ADVERTISER_NAME")
+  ].join(":");
+}
+
+function groupedMarginRows(rows: AnyRow[], view: MarginView): AnyRow[] {
+  if (view === "Line item") {
+    return rows.map((row) => ({
+      ...row,
+      __MARGIN_GROUP_ID: marginGroupId(row, view),
+      LINE_ITEM_COUNT: 1,
+      CAMPAIGN_COUNT: 1
+    }));
+  }
+
+  const groups = new Map<string, AnyRow[]>();
+  rows.forEach((row) => {
+    const id = marginGroupId(row, view);
+    groups.set(id, [...(groups.get(id) || []), row]);
+  });
+
+  return Array.from(groups.entries()).map(([id, groupRows]) => {
+    const budget = groupRows.reduce((sum, row) => sum + marginNumber(row, "BUDGET"), 0);
+    const actualNettSpend = groupRows.reduce((sum, row) => sum + marginNumber(row, "ACTUAL_NETT_SPEND"), 0);
+    const expectedGrossSpend = groupRows.reduce((sum, row) => sum + marginNumber(row, "EXPECTED_GROSS_SPEND_TO_DATE"), 0);
+    const bookedNettCost = groupRows.reduce((sum, row) => sum + marginNumber(row, "BOOKED_NETT_COST"), 0);
+    const totalImpressions = groupRows.reduce((sum, row) => sum + marginNumber(row, "TOTAL_IMPRESSIONS"), 0);
+    const totalClicks = groupRows.reduce((sum, row) => sum + marginNumber(row, "TOTAL_CLICKS"), 0);
+    const activeCount = groupRows.filter((row) => row.MARGIN_SNOOZE_STATE === "ACTIVE").length;
+    const lineItemCount = marginUnique(groupRows, "OUR_REF").length;
+    const campaignCount = marginUnique(groupRows, "CAMPAIGN_NAME").length;
+    const marginAmount = expectedGrossSpend - actualNettSpend;
+    const state = activeCount === 0 ? "OPEN" : activeCount === groupRows.length ? "ACTIVE" : "MIXED";
+
+    return {
+      __MARGIN_GROUP_ID: id,
+      OUR_REF: view === "Advertiser" ? "" : marginMixedValue(groupRows, "OUR_REF"),
+      JOB_NUMBER: marginMixedValue(groupRows, "JOB_NUMBER"),
+      CAMPAIGN_NAME: view === "Advertiser" ? `${num(campaignCount)} campaigns` : marginMixedValue(groupRows, "CAMPAIGN_NAME"),
+      ADVERTISER_NAME: marginMixedValue(groupRows, "ADVERTISER_NAME") || "Unknown advertiser",
+      PROPERTY_NAME: marginMixedValue(groupRows, "PROPERTY_NAME"),
+      LOCATION_TEXT: marginMixedValue(groupRows, "LOCATION_TEXT"),
+      ACCOUNT_MANAGER: marginMixedValue(groupRows, "ACCOUNT_MANAGER"),
+      TRAFFICKER_NAME: marginMixedValue(groupRows, "TRAFFICKER_NAME"),
+      CAMPAIGN_LEAD: marginMixedValue(groupRows, "CAMPAIGN_LEAD"),
+      BOOKING_STATUS: marginMixedValue(groupRows, "BOOKING_STATUS"),
+      BUDGET: budget,
+      BOOKED_NETT_COST: bookedNettCost,
+      START_DATE: marginMinDate(groupRows, "START_DATE"),
+      END_DATE: marginMaxDate(groupRows, "END_DATE"),
+      LATEST_DELIVERY_DATE: marginMaxDate(groupRows, "LATEST_DELIVERY_DATE"),
+      AS_OF_DATE: marginMaxDate(groupRows, "AS_OF_DATE"),
+      TOTAL_DAYS: "",
+      ELAPSED_DAYS: "",
+      PACING_RATIO: budget > 0 ? expectedGrossSpend / budget : avg(groupRows.map((row) => marginNumber(row, "PACING_RATIO"))),
+      ACTUAL_NETT_SPEND: actualNettSpend,
+      TOTAL_IMPRESSIONS: totalImpressions,
+      TOTAL_CLICKS: totalClicks,
+      FIRST_DELIVERY_DATE: marginMinDate(groupRows, "FIRST_DELIVERY_DATE"),
+      LAST_DELIVERY_DATE: marginMaxDate(groupRows, "LAST_DELIVERY_DATE"),
+      EXPECTED_GROSS_SPEND_TO_DATE: expectedGrossSpend,
+      MARGIN_AMOUNT: marginAmount,
+      MARGIN_PCT: expectedGrossSpend > 0 ? 1 - (actualNettSpend / expectedGrossSpend) : null,
+      SPEND_VS_BUDGET_RATIO: budget > 0 ? actualNettSpend / budget : null,
+      MARGIN_SNOOZE_STATE: state,
+      SNOOZE_STATUS: state,
+      SNOOZE_REASON: activeCount ? `${num(activeCount)} of ${num(groupRows.length)} line items snoozed` : "",
+      SNOOZE_START_DATE: "",
+      SNOOZE_END_DATE: "",
+      SNOOZED_BY: "",
+      UPDATED_AT: marginMaxDate(groupRows, "UPDATED_AT"),
+      STATE_VERSION: marginMaxDate(groupRows, "STATE_VERSION"),
+      LINE_ITEM_COUNT: lineItemCount,
+      CAMPAIGN_COUNT: campaignCount,
+      __MARGIN_SEARCH: groupRows.map((row) => [
+        marginText(row, "OUR_REF"),
+        marginText(row, "JOB_NUMBER"),
+        marginText(row, "CAMPAIGN_NAME"),
+        marginText(row, "ADVERTISER_NAME")
+      ].join(" ")).join(" ")
+    };
+  });
+}
+
 function MarginPage() {
   const { rows, meta, loading, hasLoaded, error, refresh, updateRows } = useApiRows<AnyRow>("/api/margin");
   const [query, setQuery] = React.useState("");
-  const [status, setStatus] = React.useState("OPEN");
+  const [view, setView] = React.useState<MarginView>("Campaign");
+  const [liveOnly, setLiveOnly] = React.useState(true);
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [sort, setSort] = React.useState<SortState>(null);
 
-  const filtered = React.useMemo(() => rows.filter((row) => {
-    const text = `${row.OUR_REF} ${row.JOB_NUMBER} ${row.CAMPAIGN_NAME} ${row.ADVERTISER_NAME}`.toLowerCase();
-    const stateMatch = status === "ALL" || row.MARGIN_SNOOZE_STATE === status;
-    return stateMatch && text.includes(query.toLowerCase());
-  }), [rows, query, status]);
+  const todayNz = React.useMemo(() => todayInTimeZone("Pacific/Auckland"), []);
+  const sourceRows = React.useMemo(
+    () => liveOnly ? rows.filter((row) => isLiveMarginRow(row, todayNz)) : rows,
+    [rows, liveOnly, todayNz]
+  );
+  const viewRows = React.useMemo(() => groupedMarginRows(sourceRows, view), [sourceRows, view]);
+  const filtered = React.useMemo(() => viewRows.filter((row) => {
+    const text = `${row.__MARGIN_SEARCH || ""} ${row.OUR_REF} ${row.JOB_NUMBER} ${row.CAMPAIGN_NAME} ${row.ADVERTISER_NAME}`.toLowerCase();
+    return text.includes(query.toLowerCase());
+  }), [viewRows, query]);
   const sortedRows = React.useMemo(() => sortRows(filtered, sort), [filtered, sort]);
 
-  const active = rows.filter((row) => row.MARGIN_SNOOZE_STATE === "OPEN");
-  const selectedAlerts = rows
-    .filter((row) => selected.has(String(row.OUR_REF)))
+  const marginColumns: Array<[string, string]> = React.useMemo(() => {
+    if (view === "Advertiser") {
+      return [
+        ["ADVERTISER_NAME", "Advertiser"],
+        ["CAMPAIGN_COUNT", "Campaigns"],
+        ["LINE_ITEM_COUNT", "Line items"],
+        ["BUDGET", "Budget"],
+        ["ACTUAL_NETT_SPEND", "Spend"],
+        ["MARGIN_AMOUNT", "Margin"],
+        ["MARGIN_PCT", "Margin %"],
+        ["PACING_RATIO", "Pace"],
+        ["MARGIN_SNOOZE_STATE", "State"]
+      ];
+    }
+    if (view === "Campaign") {
+      return [
+        ["JOB_NUMBER", "Job"],
+        ["CAMPAIGN_NAME", "Campaign"],
+        ["ADVERTISER_NAME", "Advertiser"],
+        ["LINE_ITEM_COUNT", "Line items"],
+        ["BUDGET", "Budget"],
+        ["ACTUAL_NETT_SPEND", "Spend"],
+        ["MARGIN_AMOUNT", "Margin"],
+        ["MARGIN_PCT", "Margin %"],
+        ["PACING_RATIO", "Pace"],
+        ["MARGIN_SNOOZE_STATE", "State"]
+      ];
+    }
+    return [
+      ["OUR_REF", "Line item"],
+      ["ADVERTISER_NAME", "Advertiser"],
+      ["CAMPAIGN_NAME", "Campaign"],
+      ["BOOKING_STATUS", "Booking"],
+      ["BUDGET", "Budget"],
+      ["ACTUAL_NETT_SPEND", "Spend"],
+      ["MARGIN_AMOUNT", "Margin"],
+      ["MARGIN_PCT", "Margin %"],
+      ["PACING_RATIO", "Pace"],
+      ["MARGIN_SNOOZE_STATE", "State"]
+    ];
+  }, [view]);
+  const formatMarginValue = (key: string, value: unknown) => {
+    if (["BUDGET", "ACTUAL_NETT_SPEND", "MARGIN_AMOUNT"].includes(key)) return currency(value);
+    if (["MARGIN_PCT", "PACING_RATIO"].includes(key)) return pct(value);
+    if (["LINE_ITEM_COUNT", "CAMPAIGN_COUNT"].includes(key)) return num(value);
+    return String(value ?? "");
+  };
+  const selectedGroupIds = selected;
+  const selectedAlerts = sourceRows
+    .filter((row) => selectedGroupIds.has(marginGroupId(row, view)) && row.MARGIN_SNOOZE_STATE !== "ACTIVE")
     .map((row) => ({
       alert_type: "MARGIN_DASHBOARD",
       alert_key: String(row.OUR_REF),
       our_ref: String(row.OUR_REF),
       state_version: String(row.STATE_VERSION || "")
     }));
+  const totals = filtered.reduce<{ budget: number; spend: number; expected: number; margin: number }>((acc, row) => {
+    acc.budget += marginNumber(row, "BUDGET");
+    acc.spend += marginNumber(row, "ACTUAL_NETT_SPEND");
+    acc.expected += marginNumber(row, "EXPECTED_GROSS_SPEND_TO_DATE");
+    acc.margin += marginNumber(row, "MARGIN_AMOUNT");
+    return acc;
+  }, { budget: 0, spend: 0, expected: 0, margin: 0 });
+  const blendedMarginPct = totals.expected > 0 ? 1 - (totals.spend / totals.expected) : null;
+
+  React.useEffect(() => {
+    setSelected(new Set());
+    setSort(null);
+  }, [view, liveOnly]);
 
   function applyOptimisticMarginSnooze(alerts: Array<Record<string, string>>, reason: string, endDate: string | null) {
     const selectedRefs = new Set(alerts.map((alert) => String(alert.our_ref || alert.alert_key)));
@@ -900,43 +1097,38 @@ function MarginPage() {
       <PageHeader
         eyebrow={meta.view ? `${meta.project_id}.${meta.dataset}.${meta.view}` : "BigQuery margin view"}
         title="Margin Dashboard"
-        subtitle="Live margin, pacing, budget, and snooze state at OUR REF level."
+        subtitle="Margin, pacing, budget, and snooze state by campaign, advertiser, or line item."
         loading={loading}
         onRefresh={refresh}
-        onDownload={() => downloadCsv("margin-dashboard.csv", sortedRows)}
+        onDownload={() => downloadCsv(`margin-dashboard-${view.toLowerCase().replaceAll(" ", "-")}.csv`, rowsForCsv(sortedRows, marginColumns, formatMarginValue))}
       />
       <MetricStrip metrics={[
-        { label: "Active rows", value: num(active.length) },
-        { label: "Active budget", value: currency(active.reduce((sum, row) => sum + Number(row.BUDGET || 0), 0)) },
-        { label: "Actual nett spend", value: currency(active.reduce((sum, row) => sum + Number(row.ACTUAL_NETT_SPEND || 0), 0)) },
-        { label: "Avg margin", value: pct(avg(active.map((row) => Number(row.MARGIN_PCT || 0)))) }
+        { label: `${view} rows`, value: num(filtered.length) },
+        { label: "Budget", value: currency(totals.budget) },
+        { label: "Actual nett spend", value: currency(totals.spend) },
+        { label: "Margin %", value: blendedMarginPct === null ? "N/A" : pct(blendedMarginPct) }
       ]} />
-      <Toolbar query={query} setQuery={setQuery} status={status} setStatus={setStatus} statuses={["OPEN", "ACTIVE", "ALL"]} selectedCount={selected.size} />
+      <Toolbar
+        query={query}
+        setQuery={setQuery}
+        status={view}
+        setStatus={(nextView) => setView(nextView as MarginView)}
+        statuses={MARGIN_VIEWS}
+        selectedCount={selected.size}
+        liveOnly={liveOnly}
+        setLiveOnly={setLiveOnly}
+      />
       <DataState loading={loading && !hasLoaded} error={error} empty={!filtered.length}>
         <DataTable
           rows={sortedRows}
           selected={selected}
           setSelected={setSelected}
-          idKey="OUR_REF"
+          idKey="__MARGIN_GROUP_ID"
           sort={sort}
           onSort={(key) => setSort((current) => nextSort(current, key))}
-          columns={[
-            ["OUR_REF", "OUR REF"],
-            ["ADVERTISER_NAME", "Advertiser"],
-            ["CAMPAIGN_NAME", "Campaign"],
-            ["BOOKING_STATUS", "Booking"],
-            ["BUDGET", "Budget"],
-            ["ACTUAL_NETT_SPEND", "Spend"],
-            ["MARGIN_AMOUNT", "Margin"],
-            ["MARGIN_PCT", "Margin %"],
-            ["PACING_RATIO", "Pace"],
-            ["MARGIN_SNOOZE_STATE", "State"]
-          ]}
-          format={(key, value) => {
-            if (["BUDGET", "ACTUAL_NETT_SPEND", "MARGIN_AMOUNT"].includes(key)) return currency(value);
-            if (["MARGIN_PCT", "PACING_RATIO"].includes(key)) return pct(value);
-            return String(value ?? "");
-          }}
+          columns={marginColumns}
+          rowClassName={(row) => row.MARGIN_SNOOZE_STATE === "ACTIVE" ? "snoozed-row" : ""}
+          format={formatMarginValue}
         />
       </DataState>
       <ActionDock selectedCount={selected.size} onClear={() => setSelected(new Set())}>
@@ -1944,6 +2136,8 @@ function Toolbar(props: {
   selectedCount: number;
   onDownload?: () => void;
   downloadDisabled?: boolean;
+  liveOnly?: boolean;
+  setLiveOnly?: (value: boolean) => void;
 }) {
   return (
     <section className="toolbar">
@@ -1962,6 +2156,12 @@ function Toolbar(props: {
           <button key={status} className={props.status === status ? "active" : ""} onClick={() => props.setStatus(status)}>{status}</button>
         ))}
       </div>
+      {props.setLiveOnly && (
+        <label className="toolbar-check">
+          <input type="checkbox" checked={Boolean(props.liveOnly)} onChange={(event) => props.setLiveOnly?.(event.target.checked)} />
+          Live only
+        </label>
+      )}
       {props.onDownload && (
         <button className="toolbar-export" onClick={props.onDownload} disabled={props.downloadDisabled}>
           <Download size={15} /> CSV

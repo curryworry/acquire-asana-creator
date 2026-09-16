@@ -423,6 +423,20 @@ button:disabled {
   box-shadow: 0 4px 14px rgba(47, 53, 47, 0.12);
 }
 
+.toolbar-check {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid #dfd6bf;
+  border-radius: 8px;
+  background: rgba(255, 252, 245, 0.88);
+  color: var(--green-strong);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .selected-chip {
   min-height: 42px;
   gap: 7px;
