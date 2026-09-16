@@ -107,11 +107,13 @@ def pacing(_: dict[str, str] = Depends(current_user)) -> dict:
 
 @app.get("/api/dashboard/bootstrap")
 def dashboard_bootstrap(_: dict[str, str] = Depends(current_user)) -> dict:
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         alerts_future = executor.submit(alerts_bootstrap)
+        margin_future = executor.submit(margin_dashboard)
         pacing_future = executor.submit(pacing_dashboard)
         return {
             "alerts": alerts_future.result(),
+            "margin": margin_future.result(),
             "pacing": pacing_future.result(),
         }
 

@@ -38,7 +38,7 @@ type PacingSection = "UNDERPACING";
 type Page = "margin" | "pacing:underpacing" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "qa:pacing_overview" | "qa:video_on_trademe" | "qa:missing_inclusion_list" | "trafficking" | "automation" | "admin";
 type AnyRow = Record<string, string | number | null>;
 type ApiEnvelope<T> = { rows: T[]; meta: Record<string, string> };
-type OpsBootstrapEnvelope = { alerts: ApiEnvelope<AnyRow>; pacing: ApiEnvelope<AnyRow> };
+type OpsBootstrapEnvelope = { alerts: ApiEnvelope<AnyRow>; margin: ApiEnvelope<AnyRow>; pacing: ApiEnvelope<AnyRow> };
 type ApiRefreshOptions = { silent?: boolean };
 type RowUpdater = (rows: AnyRow[]) => AnyRow[];
 type SortDirection = "asc" | "desc";
@@ -109,6 +109,7 @@ const OPS_LOADING_STAGES = [
   "Loading ops data",
   "Querying BigQuery",
   "Rolling up OUR_REFs",
+  "Calculating margin",
   "Calculating pacing",
   "Checking snoozes",
   "Filtering alerts",
@@ -342,6 +343,8 @@ function useApiRows<T extends AnyRow>(path: string, enabled = true) {
 function useOpsBootstrap(enabled: boolean) {
   const [alertRows, setAlertRows] = React.useState<AnyRow[]>([]);
   const [alertMeta, setAlertMeta] = React.useState<Record<string, string>>({});
+  const [marginRows, setMarginRows] = React.useState<AnyRow[]>([]);
+  const [marginMeta, setMarginMeta] = React.useState<Record<string, string>>({});
   const [pacingRows, setPacingRows] = React.useState<AnyRow[]>([]);
   const [pacingMeta, setPacingMeta] = React.useState<Record<string, string>>({});
   const [loading, setLoading] = React.useState(enabled);
@@ -354,6 +357,8 @@ function useOpsBootstrap(enabled: boolean) {
     if (!enabled) {
       setAlertRows([]);
       setAlertMeta({});
+      setMarginRows([]);
+      setMarginMeta({});
       setPacingRows([]);
       setPacingMeta({});
       setLoading(false);
@@ -369,9 +374,12 @@ function useOpsBootstrap(enabled: boolean) {
       const data = await apiFetch<OpsBootstrapEnvelope>("/api/dashboard/bootstrap");
       setAlertRows(data.alerts.rows);
       setAlertMeta(data.alerts.meta || {});
+      setMarginRows(data.margin.rows);
+      setMarginMeta(data.margin.meta || {});
       setPacingRows(data.pacing.rows);
       setPacingMeta(data.pacing.meta || {});
       API_CACHE.set("/api/alerts/bootstrap", data.alerts);
+      API_CACHE.set("/api/margin", data.margin);
       API_CACHE.set("/api/pacing", data.pacing);
       hasLoadedRef.current = true;
       setHasLoaded(true);
@@ -403,6 +411,10 @@ function useOpsBootstrap(enabled: boolean) {
     setPacingRows((currentRows) => updater(currentRows));
   }, []);
 
+  const updateMarginRows = React.useCallback((updater: RowUpdater) => {
+    setMarginRows((currentRows) => updater(currentRows));
+  }, []);
+
   return {
     alerts: {
       rows: alertRows,
@@ -413,6 +425,15 @@ function useOpsBootstrap(enabled: boolean) {
       refresh,
       updateRows: updateAlertRows,
       lastLoadedAt
+    },
+    margin: {
+      rows: marginRows,
+      meta: marginMeta,
+      loading,
+      hasLoaded,
+      error,
+      refresh,
+      updateRows: updateMarginRows
     },
     pacing: {
       rows: pacingRows,
@@ -534,12 +555,13 @@ function App() {
   const deferredAlertQuery = React.useDeferredValue(alertQuery);
   const opsData = useOpsBootstrap(Boolean(token));
   const alertsData = opsData.alerts;
+  const marginData = opsData.margin;
   const pacingData = opsData.pacing;
   const qaPacingOverviewData = useApiRows<AnyRow>("/api/qa/pacing-overview", Boolean(token));
   const qaVideoTrademeData = useApiRows<AnyRow>("/api/qa/video-on-trademe", Boolean(token));
   const qaMissingInclusionData = useApiRows<AnyRow>("/api/qa/missing-inclusion-list", Boolean(token));
-  const opsCountsReady = alertsData.hasLoaded && pacingData.hasLoaded;
-  const opsBootstrapPending = (alertsActive || pacingActive) && Boolean(token) && !opsData.alerts.hasLoaded && !opsData.alerts.error;
+  const opsCountsReady = alertsData.hasLoaded && marginData.hasLoaded && pacingData.hasLoaded;
+  const opsBootstrapPending = (page === "margin" || alertsActive || pacingActive) && Boolean(token) && !opsData.alerts.hasLoaded && !opsData.alerts.error;
   const [opsLoaderDismissed, setOpsLoaderDismissed] = React.useState(!opsBootstrapPending);
   const showOpsBootstrapLoader = opsBootstrapPending || !opsLoaderDismissed;
   const alertCounts = React.useMemo(() => openAlertCounts(alertsData.rows), [alertsData.rows]);
@@ -708,7 +730,7 @@ function App() {
         {showOpsBootstrapLoader && <OpsLoadingScreen complete={!opsBootstrapPending} />}
         {!showOpsBootstrapLoader && (
           <>
-        {page === "margin" && <MarginPage />}
+        {page === "margin" && <MarginPage {...marginData} />}
         {page === "pacing:underpacing" && activePacingType && <PacingPage pacingType={activePacingType} {...pacingData} />}
         {page === "alerts:not_live" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
         {page === "alerts:stopped_impressions" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
@@ -984,8 +1006,15 @@ function groupedMarginRows(rows: AnyRow[], view: MarginView): AnyRow[] {
   });
 }
 
-function MarginPage() {
-  const { rows, meta, loading, hasLoaded, error, refresh, updateRows } = useApiRows<AnyRow>("/api/margin");
+function MarginPage(props: {
+  rows: AnyRow[];
+  meta: Record<string, string>;
+  loading: boolean;
+  hasLoaded: boolean;
+  error: string;
+  refresh: () => Promise<void>;
+  updateRows: (updater: RowUpdater) => void;
+}) {
   const [query, setQuery] = React.useState("");
   const [view, setView] = React.useState<MarginView>("Campaign");
   const [liveOnly, setLiveOnly] = React.useState(true);
@@ -994,8 +1023,8 @@ function MarginPage() {
 
   const todayNz = React.useMemo(() => todayInTimeZone("Pacific/Auckland"), []);
   const sourceRows = React.useMemo(
-    () => liveOnly ? rows.filter((row) => isLiveMarginRow(row, todayNz)) : rows,
-    [rows, liveOnly, todayNz]
+    () => liveOnly ? props.rows.filter((row) => isLiveMarginRow(row, todayNz)) : props.rows,
+    [props.rows, liveOnly, todayNz]
   );
   const viewRows = React.useMemo(() => groupedMarginRows(sourceRows, view), [sourceRows, view]);
   const filtered = React.useMemo(() => viewRows.filter((row) => {
@@ -1076,7 +1105,7 @@ function MarginPage() {
 
   function applyOptimisticMarginSnooze(alerts: Array<Record<string, string>>, reason: string, endDate: string | null) {
     const selectedRefs = new Set(alerts.map((alert) => String(alert.our_ref || alert.alert_key)));
-    updateRows((currentRows) => currentRows.map((row) => {
+    props.updateRows((currentRows) => currentRows.map((row) => {
       if (!selectedRefs.has(String(row.OUR_REF))) return row;
       return {
         ...row,
@@ -1095,11 +1124,11 @@ function MarginPage() {
   return (
     <>
       <PageHeader
-        eyebrow={meta.view ? `${meta.project_id}.${meta.dataset}.${meta.view}` : "BigQuery margin view"}
+        eyebrow={props.meta.view ? `${props.meta.project_id}.${props.meta.dataset}.${props.meta.view}` : "BigQuery margin view"}
         title="Margin Dashboard"
         subtitle="Margin, pacing, budget, and snooze state by campaign, advertiser, or line item."
-        loading={loading}
-        onRefresh={refresh}
+        loading={props.loading}
+        onRefresh={props.refresh}
         onDownload={() => downloadCsv(`margin-dashboard-${view.toLowerCase().replaceAll(" ", "-")}.csv`, rowsForCsv(sortedRows, marginColumns, formatMarginValue))}
       />
       <MetricStrip metrics={[
@@ -1118,7 +1147,7 @@ function MarginPage() {
         liveOnly={liveOnly}
         setLiveOnly={setLiveOnly}
       />
-      <DataState loading={loading && !hasLoaded} error={error} empty={!filtered.length}>
+      <DataState loading={props.loading && !props.hasLoaded} error={props.error} empty={!filtered.length}>
         <DataTable
           rows={sortedRows}
           selected={selected}
@@ -1136,9 +1165,9 @@ function MarginPage() {
           endpoint="/api/margin/snooze"
           alerts={selectedAlerts}
           onSubmitStart={(alerts, reason, endDate) => applyOptimisticMarginSnooze(alerts, reason, endDate)}
-          onDone={() => { void refresh(); }}
-          onError={() => { void refresh(); }}
-          onConflict={() => void refresh()}
+          onDone={() => { void props.refresh(); }}
+          onError={() => { void props.refresh(); }}
+          onConflict={() => void props.refresh()}
         />
       </ActionDock>
     </>
