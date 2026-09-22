@@ -738,10 +738,10 @@ def margin_dashboard() -> dict[str, Any]:
 SELECT
   our_ref, job_number, campaign_name, advertiser_name, property_name,
   location_text, account_manager_name, trafficker_name, campaign_lead,
-  booking_status, budget, booked_nett_cost, start_date, end_date,
+  booking_status, budget, nett_billable, booked_nett_cost, start_date, end_date,
   latest_delivery_date, as_of_date, total_days, elapsed_days, pacing_ratio,
   actual_nett_spend, total_impressions, total_clicks, first_delivery_date,
-  last_delivery_date, expected_gross_spend_to_date, margin_amount, margin_pct,
+  last_delivery_date, expected_nett_billable_to_date, margin_amount, margin_pct,
   spend_vs_budget_ratio
 FROM {margin_view_fqn(project_id, dataset)}
 ORDER BY margin_amount ASC, our_ref
@@ -761,6 +761,7 @@ ORDER BY margin_amount ASC, our_ref
             "CAMPAIGN_LEAD": str(r["campaign_lead"] or ""),
             "BOOKING_STATUS": str(r["booking_status"] or ""),
             "BUDGET": float(r["budget"] or 0),
+            "NETT_BILLABLE": float(r["nett_billable"] or 0),
             "BOOKED_NETT_COST": float(r["booked_nett_cost"] or 0),
             "START_DATE": str(r["start_date"] or ""),
             "END_DATE": str(r["end_date"] or ""),
@@ -774,7 +775,7 @@ ORDER BY margin_amount ASC, our_ref
             "TOTAL_CLICKS": float(r["total_clicks"] or 0),
             "FIRST_DELIVERY_DATE": str(r["first_delivery_date"] or ""),
             "LAST_DELIVERY_DATE": str(r["last_delivery_date"] or ""),
-            "EXPECTED_GROSS_SPEND_TO_DATE": float(r["expected_gross_spend_to_date"] or 0),
+            "EXPECTED_NETT_BILLABLE_TO_DATE": float(r["expected_nett_billable_to_date"] or 0),
             "MARGIN_AMOUNT": float(r["margin_amount"] or 0),
             "MARGIN_PCT": float(r["margin_pct"]) if r["margin_pct"] is not None else None,
             "SPEND_VS_BUDGET_RATIO": float(r["spend_vs_budget_ratio"]) if r["spend_vs_budget_ratio"] is not None else None,

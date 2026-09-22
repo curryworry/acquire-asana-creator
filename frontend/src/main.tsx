@@ -958,15 +958,16 @@ function groupedMarginRows(rows: AnyRow[], view: MarginView): AnyRow[] {
 
   return Array.from(groups.entries()).map(([id, groupRows]) => {
     const budget = groupRows.reduce((sum, row) => sum + marginNumber(row, "BUDGET"), 0);
+    const nettBillable = groupRows.reduce((sum, row) => sum + marginNumber(row, "NETT_BILLABLE"), 0);
     const actualNettSpend = groupRows.reduce((sum, row) => sum + marginNumber(row, "ACTUAL_NETT_SPEND"), 0);
-    const expectedGrossSpend = groupRows.reduce((sum, row) => sum + marginNumber(row, "EXPECTED_GROSS_SPEND_TO_DATE"), 0);
+    const expectedNettBillable = groupRows.reduce((sum, row) => sum + marginNumber(row, "EXPECTED_NETT_BILLABLE_TO_DATE"), 0);
     const bookedNettCost = groupRows.reduce((sum, row) => sum + marginNumber(row, "BOOKED_NETT_COST"), 0);
     const totalImpressions = groupRows.reduce((sum, row) => sum + marginNumber(row, "TOTAL_IMPRESSIONS"), 0);
     const totalClicks = groupRows.reduce((sum, row) => sum + marginNumber(row, "TOTAL_CLICKS"), 0);
     const activeCount = groupRows.filter((row) => row.MARGIN_SNOOZE_STATE === "ACTIVE").length;
     const lineItemCount = marginUnique(groupRows, "OUR_REF").length;
     const campaignCount = marginUnique(groupRows, "CAMPAIGN_NAME").length;
-    const marginAmount = expectedGrossSpend - actualNettSpend;
+    const marginAmount = expectedNettBillable - actualNettSpend;
     const state = activeCount === 0 ? "OPEN" : activeCount === groupRows.length ? "ACTIVE" : "MIXED";
 
     return {
@@ -982,6 +983,7 @@ function groupedMarginRows(rows: AnyRow[], view: MarginView): AnyRow[] {
       CAMPAIGN_LEAD: marginMixedValue(groupRows, "CAMPAIGN_LEAD"),
       BOOKING_STATUS: marginMixedValue(groupRows, "BOOKING_STATUS"),
       BUDGET: budget,
+      NETT_BILLABLE: nettBillable,
       BOOKED_NETT_COST: bookedNettCost,
       START_DATE: marginMinDate(groupRows, "START_DATE"),
       END_DATE: marginMaxDate(groupRows, "END_DATE"),
@@ -989,16 +991,16 @@ function groupedMarginRows(rows: AnyRow[], view: MarginView): AnyRow[] {
       AS_OF_DATE: marginMaxDate(groupRows, "AS_OF_DATE"),
       TOTAL_DAYS: "",
       ELAPSED_DAYS: "",
-      PACING_RATIO: budget > 0 ? expectedGrossSpend / budget : avg(groupRows.map((row) => marginNumber(row, "PACING_RATIO"))),
+      PACING_RATIO: nettBillable > 0 ? expectedNettBillable / nettBillable : avg(groupRows.map((row) => marginNumber(row, "PACING_RATIO"))),
       ACTUAL_NETT_SPEND: actualNettSpend,
       TOTAL_IMPRESSIONS: totalImpressions,
       TOTAL_CLICKS: totalClicks,
       FIRST_DELIVERY_DATE: marginMinDate(groupRows, "FIRST_DELIVERY_DATE"),
       LAST_DELIVERY_DATE: marginMaxDate(groupRows, "LAST_DELIVERY_DATE"),
-      EXPECTED_GROSS_SPEND_TO_DATE: expectedGrossSpend,
+      EXPECTED_NETT_BILLABLE_TO_DATE: expectedNettBillable,
       MARGIN_AMOUNT: marginAmount,
-      MARGIN_PCT: expectedGrossSpend > 0 ? 1 - (actualNettSpend / expectedGrossSpend) : null,
-      SPEND_VS_BUDGET_RATIO: budget > 0 ? actualNettSpend / budget : null,
+      MARGIN_PCT: expectedNettBillable > 0 ? 1 - (actualNettSpend / expectedNettBillable) : null,
+      SPEND_VS_BUDGET_RATIO: nettBillable > 0 ? actualNettSpend / nettBillable : null,
       MARGIN_SNOOZE_STATE: state,
       SNOOZE_STATUS: state,
       SNOOZE_REASON: activeCount ? `${num(activeCount)} of ${num(groupRows.length)} line items snoozed` : "",
@@ -1048,8 +1050,9 @@ function MarginPage(props: {
         ["ADVERTISER_NAME", "Advertiser"],
         ["CAMPAIGN_COUNT", "Campaigns"],
         ["LINE_ITEM_COUNT", "Line items"],
-        ["BUDGET", "Gross Budget"],
-        ["EXPECTED_GROSS_SPEND_TO_DATE", "Expected gross spend to date"],
+        ["BUDGET", "Gross Billable"],
+        ["NETT_BILLABLE", "Nett Billable"],
+        ["EXPECTED_NETT_BILLABLE_TO_DATE", "Expected nett billable to date"],
         ["ACTUAL_NETT_SPEND", "Spend"],
         ["MARGIN_AMOUNT", "Margin"],
         ["MARGIN_PCT", "Margin %"],
@@ -1063,8 +1066,9 @@ function MarginPage(props: {
         ["CAMPAIGN_NAME", "Campaign"],
         ["ADVERTISER_NAME", "Advertiser"],
         ["LINE_ITEM_COUNT", "Line items"],
-        ["BUDGET", "Gross Budget"],
-        ["EXPECTED_GROSS_SPEND_TO_DATE", "Expected gross spend to date"],
+        ["BUDGET", "Gross Billable"],
+        ["NETT_BILLABLE", "Nett Billable"],
+        ["EXPECTED_NETT_BILLABLE_TO_DATE", "Expected nett billable to date"],
         ["ACTUAL_NETT_SPEND", "Spend"],
         ["MARGIN_AMOUNT", "Margin"],
         ["MARGIN_PCT", "Margin %"],
@@ -1081,8 +1085,9 @@ function MarginPage(props: {
       ["PROPERTY_NAME", "Acquire Property"],
       ["ACCOUNT_MANAGER", "Account Manager"],
       ["BOOKING_STATUS", "Booking"],
-      ["BUDGET", "Gross Budget"],
-      ["EXPECTED_GROSS_SPEND_TO_DATE", "Expected gross spend to date"],
+      ["BUDGET", "Gross Billable"],
+      ["NETT_BILLABLE", "Nett Billable"],
+      ["EXPECTED_NETT_BILLABLE_TO_DATE", "Expected nett billable to date"],
       ["ACTUAL_NETT_SPEND", "Spend"],
       ["MARGIN_AMOUNT", "Margin"],
       ["MARGIN_PCT", "Margin %"],
@@ -1113,7 +1118,7 @@ function MarginPage(props: {
   }), [columnExclusions, viewRows, query]);
   const sortedRows = React.useMemo(() => sortRows(filtered, sort), [filtered, sort]);
   const formatMarginValue = (key: string, value: unknown) => {
-    if (["BUDGET", "EXPECTED_GROSS_SPEND_TO_DATE", "ACTUAL_NETT_SPEND", "MARGIN_AMOUNT"].includes(key)) return currency(value);
+    if (["BUDGET", "NETT_BILLABLE", "EXPECTED_NETT_BILLABLE_TO_DATE", "ACTUAL_NETT_SPEND", "MARGIN_AMOUNT"].includes(key)) return currency(value);
     if (["MARGIN_PCT", "PACING_RATIO"].includes(key)) return pct(value);
     if (["LINE_ITEM_COUNT", "CAMPAIGN_COUNT"].includes(key)) return num(value);
     return String(value ?? "");
@@ -1127,13 +1132,14 @@ function MarginPage(props: {
       our_ref: String(row.OUR_REF),
       state_version: String(row.STATE_VERSION || "")
     }));
-  const totals = filtered.reduce<{ budget: number; spend: number; expected: number; margin: number }>((acc, row) => {
+  const totals = filtered.reduce<{ budget: number; nettBillable: number; spend: number; expected: number; margin: number }>((acc, row) => {
     acc.budget += marginNumber(row, "BUDGET");
+    acc.nettBillable += marginNumber(row, "NETT_BILLABLE");
     acc.spend += marginNumber(row, "ACTUAL_NETT_SPEND");
-    acc.expected += marginNumber(row, "EXPECTED_GROSS_SPEND_TO_DATE");
+    acc.expected += marginNumber(row, "EXPECTED_NETT_BILLABLE_TO_DATE");
     acc.margin += marginNumber(row, "MARGIN_AMOUNT");
     return acc;
-  }, { budget: 0, spend: 0, expected: 0, margin: 0 });
+  }, { budget: 0, nettBillable: 0, spend: 0, expected: 0, margin: 0 });
   const blendedMarginPct = totals.expected > 0 ? 1 - (totals.spend / totals.expected) : null;
   const isNotLiveLineItem = (row: AnyRow) => view === "Line item" && props.notLiveRefs.has(String(row.OUR_REF || ""));
 
@@ -1207,14 +1213,14 @@ function MarginPage(props: {
       <PageHeader
         eyebrow={props.meta.view ? `${props.meta.project_id}.${props.meta.dataset}.${props.meta.view}` : "BigQuery margin view"}
         title="Margin Dashboard"
-        subtitle="Margin, pacing, budget, and snooze state by campaign, advertiser, or line item."
+        subtitle="Margin, pacing, billable amounts, and snooze state by campaign, advertiser, or line item."
         loading={props.loading}
         onRefresh={props.refresh}
         onDownload={() => downloadCsv(`margin-dashboard-${view.toLowerCase().replaceAll(" ", "-")}.csv`, rowsForCsv(sortedRows, visibleMarginColumns, formatMarginValue))}
       />
       <MetricStrip metrics={[
         { label: `${view} rows`, value: num(filtered.length) },
-        { label: "Budget", value: currency(totals.budget) },
+        { label: "Gross Billable", value: currency(totals.budget) },
         { label: "Actual nett spend", value: currency(totals.spend) },
         { label: "Margin %", value: blendedMarginPct === null ? "N/A" : pct(blendedMarginPct) }
       ]} />

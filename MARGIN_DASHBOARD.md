@@ -1,11 +1,12 @@
 # Margin Dashboard
 
-Last updated: 2026-06-12
+Last updated: 2026-09-22
 
 ## Objective
 
 Build a live margin dashboard at `OUR REF` level using:
-- booked revenue budget from `master_overview.ACTUALPRICE`
+- gross billable amount from `master_overview.ACTUALPRICE`
+- nett billable amount from `B27F8_BUY_DATA.NETBILLABLEAMOUNT`
 - actual nett spend from delivery `BLEND_BLEND_5_1_2.COST`
 - campaign dates from `master_overview.STARTDATE` and `master_overview.ENDDATE`
 
@@ -16,9 +17,11 @@ Checked-in view definition:
 
 Primary tables:
 - `sm-test-391201.supermetrics_data.master_overview`
+- `sm-test-391201.supermetrics_data.B27F8_BUY_DATA`
 - `sm-test-391201.supermetrics_data.BLEND_BLEND_5_1_2`
 
-Primary join:
+Primary joins:
+- `master_overview.OURREF + JOBNUMBER = B27F8_BUY_DATA.OURREF + JOBNUMBER`
 - `master_overview.OURREF = BLEND_BLEND_5_1_2.OUR_REF`
 
 Grain:
@@ -26,13 +29,21 @@ Grain:
 
 ## Metric Definitions
 
-### Budget
+### Gross Billable
 
 Definition:
 - `budget = ACTUALPRICE`
 
 Interpretation:
 - this is booked gross revenue for the line
+
+### Nett Billable
+
+Definition:
+- `nett_billable = NETBILLABLEAMOUNT`
+
+Interpretation:
+- this is the billable amount used as the margin denominator/base
 
 ### Actual Nett Spend
 
@@ -73,18 +84,18 @@ Definition:
 Equivalent clamp:
 - `elapsed_days = GREATEST(0, LEAST(total_days, DATE_DIFF(as_of_date, start_date, DAY) + 1))`
 
-### Expected Gross Spend To Date
+### Expected Nett Billable To Date
 
 Definition:
-- `expected_gross_spend_to_date = budget * elapsed_days / total_days`
+- `expected_nett_billable_to_date = nett_billable * elapsed_days / total_days`
 
 Interpretation:
-- linear pacing of booked revenue over campaign days
+- linear pacing of nett billable value over campaign days
 
 ### Margin Amount
 
 Definition:
-- `margin_amount = expected_gross_spend_to_date - actual_nett_spend`
+- `margin_amount = expected_nett_billable_to_date - actual_nett_spend`
 
 Interpretation:
 - positive means current actual spend is below expected pace
@@ -93,10 +104,11 @@ Interpretation:
 ### Margin Percent
 
 Definition:
-- `margin_pct = 1 - (actual_nett_spend / expected_gross_spend_to_date)`
+- `margin_pct = 1 - (actual_nett_spend / expected_nett_billable_to_date)`
+- equivalent: `margin_amount / expected_nett_billable_to_date`
 
 Guardrail:
-- if `expected_gross_spend_to_date <= 0`, return `NULL`
+- if `expected_nett_billable_to_date <= 0`, return `NULL`
 
 Interpretation:
 - `0%` means exactly on expected pace
@@ -120,7 +132,8 @@ Implication:
 - budget and dates should be aggregated to stable line-level values before joining to delivery
 
 Recommended line-level rollup:
-- `MAX(ACTUALPRICE)` as budget
+- `MAX(ACTUALPRICE)` as gross billable
+- `MAX(NETBILLABLEAMOUNT)` as nett billable
 - `MIN(STARTDATE)` as start date
 - `MAX(ENDDATE)` as end date
 
@@ -129,130 +142,11 @@ Recommended line-level rollup:
 This is a pacing margin, not final realized campaign margin.
 
 It compares:
-- expected gross revenue pace
+- expected nett billable pace
 against
 - actual nett spend to date
 
 If the business later wants true realized margin, the formula may need to change.
-
-## First-Pass Query
-
-```sql
-WITH latest_delivery AS (
-  SELECT MAX(DATE) AS latest_delivery_date
-  FROM `sm-test-391201.supermetrics_data.BLEND_BLEND_5_1_2`
-),
-line_items AS (
-  SELECT
-    TRIM(CAST(OURREF AS STRING)) AS our_ref,
-    CAST(JOBNUMBER AS STRING) AS job_number,
-    MAX(CAMPAIGNNAME) AS campaign_name,
-    MAX(ADVERTISERNAME) AS advertiser_name,
-    MAX(ACTUALPRICE) AS budget,
-    MIN(SAFE_CAST(STARTDATE AS DATE)) AS start_date,
-    MAX(SAFE_CAST(ENDDATE AS DATE)) AS end_date
-  FROM `sm-test-391201.supermetrics_data.master_overview`
-  WHERE OURREF IS NOT NULL
-    AND TRIM(CAST(OURREF AS STRING)) != ''
-  GROUP BY 1, 2
-),
-delivery AS (
-  SELECT
-    TRIM(CAST(OUR_REF AS STRING)) AS our_ref,
-    SUM(COALESCE(COST, 0)) AS actual_nett_spend
-  FROM `sm-test-391201.supermetrics_data.BLEND_BLEND_5_1_2`
-  CROSS JOIN latest_delivery
-  WHERE OUR_REF IS NOT NULL
-    AND TRIM(CAST(OUR_REF AS STRING)) != ''
-    AND DATE <= latest_delivery_date
-  GROUP BY 1
-)
-SELECT
-  l.our_ref,
-  l.job_number,
-  l.campaign_name,
-  l.advertiser_name,
-  l.budget,
-  l.start_date,
-  l.end_date,
-  ld.latest_delivery_date,
-  LEAST(ld.latest_delivery_date, l.end_date) AS as_of_date,
-  DATE_DIFF(l.end_date, l.start_date, DAY) + 1 AS total_days,
-  GREATEST(
-    0,
-    LEAST(
-      DATE_DIFF(l.end_date, l.start_date, DAY) + 1,
-      DATE_DIFF(LEAST(ld.latest_delivery_date, l.end_date), l.start_date, DAY) + 1
-    )
-  ) AS elapsed_days,
-  COALESCE(d.actual_nett_spend, 0) AS actual_nett_spend,
-  SAFE_MULTIPLY(
-    l.budget,
-    SAFE_DIVIDE(
-      GREATEST(
-        0,
-        LEAST(
-          DATE_DIFF(l.end_date, l.start_date, DAY) + 1,
-          DATE_DIFF(LEAST(ld.latest_delivery_date, l.end_date), l.start_date, DAY) + 1
-        )
-      ),
-      DATE_DIFF(l.end_date, l.start_date, DAY) + 1
-    )
-  ) AS expected_gross_spend_to_date,
-  SAFE_MULTIPLY(
-    l.budget,
-    SAFE_DIVIDE(
-      GREATEST(
-        0,
-        LEAST(
-          DATE_DIFF(l.end_date, l.start_date, DAY) + 1,
-          DATE_DIFF(LEAST(ld.latest_delivery_date, l.end_date), l.start_date, DAY) + 1
-        )
-      ),
-      DATE_DIFF(l.end_date, l.start_date, DAY) + 1
-    )
-  ) - COALESCE(d.actual_nett_spend, 0) AS margin_amount,
-  CASE
-    WHEN SAFE_MULTIPLY(
-      l.budget,
-      SAFE_DIVIDE(
-        GREATEST(
-          0,
-          LEAST(
-            DATE_DIFF(l.end_date, l.start_date, DAY) + 1,
-            DATE_DIFF(LEAST(ld.latest_delivery_date, l.end_date), l.start_date, DAY) + 1
-          )
-        ),
-        DATE_DIFF(l.end_date, l.start_date, DAY) + 1
-      )
-    ) > 0
-    THEN 1 - SAFE_DIVIDE(
-      COALESCE(d.actual_nett_spend, 0),
-      SAFE_MULTIPLY(
-        l.budget,
-        SAFE_DIVIDE(
-          GREATEST(
-            0,
-            LEAST(
-              DATE_DIFF(l.end_date, l.start_date, DAY) + 1,
-              DATE_DIFF(LEAST(ld.latest_delivery_date, l.end_date), l.start_date, DAY) + 1
-            )
-          ),
-          DATE_DIFF(l.end_date, l.start_date, DAY) + 1
-        )
-      )
-    )
-    ELSE NULL
-  END AS margin_pct
-FROM line_items l
-CROSS JOIN latest_delivery ld
-LEFT JOIN delivery d
-  ON d.our_ref = l.our_ref
-WHERE l.start_date IS NOT NULL
-  AND l.end_date IS NOT NULL
-  AND l.end_date >= l.start_date
-ORDER BY margin_amount ASC, l.our_ref;
-```
 
 ## Next Improvements
 

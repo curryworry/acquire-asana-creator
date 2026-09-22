@@ -5,33 +5,37 @@ WITH latest_delivery AS (
 ),
 line_items AS (
   SELECT
-    TRIM(CAST(OURREF AS STRING)) AS our_ref,
-    CAST(JOBNUMBER AS STRING) AS job_number,
-    MAX(CAMPAIGNNAME) AS campaign_name,
-    MAX(ADVERTISERNAME) AS advertiser_name,
-    MAX(PROPERTYNAME) AS property_name,
-    MAX(LOCATIONTEXT) AS location_text,
-    MAX(ACCOUNTMANAGERNAME) AS account_manager_name,
-    MAX(TRAFFICKERNAME) AS trafficker_name,
-    MAX(CAMPAIGNLEAD) AS campaign_lead,
-    MAX(BOOKINGSTATUS) AS booking_status,
-    MAX(ACTUALPRICE) AS budget,
-    MAX(OURCOST) AS booked_nett_cost,
+    TRIM(CAST(m.OURREF AS STRING)) AS our_ref,
+    CAST(m.JOBNUMBER AS STRING) AS job_number,
+    MAX(m.CAMPAIGNNAME) AS campaign_name,
+    MAX(m.ADVERTISERNAME) AS advertiser_name,
+    MAX(m.PROPERTYNAME) AS property_name,
+    MAX(m.LOCATIONTEXT) AS location_text,
+    MAX(m.ACCOUNTMANAGERNAME) AS account_manager_name,
+    MAX(m.TRAFFICKERNAME) AS trafficker_name,
+    MAX(m.CAMPAIGNLEAD) AS campaign_lead,
+    MAX(m.BOOKINGSTATUS) AS booking_status,
+    MAX(m.ACTUALPRICE) AS budget,
+    MAX(b.NETBILLABLEAMOUNT) AS nett_billable,
+    MAX(m.OURCOST) AS booked_nett_cost,
     COALESCE(
-      MIN(SAFE_CAST(STARTDATE AS DATE)),
-      MIN(SAFE.PARSE_DATE('%Y-%m-%d', CAST(STARTDATE AS STRING))),
-      MIN(SAFE.PARSE_DATE('%d/%m/%Y', CAST(STARTDATE AS STRING))),
-      MIN(SAFE.PARSE_DATE('%m/%d/%Y', CAST(STARTDATE AS STRING)))
+      MIN(SAFE_CAST(m.STARTDATE AS DATE)),
+      MIN(SAFE.PARSE_DATE('%Y-%m-%d', CAST(m.STARTDATE AS STRING))),
+      MIN(SAFE.PARSE_DATE('%d/%m/%Y', CAST(m.STARTDATE AS STRING))),
+      MIN(SAFE.PARSE_DATE('%m/%d/%Y', CAST(m.STARTDATE AS STRING)))
     ) AS start_date,
     COALESCE(
-      MAX(SAFE_CAST(ENDDATE AS DATE)),
-      MAX(SAFE.PARSE_DATE('%Y-%m-%d', CAST(ENDDATE AS STRING))),
-      MAX(SAFE.PARSE_DATE('%d/%m/%Y', CAST(ENDDATE AS STRING))),
-      MAX(SAFE.PARSE_DATE('%m/%d/%Y', CAST(ENDDATE AS STRING)))
+      MAX(SAFE_CAST(m.ENDDATE AS DATE)),
+      MAX(SAFE.PARSE_DATE('%Y-%m-%d', CAST(m.ENDDATE AS STRING))),
+      MAX(SAFE.PARSE_DATE('%d/%m/%Y', CAST(m.ENDDATE AS STRING))),
+      MAX(SAFE.PARSE_DATE('%m/%d/%Y', CAST(m.ENDDATE AS STRING)))
     ) AS end_date
-  FROM `sm-test-391201.supermetrics_data.master_overview`
-  WHERE OURREF IS NOT NULL
-    AND TRIM(CAST(OURREF AS STRING)) != ''
+  FROM `sm-test-391201.supermetrics_data.master_overview` m
+  LEFT JOIN `sm-test-391201.supermetrics_data.B27F8_BUY_DATA` b
+    ON TRIM(CAST(b.OURREF AS STRING)) = TRIM(CAST(m.OURREF AS STRING))
+   AND CAST(b.JOBNUMBER AS STRING) = CAST(m.JOBNUMBER AS STRING)
+  WHERE m.OURREF IS NOT NULL
+    AND TRIM(CAST(m.OURREF AS STRING)) != ''
   GROUP BY 1, 2
 ),
 delivery AS (
@@ -60,6 +64,7 @@ base AS (
     l.campaign_lead,
     l.booking_status,
     l.budget,
+    l.nett_billable,
     l.booked_nett_cost,
     l.start_date,
     l.end_date,
@@ -98,6 +103,7 @@ SELECT
   campaign_lead,
   booking_status,
   budget,
+  nett_billable,
   booked_nett_cost,
   start_date,
   end_date,
@@ -116,26 +122,26 @@ SELECT
   total_clicks,
   first_delivery_date,
   last_delivery_date,
-  SAFE_MULTIPLY(budget, SAFE_DIVIDE(elapsed_days, total_days)) AS expected_gross_spend_to_date,
-  SAFE_MULTIPLY(budget, SAFE_DIVIDE(elapsed_days, total_days)) -
+  SAFE_MULTIPLY(nett_billable, SAFE_DIVIDE(elapsed_days, total_days)) AS expected_nett_billable_to_date,
+  SAFE_MULTIPLY(nett_billable, SAFE_DIVIDE(elapsed_days, total_days)) -
     CASE
       WHEN LOWER(TRIM(property_name)) = 'acquire fee' THEN 0
       ELSE actual_nett_spend
     END AS margin_amount,
   CASE
     WHEN LOWER(TRIM(property_name)) = 'acquire fee' THEN 1
-    WHEN SAFE_MULTIPLY(budget, SAFE_DIVIDE(elapsed_days, total_days)) > 0
+    WHEN SAFE_MULTIPLY(nett_billable, SAFE_DIVIDE(elapsed_days, total_days)) > 0
     THEN 1 - SAFE_DIVIDE(
       CASE
         WHEN LOWER(TRIM(property_name)) = 'acquire fee' THEN 0
         ELSE actual_nett_spend
       END,
-      SAFE_MULTIPLY(budget, SAFE_DIVIDE(elapsed_days, total_days))
+      SAFE_MULTIPLY(nett_billable, SAFE_DIVIDE(elapsed_days, total_days))
     )
     ELSE NULL
   END AS margin_pct,
   CASE
     WHEN LOWER(TRIM(property_name)) = 'acquire fee' THEN 0
-    ELSE SAFE_DIVIDE(actual_nett_spend, budget)
+    ELSE SAFE_DIVIDE(actual_nett_spend, nett_billable)
   END AS spend_vs_budget_ratio
 FROM base;
