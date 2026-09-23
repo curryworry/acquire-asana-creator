@@ -898,6 +898,14 @@ function marginFilterValue(row: AnyRow, key: string) {
   return String(row[key] ?? "").trim();
 }
 
+function defaultMarginColumnExclusions(view: MarginView): Record<string, Set<string>> {
+  if (view !== "Line item") return {};
+  return {
+    PROPERTY_NAME: new Set(["Acquire Fee", "Adserving - Direct"]),
+    BOOKING_STATUS: new Set(["Cancelled"])
+  };
+}
+
 function marginDateValue(row: AnyRow, key: string) {
   const value = marginText(row, key);
   return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : "";
@@ -1056,8 +1064,7 @@ function MarginPage(props: {
         ["ACTUAL_NETT_SPEND", "Spend"],
         ["MARGIN_AMOUNT", "Margin"],
         ["MARGIN_PCT", "Margin %"],
-        ["PACING_RATIO", "Pace"],
-        ["MARGIN_SNOOZE_STATE", "State"]
+        ["PACING_RATIO", "Pace"]
       ];
     }
     if (view === "Campaign") {
@@ -1072,8 +1079,7 @@ function MarginPage(props: {
         ["ACTUAL_NETT_SPEND", "Spend"],
         ["MARGIN_AMOUNT", "Margin"],
         ["MARGIN_PCT", "Margin %"],
-        ["PACING_RATIO", "Pace"],
-        ["MARGIN_SNOOZE_STATE", "State"]
+        ["PACING_RATIO", "Pace"]
       ];
     }
     return [
@@ -1091,14 +1097,13 @@ function MarginPage(props: {
       ["ACTUAL_NETT_SPEND", "Spend"],
       ["MARGIN_AMOUNT", "Margin"],
       ["MARGIN_PCT", "Margin %"],
-      ["PACING_RATIO", "Pace"],
-      ["MARGIN_SNOOZE_STATE", "State"]
+      ["PACING_RATIO", "Pace"]
     ];
   }, [view]);
   const marginFilterableColumns = React.useMemo(() => {
-    if (view === "Advertiser") return ["ADVERTISER_NAME", "MARGIN_SNOOZE_STATE"];
-    if (view === "Campaign") return ["JOB_NUMBER", "CAMPAIGN_NAME", "ADVERTISER_NAME", "MARGIN_SNOOZE_STATE"];
-    return ["OUR_REF", "JOB_NUMBER", "LOCATION_TEXT", "ADVERTISER_NAME", "CAMPAIGN_NAME", "PROPERTY_NAME", "ACCOUNT_MANAGER", "BOOKING_STATUS", "MARGIN_SNOOZE_STATE"];
+    if (view === "Advertiser") return ["ADVERTISER_NAME"];
+    if (view === "Campaign") return ["JOB_NUMBER", "CAMPAIGN_NAME", "ADVERTISER_NAME"];
+    return ["OUR_REF", "JOB_NUMBER", "LOCATION_TEXT", "ADVERTISER_NAME", "CAMPAIGN_NAME", "PROPERTY_NAME", "ACCOUNT_MANAGER", "BOOKING_STATUS"];
   }, [view]);
   const visibleMarginColumns = React.useMemo(
     () => marginColumns.filter(([key]) => !hiddenColumns.has(key)),
@@ -1146,7 +1151,7 @@ function MarginPage(props: {
   React.useEffect(() => {
     setSelected(new Set());
     setSort(null);
-    setColumnExclusions({});
+    setColumnExclusions(defaultMarginColumnExclusions(view));
     setHiddenColumns(new Set());
   }, [view, liveOnly]);
 
