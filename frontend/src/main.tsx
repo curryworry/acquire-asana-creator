@@ -35,8 +35,8 @@ import sleepBadgeUrl from "./assets/sleep-badge.svg";
 import "./styles.css";
 
 type AlertSection = "NOT_LIVE" | "STOPPED_IMPRESSIONS" | "MISSING_OUR_REF" | "ENDED_BUT_IMPRESSIONS";
-type PacingSection = "UNDERPACING";
-type Page = "margin" | "pacing:underpacing" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "qa:pacing_overview" | "qa:video_on_trademe" | "qa:missing_inclusion_list" | "trafficking" | "automation" | "admin";
+type PacingSection = "UNDERPACING" | "OVERSPENDING";
+type Page = "margin" | "pacing:underpacing" | "pacing:overspending" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "qa:pacing_overview" | "qa:video_on_trademe" | "qa:missing_inclusion_list" | "trafficking" | "automation" | "admin";
 type AnyRow = Record<string, string | number | null>;
 type ApiEnvelope<T> = { rows: T[]; meta: Record<string, string> };
 type OpsBootstrapEnvelope = { alerts: ApiEnvelope<AnyRow>; margin: ApiEnvelope<AnyRow>; pacing: ApiEnvelope<AnyRow> };
@@ -81,6 +81,7 @@ type AutomationResult = {
 const TOKEN_KEY = "acquire_ops_token";
 const ADMIN_USERNAME = "ashwin@acquirenz.com";
 const DELIVERY_PACING_HELP = "Delivery pacing shows how the campaign is doing against expected delivery. A delivery pacing of 50% means that the campaign is only delivering 50% of the goal impressions/clicks/views that it should be delivering to hit the target. Delivery pacing should be above 100% to hit the campaign goal";
+const SPEND_PACING_HELP = "Spend pacing compares cumulative actual spend with the line item's linear expected spend to date. Rows appear here once they are at least 3 days or 20% into the campaign, whichever comes first, and spend pacing is at least 120%.";
 const ALERT_SECTIONS: Array<{ key: AlertSection; page: Page; label: string }> = [
   { key: "NOT_LIVE", page: "alerts:not_live", label: "Not live" },
   { key: "STOPPED_IMPRESSIONS", page: "alerts:stopped_impressions", label: "Stopped impressions" },
@@ -88,7 +89,8 @@ const ALERT_SECTIONS: Array<{ key: AlertSection; page: Page; label: string }> = 
   { key: "ENDED_BUT_IMPRESSIONS", page: "alerts:ended_but_impressions", label: "Ended but impressions" }
 ];
 const PACING_SECTIONS: Array<{ key: PacingSection; page: Page; label: string }> = [
-  { key: "UNDERPACING", page: "pacing:underpacing", label: "Underpacing" }
+  { key: "UNDERPACING", page: "pacing:underpacing", label: "Underpacing" },
+  { key: "OVERSPENDING", page: "pacing:overspending", label: "Overspending" }
 ];
 const QA_SECTIONS: Array<{ page: Page; label: string }> = [
   { page: "qa:pacing_overview", label: "Overview" },
@@ -264,6 +266,7 @@ function pageToAlertType(page: Page): AlertSection | null {
 
 function pageToPacingType(page: Page): PacingSection | null {
   if (page === "pacing:underpacing") return "UNDERPACING";
+  if (page === "pacing:overspending") return "OVERSPENDING";
   return null;
 }
 
@@ -520,9 +523,10 @@ function openAlertCounts(rows: AnyRow[]) {
   return counts;
 }
 
-function underpacingCounts(rows: AnyRow[]) {
+function pacingAlertCounts(rows: AnyRow[]) {
   return {
-    UNDERPACING: rows.filter((row) => row.PACING_BUCKET === "UNDERPACING").length
+    UNDERPACING: rows.filter((row) => row.PACING_BUCKET === "UNDERPACING").length,
+    OVERSPENDING: rows.filter((row) => row.PACING_BUCKET === "OVERSPENDING").length
   };
 }
 
@@ -574,12 +578,12 @@ function App() {
   const [opsLoaderDismissed, setOpsLoaderDismissed] = React.useState(!opsBootstrapPending);
   const showOpsBootstrapLoader = opsBootstrapPending || !opsLoaderDismissed;
   const alertCounts = React.useMemo(() => openAlertCounts(alertsData.rows), [alertsData.rows]);
-  const pacingCounts = React.useMemo(() => underpacingCounts(pacingData.rows), [pacingData.rows]);
+  const pacingCounts = React.useMemo(() => pacingAlertCounts(pacingData.rows), [pacingData.rows]);
   const totalOpenAlerts = React.useMemo(
     () => ALERT_SECTIONS.reduce((total, section) => total + (alertCounts[section.key] || 0), 0),
     [alertCounts]
   );
-  const totalUnderpacing = React.useMemo(
+  const totalPacingAlerts = React.useMemo(
     () => PACING_SECTIONS.reduce((total, section) => total + (pacingCounts[section.key] || 0), 0),
     [pacingCounts]
   );
@@ -645,7 +649,7 @@ function App() {
             >
               <Sparkles size={18} />
               <span>Pacing</span>
-              {opsCountsReady && <span className="nav-count nav-count-parent">{num(totalUnderpacing)}</span>}
+              {opsCountsReady && <span className="nav-count nav-count-parent">{num(totalPacingAlerts)}</span>}
               <ChevronDown className={`nav-chevron ${pacingExpanded ? "open" : ""}`} size={16} />
             </button>
             {pacingExpanded && (
@@ -741,6 +745,7 @@ function App() {
           <>
         {page === "margin" && <MarginPage {...marginData} notLiveRefs={notLiveRefs} />}
         {page === "pacing:underpacing" && activePacingType && <PacingPage pacingType={activePacingType} {...pacingData} />}
+        {page === "pacing:overspending" && activePacingType && <PacingPage pacingType={activePacingType} {...pacingData} />}
         {page === "alerts:not_live" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
         {page === "alerts:stopped_impressions" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
         {page === "alerts:missing_our_ref" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
@@ -1304,12 +1309,17 @@ function PacingPage(props: {
   refresh: () => Promise<void>;
   updateRows: (updater: RowUpdater) => void;
 }) {
+  const isOverspending = props.pacingType === "OVERSPENDING";
   const [query, setQuery] = React.useState("");
   const [status, setStatus] = React.useState("ALL");
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [actionError, setActionError] = React.useState("");
   const [actionLoading, setActionLoading] = React.useState(false);
-  const [sort, setSort] = React.useState<SortState>({ key: "DELIVERY_PACING_RATIO", direction: "asc" });
+  const [sort, setSort] = React.useState<SortState>(
+    isOverspending
+      ? { key: "SPEND_PACING_RATIO", direction: "desc" }
+      : { key: "DELIVERY_PACING_RATIO", direction: "asc" }
+  );
   const [showDiagnosis, setShowDiagnosis] = React.useState(false);
 
   const filtered = React.useMemo(() => props.rows.filter((row) => {
@@ -1326,9 +1336,12 @@ function PacingPage(props: {
   const totalActual = activeRows.reduce((sum, row) => sum + Number(row.ACTUAL_DELIVERY || 0), 0);
   const underCount = filtered.filter((row) => row.PACING_STATUS === "UNDER").length;
   const blendedRatio = totalExpected > 0 ? totalActual / totalExpected : null;
+  const totalExpectedSpend = filtered.reduce((sum, row) => sum + Number(row.EXPECTED_SPEND_TO_DATE || 0), 0);
+  const totalActualSpend = filtered.reduce((sum, row) => sum + Number(row.ACTUAL_COST || 0), 0);
+  const blendedSpendRatio = totalExpectedSpend > 0 ? totalActualSpend / totalExpectedSpend : null;
   const selectedRows = sortedRows.filter((row) => selected.has(String(row.OUR_REF)));
   const selectedAlerts = selectedRows.map((row) => ({
-    alert_type: "PACING_UNDERPACING",
+    alert_type: String(row.ALERT_TYPE || "PACING_UNDERPACING"),
     alert_key: String(row.ALERT_KEY || row.OUR_REF),
     our_ref: String(row.OUR_REF),
     state_version: String(row.STATE_VERSION || "")
@@ -1336,7 +1349,7 @@ function PacingPage(props: {
   const selectedSnoozedAlerts = selectedRows
     .filter((row) => row.PACING_SNOOZE_STATE === "SNOOZED")
     .map((row) => ({
-      alert_type: "PACING_UNDERPACING",
+      alert_type: String(row.ALERT_TYPE || "PACING_UNDERPACING"),
       alert_key: String(row.ALERT_KEY || row.OUR_REF),
       our_ref: String(row.OUR_REF),
       state_version: String(row.STATE_VERSION || "")
@@ -1361,6 +1374,27 @@ function PacingPage(props: {
     ["DELIVERY_DELTA", "Short fall"],
     ["DATASOURCE", "Datasource"]
   ];
+  const overspendingColumns: Array<[string, string]> = [
+    ["OUR_REF", "OUR REF"],
+    ["ADVERTISER_NAME", "Advertiser"],
+    ["CAMPAIGN_NAME", "Campaign"],
+    ["LOCATION_TEXT", "Line item"],
+    ["__PROGRESS", "Progress"],
+    ["SPEND_PACING_RATIO", "Spend pacing"],
+    ["EXPECTED_SPEND_TO_DATE", "Expected spend to date"],
+    ["OVERSPENDING_THRESHOLD_AMOUNT", "20% flag threshold"],
+    ["ACTUAL_COST", "Actual spend to date"],
+    ["SPEND_DELTA", "Spend over expected"],
+    ["BOOKED_NETT_COST", "Booked nett cost"],
+    ["PROPERTY_NAME", "Property"],
+    ["JOB_NUMBER", "Job number"],
+    ["ACCOUNT_MANAGER", "AM"],
+    ["START_DATE", "Start"],
+    ["END_DATE", "End"],
+    ["TIME_PROGRESS_RATIO", "Time progress"],
+    ["DELIVERY_PACING_RATIO", "Delivery pacing"],
+    ["DATASOURCE", "Datasource"]
+  ];
   const snoozeColumns: Array<[string, string]> = [
     ["SNOOZE_REASON", "Snooze reason"],
     ["SNOOZE_END_DATE", "Snooze expiry"],
@@ -1377,15 +1411,15 @@ function PacingPage(props: {
     ["CURRENT_DAILY_COST_PER_UNIT", "Current daily cost per unit"]
   ];
   const visibleColumns = [
-    ...pacingColumns,
+    ...(isOverspending ? overspendingColumns : pacingColumns),
     ...(showDiagnosis ? diagnosisColumns : []),
     ...(status === "SNOOZED" ? snoozeColumns : [])
   ];
   const formatPacingValue = (key: string, value: unknown, row: AnyRow) => {
     if (["GOAL_DELIVERY", "EXPECTED_DELIVERY_TO_DATE", "ACTUAL_DELIVERY", "DELIVERY_DELTA", "REQUIRED_DAILY_DELIVERY", "CURRENT_DAILY_DELIVERY", "PROJECTED_END_DELIVERY"].includes(key)) return num(Math.round(Number(value || 0)));
-    if (["REQUIRED_DAILY_SPEND", "CURRENT_DAILY_SPEND"].includes(key)) return currency(value);
+    if (["BOOKED_NETT_COST", "EXPECTED_SPEND_TO_DATE", "ACTUAL_COST", "SPEND_DELTA", "OVERSPENDING_THRESHOLD_AMOUNT", "REQUIRED_DAILY_SPEND", "CURRENT_DAILY_SPEND"].includes(key)) return currency(value);
     if (["REQUIRED_COST_PER_UNIT", "CURRENT_DAILY_COST_PER_UNIT"].includes(key)) return costPerUnit(value, row.COST_UNIT);
-    if (["TIME_PROGRESS_RATIO", "DELIVERY_PACING_RATIO"].includes(key)) return value === null || value === "" ? "N/A" : pct(value);
+    if (["TIME_PROGRESS_RATIO", "DELIVERY_PACING_RATIO", "SPEND_PACING_RATIO"].includes(key)) return value === null || value === "" ? "N/A" : pct(value);
     if (key === "SNOOZE_END_DATE" && !value && row.PACING_SNOOZE_STATE === "SNOOZED") return "Permanent";
     return String(value ?? "");
   };
@@ -1394,12 +1428,15 @@ function PacingPage(props: {
     setSelected(new Set());
     setActionError("");
     setActionLoading(false);
-  }, [status, props.pacingType]);
+    setSort(isOverspending
+      ? { key: "SPEND_PACING_RATIO", direction: "desc" }
+      : { key: "DELIVERY_PACING_RATIO", direction: "asc" });
+  }, [isOverspending, status, props.pacingType]);
 
   function applyOptimisticPacingSnooze(alerts: Array<Record<string, string>>, reason: string, endDate: string | null) {
-    const selectedRefs = new Set(alerts.map((alert) => String(alert.our_ref || alert.alert_key)));
+    const selectedKeys = new Set(alerts.map((alert) => String(alert.alert_key)));
     props.updateRows((rows) => rows.map((row) => {
-      if (!selectedRefs.has(String(row.OUR_REF))) return row;
+      if (!selectedKeys.has(String(row.ALERT_KEY))) return row;
       return {
         ...row,
         PACING_SNOOZE_STATE: "SNOOZED",
@@ -1415,9 +1452,9 @@ function PacingPage(props: {
   }
 
   function applyOptimisticPacingUnsnooze(alerts: Array<Record<string, string>>) {
-    const selectedRefs = new Set(alerts.map((alert) => String(alert.our_ref || alert.alert_key)));
+    const selectedKeys = new Set(alerts.map((alert) => String(alert.alert_key)));
     props.updateRows((rows) => rows.map((row) => {
-      if (!selectedRefs.has(String(row.OUR_REF))) return row;
+      if (!selectedKeys.has(String(row.ALERT_KEY))) return row;
       return {
         ...row,
         PACING_SNOOZE_STATE: "OPEN",
@@ -1452,12 +1489,20 @@ function PacingPage(props: {
     <>
       <PageHeader
         eyebrow={props.meta.source_table ? `${props.meta.project_id}.${props.meta.dataset}.${props.meta.source_table}` : "BigQuery pacing model"}
-        title={props.title || "Underpacing"}
-        subtitle={props.subtitle || "OUR_REF-level pacing, rolled up across data sources with one row per reference."}
+        title={props.title || (isOverspending ? "Overspending" : "Underpacing")}
+        subtitle={props.subtitle || (isOverspending
+          ? "Line items spending at least 20% above their linear expected spend to date."
+          : "OUR_REF-level pacing, rolled up across data sources with one row per reference.")}
         loading={props.loading}
         onRefresh={props.refresh}
       />
-      <MetricStrip metrics={[
+      <MetricStrip metrics={isOverspending ? [
+        { label: "Overspending refs", value: num(filtered.length), tone: "warn" },
+        { label: "Expected spend to date", value: currency(totalExpectedSpend) },
+        { label: "Actual spend to date", value: currency(totalActualSpend) },
+        { label: "Spend vs expected", value: blendedSpendRatio === null ? "N/A" : pct(blendedSpendRatio), tone: "warn" },
+        { label: "Spend over expected", value: currency(totalActualSpend - totalExpectedSpend), tone: "warn" }
+      ] : [
         { label: "Rows", value: num(filtered.length) },
         { label: "Expected delivery to date", value: num(Math.round(totalExpected)) },
         { label: "Actual delivery to date", value: num(Math.round(totalActual)) },
@@ -1471,7 +1516,7 @@ function PacingPage(props: {
         setStatus={setStatus}
         statuses={["OPEN", "SNOOZED", "ALL"]}
         selectedCount={selectedAlerts.length}
-        onDownload={() => downloadCsv(props.downloadFilename || "pacing-dashboard.csv", rowsForCsv(sortedRows, visibleColumns, formatPacingValue))}
+        onDownload={() => downloadCsv(props.downloadFilename || (isOverspending ? "overspending-dashboard.csv" : "pacing-dashboard.csv"), rowsForCsv(sortedRows, visibleColumns, formatPacingValue))}
         downloadDisabled={!sortedRows.length}
       />
       <DataState loading={props.loading && !props.hasLoaded} error={props.error} empty={!filtered.length}>
@@ -1486,9 +1531,17 @@ function PacingPage(props: {
           renderCell={(key, value, row) => {
             if (key === "OUR_REF") return <RefCell value={value} snoozed={row.PACING_SNOOZE_STATE === "SNOOZED"} />;
             if (key !== "__PROGRESS") return null;
-            return <ProgressCell timeProgress={Number(row.TIME_PROGRESS_RATIO || 0)} deliveryProgress={Number(row.ACTUAL_DELIVERY || 0) / Math.max(Number(row.GOAL_DELIVERY || 0), 1)} />;
+            return <ProgressCell
+              timeProgress={Number(row.TIME_PROGRESS_RATIO || 0)}
+              outcomeLabel={isOverspending ? "Spend" : "Delivery"}
+              outcomeProgress={isOverspending
+                ? Number(row.ACTUAL_COST || 0) / Math.max(Number(row.BOOKED_NETT_COST || 0), 1)
+                : Number(row.ACTUAL_DELIVERY || 0) / Math.max(Number(row.GOAL_DELIVERY || 0), 1)}
+            />;
           }}
-          headerHelp={{ DELIVERY_PACING_RATIO: DELIVERY_PACING_HELP }}
+          headerHelp={isOverspending
+            ? { SPEND_PACING_RATIO: SPEND_PACING_HELP, DELIVERY_PACING_RATIO: DELIVERY_PACING_HELP }
+            : { DELIVERY_PACING_RATIO: DELIVERY_PACING_HELP }}
           trailingControl={{
             expanded: showDiagnosis,
             label: showDiagnosis ? "Hide diagnosis columns" : "Show diagnosis columns",
@@ -2501,11 +2554,11 @@ function DataTable(props: {
   );
 }
 
-function ProgressCell(props: { timeProgress: number; deliveryProgress: number }) {
+function ProgressCell(props: { timeProgress: number; outcomeLabel: "Delivery" | "Spend"; outcomeProgress: number }) {
   return (
     <div className="progress-cell">
       <ProgressBar label="Time" value={props.timeProgress} tone="time" />
-      <ProgressBar label="Delivery" value={props.deliveryProgress} tone="delivery" />
+      <ProgressBar label={props.outcomeLabel} value={props.outcomeProgress} tone="delivery" />
     </div>
   );
 }

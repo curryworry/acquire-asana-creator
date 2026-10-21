@@ -30,14 +30,21 @@ LIVE_ALERT_TYPES = (
 )
 MARGIN_SNOOZE_TYPE = "MARGIN_DASHBOARD"
 PACING_TYPE_UNDER = "UNDERPACING"
+PACING_TYPE_OVERSPENDING = "OVERSPENDING"
 PACING_SNOOZE_TYPE = "PACING_UNDERPACING"
+PACING_OVERSPENDING_SNOOZE_TYPE = "PACING_OVERSPENDING"
+OVERSPENDING_THRESHOLD = 1.2
+OVERSPENDING_MIN_DAYS = 3
+OVERSPENDING_MIN_PROGRESS = 0.2
 ASANA_COMMENT_ALERT_TYPES = (
     PACING_SNOOZE_TYPE,
+    PACING_OVERSPENDING_SNOOZE_TYPE,
     ALERT_TYPE_NOT_LIVE,
     ALERT_TYPE_STOPPED_IMPRESSIONS,
 )
 ALERT_LABELS = {
     PACING_SNOOZE_TYPE: "Underpacing",
+    PACING_OVERSPENDING_SNOOZE_TYPE: "Overspending",
     ALERT_TYPE_NOT_LIVE: "Not live",
     ALERT_TYPE_STOPPED_IMPRESSIONS: "Stopped impressions",
     ALERT_TYPE_MISSING_OUR_REF: "Missing OUR_REF",
@@ -820,9 +827,6 @@ ORDER BY margin_amount ASC, our_ref
 
 def pacing_dashboard(include_all: bool = False) -> dict[str, Any]:
     client, project_id, dataset = bq_context()
-    delivery_pacing_filter = "" if include_all else """
-  AND SAFE_DIVIDE(actual_delivery, SAFE_MULTIPLY(goal_delivery, SAFE_DIVIDE(elapsed_days, total_days))) < 1
-"""
     rows = list(
         client.query(
             f"""
@@ -1027,8 +1031,6 @@ SELECT
   last_delivery_date
 FROM base
 WHERE SAFE_MULTIPLY(goal_delivery, SAFE_DIVIDE(elapsed_days, total_days)) > 0
-  AND SAFE_DIVIDE(elapsed_days, total_days) < 1
-{delivery_pacing_filter}
 ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
 """
         ).result()
@@ -1039,60 +1041,110 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
         goal_delivery = float(r["goal_delivery"] or 0)
         expected_delivery_to_date = float(r["expected_delivery_to_date"] or 0)
         actual_delivery = float(r["actual_delivery"] or 0)
+        actual_cost = float(r["actual_cost"] or 0)
+        booked_nett_cost = float(r["booked_nett_cost"] or 0)
+        elapsed_days = int(r["elapsed_days"] or 0)
         time_progress_ratio = float(r["pacing_ratio"] or 0)
         delivery_pacing_ratio = float(r["delivery_pacing_ratio"]) if r["delivery_pacing_ratio"] is not None else None
         delivery_delta = float(r["delivery_delta"] or 0)
         pacing_status = "UNDER" if delivery_pacing_ratio is not None and delivery_pacing_ratio < 1 else "ON_TRACK"
-
-        data.append(
-            {
-                "OUR_REF": str(r["our_ref"] or ""),
-                "ALERT_KEY": make_alert_key(PACING_SNOOZE_TYPE, [str(r["our_ref"] or "")]),
-                "GOAL_TYPE": str(r["goal_types"] or ""),
-                "DATASOURCE": str(r["datasources"] or ""),
-                "JOB_NUMBER": str(r["job_numbers"] or ""),
-                "CAMPAIGN_NAME": str(r["campaign_names"] or ""),
-                "ADVERTISER_NAME": str(r["advertiser_names"] or ""),
-                "PROPERTY_NAME": str(r["property_names"] or ""),
-                "LOCATION_TEXT": str(r["location_texts"] or ""),
-                "ACCOUNT_MANAGER": str(r["account_manager_names"] or ""),
-                "TRAFFICKER_NAME": str(r["trafficker_names"] or ""),
-                "CAMPAIGN_LEAD": str(r["campaign_leads"] or ""),
-                "BOOKING_STATUS": str(r["booking_statuses"] or ""),
-                "BUDGET": float(r["budget"] or 0),
-                "BOOKED_NETT_COST": float(r["booked_nett_cost"] or 0),
-                "START_DATE": str(r["start_date"] or ""),
-                "END_DATE": str(r["end_date"] or ""),
-                "LATEST_DELIVERY_DATE": str(r["latest_delivery_date"] or ""),
-                "AS_OF_DATE": str(r["as_of_date"] or ""),
-                "TOTAL_DAYS": int(r["total_days"] or 0),
-                "ELAPSED_DAYS": int(r["elapsed_days"] or 0),
-                "REMAINING_DAYS": int(r["remaining_days"] or 0),
-                "TIME_PROGRESS_RATIO": time_progress_ratio,
-                "GOAL_DELIVERY": goal_delivery,
-                "EXPECTED_DELIVERY_TO_DATE": expected_delivery_to_date,
-                "ACTUAL_DELIVERY": actual_delivery,
-                "ACTUAL_COST": float(r["actual_cost"] or 0),
-                "CURRENT_DAILY_DELIVERY": float(r["current_daily_delivery"] or 0),
-                "CURRENT_DAILY_COST": float(r["current_daily_cost"] or 0),
-                "COST_UNIT": str(r["cost_unit"] or "CPU"),
-                "REQUIRED_DAILY_DELIVERY": float(r["required_daily_delivery"] or 0),
-                "REQUIRED_DAILY_SPEND": float(r["required_daily_spend"] or 0),
-                "CURRENT_DAILY_SPEND": float(r["current_daily_cost"] or 0),
-                "PROJECTED_END_DELIVERY": float(r["projected_end_delivery"] or 0),
-                "REQUIRED_COST_PER_UNIT": float(r["required_cost_per_unit"]) if r["required_cost_per_unit"] is not None else None,
-                "CURRENT_DAILY_COST_PER_UNIT": float(r["current_daily_cost_per_unit"]) if r["current_daily_cost_per_unit"] is not None else None,
-                "DELIVERY_DELTA": delivery_delta,
-                "DELIVERY_PACING_RATIO": delivery_pacing_ratio,
-                "PACING_STATUS": pacing_status,
-                "PACING_BUCKET": PACING_TYPE_UNDER,
-                "TOTAL_IMPRESSIONS": float(r["total_impressions"] or 0),
-                "TOTAL_LINK_CLICKS": float(r["total_link_clicks"] or 0),
-                "TOTAL_VIDEO_COMPLETIONS": float(r["total_video_completions"] or 0),
-                "FIRST_DELIVERY_DATE": str(r["first_delivery_date"] or ""),
-                "LAST_DELIVERY_DATE": str(r["last_delivery_date"] or ""),
-            }
+        expected_spend_to_date = booked_nett_cost * time_progress_ratio
+        spend_pacing_ratio = actual_cost / expected_spend_to_date if expected_spend_to_date > 0 else None
+        spend_delta = actual_cost - expected_spend_to_date
+        overspending_threshold_amount = expected_spend_to_date * OVERSPENDING_THRESHOLD
+        overspending_eligible = (
+            elapsed_days >= OVERSPENDING_MIN_DAYS
+            or time_progress_ratio >= OVERSPENDING_MIN_PROGRESS
         )
+        is_overspending = (
+            overspending_eligible
+            and spend_pacing_ratio is not None
+            and spend_pacing_ratio >= OVERSPENDING_THRESHOLD
+        )
+        our_ref = str(r["our_ref"] or "")
+        base_row = {
+            "OUR_REF": our_ref,
+            "GOAL_TYPE": str(r["goal_types"] or ""),
+            "DATASOURCE": str(r["datasources"] or ""),
+            "JOB_NUMBER": str(r["job_numbers"] or ""),
+            "CAMPAIGN_NAME": str(r["campaign_names"] or ""),
+            "ADVERTISER_NAME": str(r["advertiser_names"] or ""),
+            "PROPERTY_NAME": str(r["property_names"] or ""),
+            "LOCATION_TEXT": str(r["location_texts"] or ""),
+            "ACCOUNT_MANAGER": str(r["account_manager_names"] or ""),
+            "TRAFFICKER_NAME": str(r["trafficker_names"] or ""),
+            "CAMPAIGN_LEAD": str(r["campaign_leads"] or ""),
+            "BOOKING_STATUS": str(r["booking_statuses"] or ""),
+            "BUDGET": float(r["budget"] or 0),
+            "BOOKED_NETT_COST": booked_nett_cost,
+            "START_DATE": str(r["start_date"] or ""),
+            "END_DATE": str(r["end_date"] or ""),
+            "LATEST_DELIVERY_DATE": str(r["latest_delivery_date"] or ""),
+            "AS_OF_DATE": str(r["as_of_date"] or ""),
+            "TOTAL_DAYS": int(r["total_days"] or 0),
+            "ELAPSED_DAYS": elapsed_days,
+            "REMAINING_DAYS": int(r["remaining_days"] or 0),
+            "TIME_PROGRESS_RATIO": time_progress_ratio,
+            "GOAL_DELIVERY": goal_delivery,
+            "EXPECTED_DELIVERY_TO_DATE": expected_delivery_to_date,
+            "ACTUAL_DELIVERY": actual_delivery,
+            "EXPECTED_SPEND_TO_DATE": expected_spend_to_date,
+            "ACTUAL_COST": actual_cost,
+            "SPEND_PACING_RATIO": spend_pacing_ratio,
+            "SPEND_DELTA": spend_delta,
+            "OVERSPENDING_THRESHOLD_AMOUNT": overspending_threshold_amount,
+            "OVERSPENDING_ELIGIBLE": overspending_eligible,
+            "CURRENT_DAILY_DELIVERY": float(r["current_daily_delivery"] or 0),
+            "CURRENT_DAILY_COST": float(r["current_daily_cost"] or 0),
+            "COST_UNIT": str(r["cost_unit"] or "CPU"),
+            "REQUIRED_DAILY_DELIVERY": float(r["required_daily_delivery"] or 0),
+            "REQUIRED_DAILY_SPEND": float(r["required_daily_spend"] or 0),
+            "CURRENT_DAILY_SPEND": float(r["current_daily_cost"] or 0),
+            "PROJECTED_END_DELIVERY": float(r["projected_end_delivery"] or 0),
+            "REQUIRED_COST_PER_UNIT": float(r["required_cost_per_unit"]) if r["required_cost_per_unit"] is not None else None,
+            "CURRENT_DAILY_COST_PER_UNIT": float(r["current_daily_cost_per_unit"]) if r["current_daily_cost_per_unit"] is not None else None,
+            "DELIVERY_DELTA": delivery_delta,
+            "DELIVERY_PACING_RATIO": delivery_pacing_ratio,
+            "DELIVERY_STATUS": pacing_status,
+            "TOTAL_IMPRESSIONS": float(r["total_impressions"] or 0),
+            "TOTAL_LINK_CLICKS": float(r["total_link_clicks"] or 0),
+            "TOTAL_VIDEO_COMPLETIONS": float(r["total_video_completions"] or 0),
+            "FIRST_DELIVERY_DATE": str(r["first_delivery_date"] or ""),
+            "LAST_DELIVERY_DATE": str(r["last_delivery_date"] or ""),
+        }
+
+        if include_all:
+            data.append(
+                {
+                    **base_row,
+                    "ALERT_TYPE": PACING_SNOOZE_TYPE,
+                    "ALERT_KEY": make_alert_key(PACING_SNOOZE_TYPE, [our_ref]),
+                    "PACING_STATUS": pacing_status,
+                    "PACING_BUCKET": PACING_TYPE_UNDER,
+                }
+            )
+            continue
+
+        if pacing_status == "UNDER" and time_progress_ratio < 1:
+            data.append(
+                {
+                    **base_row,
+                    "ALERT_TYPE": PACING_SNOOZE_TYPE,
+                    "ALERT_KEY": make_alert_key(PACING_SNOOZE_TYPE, [our_ref]),
+                    "PACING_STATUS": "UNDER",
+                    "PACING_BUCKET": PACING_TYPE_UNDER,
+                }
+            )
+        if is_overspending:
+            data.append(
+                {
+                    **base_row,
+                    "ALERT_TYPE": PACING_OVERSPENDING_SNOOZE_TYPE,
+                    "ALERT_KEY": make_alert_key(PACING_OVERSPENDING_SNOOZE_TYPE, [our_ref]),
+                    "PACING_STATUS": "OVERSPENDING",
+                    "PACING_BUCKET": PACING_TYPE_OVERSPENDING,
+                }
+            )
 
     if data:
         df = pd.DataFrame(data)
@@ -1101,7 +1153,7 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
             project_id,
             dataset,
             alert_keys=sorted(df["ALERT_KEY"].dropna().astype(str).unique().tolist()),
-            alert_types=[PACING_SNOOZE_TYPE],
+            alert_types=sorted(df["ALERT_TYPE"].dropna().astype(str).unique().tolist()),
         )
         if not snooze_df.empty:
             df = df.merge(
@@ -1128,7 +1180,12 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
 
     open_count = sum(1 for row in data if row.get("PACING_SNOOZE_STATE") == "OPEN")
     snoozed_count = sum(1 for row in data if row.get("PACING_SNOOZE_STATE") == "SNOOZED")
-    underpacing_count = sum(1 for row in data if row.get("PACING_STATUS") == "UNDER")
+    underpacing_count = sum(
+        1
+        for row in data
+        if row.get("PACING_BUCKET") == PACING_TYPE_UNDER and row.get("PACING_STATUS") == "UNDER"
+    )
+    overspending_count = sum(1 for row in data if row.get("PACING_BUCKET") == PACING_TYPE_OVERSPENDING)
 
     return {
         "rows": data,
@@ -1136,8 +1193,9 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
             "project_id": project_id,
             "dataset": dataset,
             "source_table": "master_overview",
-            "mode": "overview" if include_all else "underpacing",
+            "mode": "overview" if include_all else "pacing_alerts",
             "count_underpacing": str(underpacing_count),
+            "count_overspending": str(overspending_count),
             "count_total": str(len(data)),
             "open_count": str(open_count),
             "snoozed_count": str(snoozed_count),
