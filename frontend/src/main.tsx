@@ -665,7 +665,7 @@ function qaOpenRowCount(rows: AnyRow[]) {
 function App() {
   const reportToken = currentReportToken();
   const publicReportPreview = Boolean(reportToken) || window.location.hash === "#report-preview";
-  const [page, setPage] = React.useState<Page>("reporting");
+  const [page, setPage] = React.useState<Page>("alerts:not_live");
   const [token, setToken] = React.useState(localStorage.getItem(TOKEN_KEY) || "");
   const [user, setUser] = React.useState<UserInfo | null>(null);
   const [alertsExpanded, setAlertsExpanded] = React.useState(true);
