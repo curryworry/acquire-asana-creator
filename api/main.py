@@ -22,12 +22,17 @@ from api.dashboard_service import (
     alerts_bootstrap,
     alerts_dashboard,
     bq_context,
+    create_report_token,
+    decode_report_token,
     enqueue_snooze_actions,
     ensure_control_tables,
+    going_live_soon_dashboard,
     margin_dashboard,
     pacing_dashboard,
     process_asana_comment_action_queue,
     process_snooze_action_queue,
+    report_share_url,
+    reporting_dashboard,
 )
 from api.qa_service import missing_inclusion_dashboard, video_on_trademe_dashboard
 from api.schemas import (
@@ -37,6 +42,7 @@ from api.schemas import (
     DismissActionRequest,
     LoginRequest,
     LoginResponse,
+    ReportCreateRequest,
     SnoozeActionRequest,
     UserResponse,
 )
@@ -49,6 +55,9 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:5177",
+        "http://127.0.0.1:5177",
+        "https://reports.acquire.agency",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -107,12 +116,14 @@ def pacing(_: dict[str, str] = Depends(current_user)) -> dict:
 
 @app.get("/api/dashboard/bootstrap")
 def dashboard_bootstrap(_: dict[str, str] = Depends(current_user)) -> dict:
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         alerts_future = executor.submit(alerts_bootstrap)
+        going_live_soon_future = executor.submit(going_live_soon_dashboard)
         margin_future = executor.submit(margin_dashboard)
         pacing_future = executor.submit(pacing_dashboard)
         return {
             "alerts": alerts_future.result(),
+            "going_live_soon": going_live_soon_future.result(),
             "margin": margin_future.result(),
             "pacing": pacing_future.result(),
         }
@@ -135,6 +146,11 @@ def alerts_bootstrap_route(_: dict[str, str] = Depends(current_user)) -> dict:
     return alerts_bootstrap()
 
 
+@app.get("/api/alerts/going-live-soon")
+def going_live_soon(_: dict[str, str] = Depends(current_user)) -> dict:
+    return going_live_soon_dashboard()
+
+
 @app.get("/api/qa/video-on-trademe")
 def qa_video_on_trademe(_: dict[str, str] = Depends(current_user)) -> dict:
     try:
@@ -154,6 +170,34 @@ def qa_missing_inclusion_list(_: dict[str, str] = Depends(current_user)) -> dict
 @app.get("/api/qa/pacing-overview")
 def qa_pacing_overview(_: dict[str, str] = Depends(current_user)) -> dict:
     return pacing_dashboard(include_all=True)
+
+
+@app.post("/api/reports")
+def create_report(payload: ReportCreateRequest, _: dict[str, str] = Depends(current_user)) -> dict:
+    try:
+        token = create_report_token(payload.job_number)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "token": token,
+        "job_number": payload.job_number.strip(),
+        "share_url": report_share_url(token),
+    }
+
+
+@app.get("/api/reports/{token}")
+def public_report(
+    token: str,
+    start_date: str | None = Query(default=None),
+    end_date: str | None = Query(default=None),
+) -> dict:
+    try:
+        job_number = decode_report_token(token)
+        return reporting_dashboard(job_number, start_date=start_date, end_date=end_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 def enqueue_snooze_response(

@@ -6,12 +6,15 @@ import {
   ArrowDown,
   ArrowDownUp,
   ArrowUp,
+  BarChart3,
   Bell,
+  Building2,
   Check,
   ChevronDown,
   ClipboardCheck,
   Clock3,
   Download,
+  Eye,
   Filter,
   Gauge,
   LayoutDashboard,
@@ -21,8 +24,10 @@ import {
   Minus,
   Plus,
   RefreshCcw,
+  Send,
   Search,
   Settings,
+  Share2,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
@@ -34,12 +39,25 @@ import acquireSidebarLogoUrl from "./assets/acquire-logo-sidebar.svg";
 import sleepBadgeUrl from "./assets/sleep-badge.svg";
 import "./styles.css";
 
-type AlertSection = "NOT_LIVE" | "STOPPED_IMPRESSIONS" | "MISSING_OUR_REF" | "ENDED_BUT_IMPRESSIONS";
-type PacingSection = "UNDERPACING" | "OVERSPENDING";
-type Page = "margin" | "pacing:underpacing" | "pacing:overspending" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "qa:pacing_overview" | "qa:video_on_trademe" | "qa:missing_inclusion_list" | "trafficking" | "automation" | "admin";
+type AlertSection = "GOING_LIVE_SOON" | "NOT_LIVE" | "STOPPED_IMPRESSIONS" | "MISSING_OUR_REF" | "ENDED_BUT_IMPRESSIONS";
+type PacingSection = "UNDERPACING" | "OVERSPENDING" | "UNDERSPENDING";
+type Page = "margin" | "pacing:underpacing" | "pacing:overspending" | "pacing:underspending" | "alerts:going_live_soon" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "qa:pacing_overview" | "qa:video_on_trademe" | "qa:missing_inclusion_list" | "trafficking" | "automation" | "reporting" | "admin";
 type AnyRow = Record<string, string | number | null>;
 type ApiEnvelope<T> = { rows: T[]; meta: Record<string, string> };
-type OpsBootstrapEnvelope = { alerts: ApiEnvelope<AnyRow>; margin: ApiEnvelope<AnyRow>; pacing: ApiEnvelope<AnyRow> };
+type OpsBootstrapEnvelope = { alerts: ApiEnvelope<AnyRow>; going_live_soon: ApiEnvelope<AnyRow>; margin: ApiEnvelope<AnyRow>; pacing: ApiEnvelope<AnyRow> };
+type ReportPayload = {
+  rows: AnyRow[];
+  meta: Record<string, string>;
+  report: {
+    campaign: Record<string, string | number | boolean>;
+    summary: Record<string, number>;
+    channels: AnyRow[];
+    trend: AnyRow[];
+    line_items: AnyRow[];
+  } | null;
+};
+type ReportCreateResponse = { token: string; job_number: string; share_url: string };
+type ReportDateRange = { startDate: string; endDate: string };
 type ApiRefreshOptions = { silent?: boolean };
 type RowUpdater = (rows: AnyRow[]) => AnyRow[];
 type SortDirection = "asc" | "desc";
@@ -81,8 +99,10 @@ type AutomationResult = {
 const TOKEN_KEY = "acquire_ops_token";
 const ADMIN_USERNAME = "ashwin@acquirenz.com";
 const DELIVERY_PACING_HELP = "Delivery pacing shows how the campaign is doing against expected delivery. A delivery pacing of 50% means that the campaign is only delivering 50% of the goal impressions/clicks/views that it should be delivering to hit the target. Delivery pacing should be above 100% to hit the campaign goal";
-const SPEND_PACING_HELP = "Spend pacing compares cumulative actual spend with the line item's linear expected spend to date. Rows appear here once they are at least 3 days or 20% into the campaign, whichever comes first, and spend pacing is at least 120%.";
+const OVERSPENDING_PACING_HELP = "Spend pacing compares cumulative actual spend with the line item's linear expected spend to date. Rows appear here once they are at least 3 days or 20% into the campaign, whichever comes first, and spend pacing is at least 120%.";
+const UNDERSPENDING_PACING_HELP = "Spend pacing compares cumulative actual spend with the line item's linear expected spend to date. Rows appear here once they are at least 3 days or 20% into the campaign, whichever comes first, and spend pacing is 80% or less.";
 const ALERT_SECTIONS: Array<{ key: AlertSection; page: Page; label: string }> = [
+  { key: "GOING_LIVE_SOON", page: "alerts:going_live_soon", label: "Going live soon" },
   { key: "NOT_LIVE", page: "alerts:not_live", label: "Not live" },
   { key: "STOPPED_IMPRESSIONS", page: "alerts:stopped_impressions", label: "Stopped impressions" },
   { key: "MISSING_OUR_REF", page: "alerts:missing_our_ref", label: "Missing OUR_REF" },
@@ -90,7 +110,8 @@ const ALERT_SECTIONS: Array<{ key: AlertSection; page: Page; label: string }> = 
 ];
 const PACING_SECTIONS: Array<{ key: PacingSection; page: Page; label: string }> = [
   { key: "UNDERPACING", page: "pacing:underpacing", label: "Underpacing" },
-  { key: "OVERSPENDING", page: "pacing:overspending", label: "Overspending" }
+  { key: "OVERSPENDING", page: "pacing:overspending", label: "Overspending" },
+  { key: "UNDERSPENDING", page: "pacing:underspending", label: "Underspending" }
 ];
 const QA_SECTIONS: Array<{ page: Page; label: string }> = [
   { page: "qa:pacing_overview", label: "Overview" },
@@ -102,6 +123,7 @@ const QA_MISSING_INCLUSION_ALERT_TYPE = "QA_MISSING_INCLUSION_LIST";
 const MARGIN_VIEWS: MarginView[] = ["Campaign", "Advertiser", "Line item"];
 const ALERT_PAGE_SIZE = 100;
 const EMPTY_ALERT_COUNTS: Record<AlertSection, number> = {
+  GOING_LIVE_SOON: 0,
   NOT_LIVE: 0,
   STOPPED_IMPRESSIONS: 0,
   MISSING_OUR_REF: 0,
@@ -117,6 +139,49 @@ const OPS_LOADING_STAGES = [
   "Checking snoozes",
   "Filtering alerts",
   "Preparing dashboard"
+];
+const REPORT_CHANNELS = [
+  { name: "Display", intent: "Reach and verified attention", impressions: "20.7M", clicks: "149.3K", ctr: "0.72%", delivery: 108, trend: "+7.1%", tone: "good" },
+  { name: "Video", intent: "Consideration and completion quality", impressions: "5.6M", clicks: "67.7K", ctr: "57.22% VCR", delivery: 92, trend: "-4.2%", tone: "watch" },
+  { name: "Search", intent: "High-intent capture", impressions: "190.7K", clicks: "21.1K", ctr: "11.08%", delivery: 116, trend: "+15.9%", tone: "good" },
+  { name: "Social", intent: "Demand creation and retargeting", impressions: "16.6M", clicks: "210.9K", ctr: "1.27%", delivery: 87, trend: "-3.6%", tone: "watch" },
+  { name: "Native", intent: "Prospecting in-market readers", impressions: "832.9K", clicks: "13.6K", ctr: "1.63%", delivery: 124, trend: "+28.9%", tone: "good" },
+  { name: "Audio", intent: "Incremental frequency", impressions: "431.9K", clicks: "784", ctr: "0.18%", delivery: 103, trend: "+9.9%", tone: "good" }
+];
+const REPORT_LINES = [
+  { id: "33269", name: "Malaysia/Vietnam/Indonesia | Programmatic Video", channel: "Video", delivery: 243, tracking: 668, status: "Ahead", clicks: "51,616", vcr: "54.87%" },
+  { id: "33543", name: "Specific Geo | Programmatic Video", channel: "Video", delivery: 107, tracking: 269, status: "On track", clicks: "13", vcr: "54.26%" },
+  { id: "33396", name: "Geo-Targeted | Programmatic Video", channel: "Video", delivery: 188, tracking: 286, status: "Ahead", clicks: "58", vcr: "29.50%" },
+  { id: "33003", name: "Fiji | Meta Remarketing", channel: "Social", delivery: 788, tracking: 885, status: "Ahead", clicks: "2,364", vcr: "26.89%" },
+  { id: "33359", name: "NZ National", channel: "Social", delivery: 6, tracking: 6, status: "Behind", clicks: "243", vcr: "4.16%" },
+  { id: "33318", name: "Fiji | Meta | Prospecting and Remarketing", channel: "Social", delivery: 66, tracking: 101, status: "Watch", clicks: "12,674", vcr: "4.15%" },
+  { id: "33310", name: "AU selected locations | Meta Remarketing", channel: "Social", delivery: 65, tracking: 73, status: "Watch", clicks: "581", vcr: "-" },
+  { id: "33204", name: "Geo-Targeted | YouTube", channel: "Video", delivery: 13, tracking: 126, status: "Behind", clicks: "0", vcr: "29.83%" },
+  { id: "33347", name: "Specific Geo | Auckland, Gisborne and Waikato", channel: "Video", delivery: 51, tracking: 77, status: "Watch", clicks: "44", vcr: "16.14%" },
+  { id: "33471", name: "National | Video - Retargeting", channel: "Video", delivery: 4, tracking: 25, status: "Behind", clicks: "55", vcr: "81.51%" },
+  { id: "33486", name: "Specific Geo | Prog Video - Hero Videos", channel: "Video", delivery: 0, tracking: 1, status: "Tracking issue", clicks: "0", vcr: "8.29%" },
+  { id: "32770", name: "Auckland | Programmatic Display", channel: "Display", delivery: 164, tracking: 184, status: "Ahead", clicks: "353", vcr: "40.41%" }
+];
+const REPORT_POINTS = [
+  { day: "Sep 1", impressions: 2.94, clicks: 37.5 },
+  { day: "Sep 2", impressions: 3.08, clicks: 40.6 },
+  { day: "Sep 3", impressions: 3.06, clicks: 39.4 },
+  { day: "Sep 4", impressions: 3.01, clicks: 36.5 },
+  { day: "Sep 5", impressions: 2.98, clicks: 35.8 },
+  { day: "Sep 6", impressions: 3.18, clicks: 40.4 },
+  { day: "Sep 7", impressions: 3.08, clicks: 37.1 },
+  { day: "Sep 8", impressions: 2.88, clicks: 29.1 },
+  { day: "Sep 9", impressions: 2.86, clicks: 29.4 },
+  { day: "Sep 10", impressions: 2.68, clicks: 29.7 },
+  { day: "Sep 11", impressions: 2.72, clicks: 28.6 },
+  { day: "Sep 12", impressions: 2.70, clicks: 30.8 },
+  { day: "Sep 13", impressions: 2.71, clicks: 31.4 },
+  { day: "Sep 14", impressions: 2.82, clicks: 31.2 },
+  { day: "Sep 15", impressions: 2.64, clicks: 29.3 },
+  { day: "Sep 16", impressions: 2.63, clicks: 27.4 },
+  { day: "Sep 17", impressions: 2.55, clicks: 27.5 },
+  { day: "Sep 18", impressions: 2.42, clicks: 25.8 },
+  { day: "Sep 19", impressions: 2.34, clicks: 25.1 }
 ];
 
 class ApiError extends Error {
@@ -180,6 +245,13 @@ function num(value: unknown) {
   return new Intl.NumberFormat("en-NZ").format(Number(value || 0));
 }
 
+function compactNum(value: unknown) {
+  return new Intl.NumberFormat("en-NZ", {
+    notation: "compact",
+    maximumFractionDigits: 1
+  }).format(Number(value || 0));
+}
+
 function downloadCsv(filename: string, rows: AnyRow[]) {
   if (!rows.length) return;
   const headers = Object.keys(rows[0]);
@@ -236,6 +308,30 @@ function todayInTimeZone(timeZone: string) {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
+function addDays(isoDate: string, offset: number) {
+  if (!isoDate) return "";
+  const date = new Date(`${isoDate}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + offset);
+  return date.toISOString().slice(0, 10);
+}
+
+function readReportDateRange(): ReportDateRange {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    startDate: params.get("start_date") || "",
+    endDate: params.get("end_date") || ""
+  };
+}
+
+function writeReportDateRange(range: ReportDateRange) {
+  const url = new URL(window.location.href);
+  if (range.startDate) url.searchParams.set("start_date", range.startDate);
+  else url.searchParams.delete("start_date");
+  if (range.endDate) url.searchParams.set("end_date", range.endDate);
+  else url.searchParams.delete("end_date");
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
 async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem(TOKEN_KEY);
   const headers = new Headers(options.headers);
@@ -267,6 +363,7 @@ function pageToAlertType(page: Page): AlertSection | null {
 function pageToPacingType(page: Page): PacingSection | null {
   if (page === "pacing:underpacing") return "UNDERPACING";
   if (page === "pacing:overspending") return "OVERSPENDING";
+  if (page === "pacing:underspending") return "UNDERSPENDING";
   return null;
 }
 
@@ -279,6 +376,11 @@ function buildAlertsPath(alertType: AlertSection, status: string, query: string,
   });
   if (query.trim()) params.set("query", query.trim());
   return `/api/alerts?${params.toString()}`;
+}
+
+function currentReportToken() {
+  const match = window.location.pathname.match(/^\/reports\/([^/]+)$/);
+  return match ? decodeURIComponent(match[1]) : "";
 }
 
 function useApiRows<T extends AnyRow>(path: string, enabled = true) {
@@ -347,6 +449,8 @@ function useApiRows<T extends AnyRow>(path: string, enabled = true) {
 function useOpsBootstrap(enabled: boolean) {
   const [alertRows, setAlertRows] = React.useState<AnyRow[]>([]);
   const [alertMeta, setAlertMeta] = React.useState<Record<string, string>>({});
+  const [goingLiveSoonRows, setGoingLiveSoonRows] = React.useState<AnyRow[]>([]);
+  const [goingLiveSoonMeta, setGoingLiveSoonMeta] = React.useState<Record<string, string>>({});
   const [marginRows, setMarginRows] = React.useState<AnyRow[]>([]);
   const [marginMeta, setMarginMeta] = React.useState<Record<string, string>>({});
   const [pacingRows, setPacingRows] = React.useState<AnyRow[]>([]);
@@ -361,6 +465,8 @@ function useOpsBootstrap(enabled: boolean) {
     if (!enabled) {
       setAlertRows([]);
       setAlertMeta({});
+      setGoingLiveSoonRows([]);
+      setGoingLiveSoonMeta({});
       setMarginRows([]);
       setMarginMeta({});
       setPacingRows([]);
@@ -378,11 +484,14 @@ function useOpsBootstrap(enabled: boolean) {
       const data = await apiFetch<OpsBootstrapEnvelope>("/api/dashboard/bootstrap");
       setAlertRows(data.alerts.rows);
       setAlertMeta(data.alerts.meta || {});
+      setGoingLiveSoonRows(data.going_live_soon.rows);
+      setGoingLiveSoonMeta(data.going_live_soon.meta || {});
       setMarginRows(data.margin.rows);
       setMarginMeta(data.margin.meta || {});
       setPacingRows(data.pacing.rows);
       setPacingMeta(data.pacing.meta || {});
       API_CACHE.set("/api/alerts/bootstrap", data.alerts);
+      API_CACHE.set("/api/alerts/going-live-soon", data.going_live_soon);
       API_CACHE.set("/api/margin", data.margin);
       API_CACHE.set("/api/pacing", data.pacing);
       hasLoadedRef.current = true;
@@ -428,6 +537,16 @@ function useOpsBootstrap(enabled: boolean) {
       error,
       refresh,
       updateRows: updateAlertRows,
+      lastLoadedAt
+    },
+    goingLiveSoon: {
+      rows: goingLiveSoonRows,
+      meta: goingLiveSoonMeta,
+      loading,
+      hasLoaded,
+      error,
+      refresh,
+      updateRows: () => undefined,
       lastLoadedAt
     },
     margin: {
@@ -526,7 +645,8 @@ function openAlertCounts(rows: AnyRow[]) {
 function pacingAlertCounts(rows: AnyRow[]) {
   return {
     UNDERPACING: rows.filter((row) => row.PACING_BUCKET === "UNDERPACING").length,
-    OVERSPENDING: rows.filter((row) => row.PACING_BUCKET === "OVERSPENDING").length
+    OVERSPENDING: rows.filter((row) => row.PACING_BUCKET === "OVERSPENDING").length,
+    UNDERSPENDING: rows.filter((row) => row.PACING_BUCKET === "UNDERSPENDING").length
   };
 }
 
@@ -543,7 +663,9 @@ function qaOpenRowCount(rows: AnyRow[]) {
 }
 
 function App() {
-  const [page, setPage] = React.useState<Page>("alerts:not_live");
+  const reportToken = currentReportToken();
+  const publicReportPreview = Boolean(reportToken) || window.location.hash === "#report-preview";
+  const [page, setPage] = React.useState<Page>("reporting");
   const [token, setToken] = React.useState(localStorage.getItem(TOKEN_KEY) || "");
   const [user, setUser] = React.useState<UserInfo | null>(null);
   const [alertsExpanded, setAlertsExpanded] = React.useState(true);
@@ -560,6 +682,7 @@ function App() {
   const deferredAlertQuery = React.useDeferredValue(alertQuery);
   const opsData = useOpsBootstrap(Boolean(token));
   const alertsData = opsData.alerts;
+  const goingLiveSoonData = opsData.goingLiveSoon;
   const marginData = opsData.margin;
   const pacingData = opsData.pacing;
   const notLiveRefs = React.useMemo(() => new Set(alertsData.rows
@@ -577,7 +700,10 @@ function App() {
   const opsBootstrapPending = (page === "margin" || alertsActive || pacingActive) && Boolean(token) && !opsData.alerts.hasLoaded && !opsData.alerts.error;
   const [opsLoaderDismissed, setOpsLoaderDismissed] = React.useState(!opsBootstrapPending);
   const showOpsBootstrapLoader = opsBootstrapPending || !opsLoaderDismissed;
-  const alertCounts = React.useMemo(() => openAlertCounts(alertsData.rows), [alertsData.rows]);
+  const alertCounts = React.useMemo(() => ({
+    ...openAlertCounts(alertsData.rows),
+    GOING_LIVE_SOON: goingLiveSoonData.rows.length
+  }), [alertsData.rows, goingLiveSoonData.rows.length]);
   const pacingCounts = React.useMemo(() => pacingAlertCounts(pacingData.rows), [pacingData.rows]);
   const totalOpenAlerts = React.useMemo(
     () => ALERT_SECTIONS.reduce((total, section) => total + (alertCounts[section.key] || 0), 0),
@@ -622,6 +748,10 @@ function App() {
   React.useEffect(() => {
     setAlertPage(1);
   }, [activeAlertType, alertStatus, deferredAlertQuery]);
+
+  if (publicReportPreview) {
+    return <CampaignReportPage publicView reportToken={reportToken} />;
+  }
 
   if (!token) {
     return <Login onLogin={(nextToken, nextUser) => {
@@ -672,7 +802,7 @@ function App() {
               className={`nav-button nav-section-trigger ${alertsActive ? "active" : ""}`}
               onClick={() => {
                 setAlertsExpanded((current) => !current);
-                if (!alertsActive) setPage("alerts:not_live");
+                if (!alertsActive) setPage("alerts:going_live_soon");
               }}
             >
               <Bell size={18} />
@@ -725,6 +855,7 @@ function App() {
           </div>
           <NavButton active={page === "trafficking"} icon={<Table2 size={18} />} label="Trafficking" onClick={() => setPage("trafficking")} />
           <NavButton active={page === "automation"} icon={<Activity size={18} />} label="Automation" onClick={() => setPage("automation")} />
+          <NavButton active={page === "reporting"} icon={<BarChart3 size={18} />} label="Reporting beta" onClick={() => setPage("reporting")} />
           {isAdmin && <NavButton active={page === "admin"} icon={<Settings size={18} />} label="Admin" onClick={() => setPage("admin")} />}
         </nav>
         <div className="user-panel">
@@ -746,6 +877,8 @@ function App() {
         {page === "margin" && <MarginPage {...marginData} notLiveRefs={notLiveRefs} />}
         {page === "pacing:underpacing" && activePacingType && <PacingPage pacingType={activePacingType} {...pacingData} />}
         {page === "pacing:overspending" && activePacingType && <PacingPage pacingType={activePacingType} {...pacingData} />}
+        {page === "pacing:underspending" && activePacingType && <PacingPage pacingType={activePacingType} {...pacingData} />}
+        {page === "alerts:going_live_soon" && <GoingLiveSoonPage {...goingLiveSoonData} />}
         {page === "alerts:not_live" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
         {page === "alerts:stopped_impressions" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
         {page === "alerts:missing_our_ref" && activeAlertType && <AlertsPage alertType={activeAlertType} {...alertsData} query={alertQuery} setQuery={setAlertQuery} status={alertStatus} setStatus={setAlertStatus} page={alertPage} setPage={setAlertPage} />}
@@ -755,6 +888,7 @@ function App() {
         {page === "qa:missing_inclusion_list" && <QaMissingInclusionListPage {...qaMissingInclusionData} />}
         {page === "trafficking" && <PlaceholderPage title="Trafficking to Asana" body="The next migration slice will bring the Gmail fetch, parse preview, Asana dedupe check, and dry-run downloads into this interface." />}
         {page === "automation" && <PlaceholderPage title="Automation Runs" body="Manual automation triggers should run as background jobs with live status and logs, instead of blocking the interface." />}
+        {page === "reporting" && <ReportingBetaPage />}
         {page === "admin" && <AdminPage isAdmin={isAdmin} />}
           </>
         )}
@@ -856,6 +990,580 @@ function NavButton(props: { active: boolean; icon: React.ReactNode; label: strin
       {props.icon}
       <span>{props.label}</span>
     </button>
+  );
+}
+
+function fallbackReportPayload(): ReportPayload {
+  return {
+    rows: [],
+    meta: {
+      source_table: "mock",
+      job_number: "9054"
+    },
+    report: {
+      campaign: {
+        JOB_NUMBER: "9054",
+        CAMPAIGN_NAME: "Campaign Name",
+        ADVERTISER_NAME: "Client",
+        START_DATE: "2026-09-01",
+        END_DATE: "2026-09-19",
+        HAS_VIDEO: true
+      },
+      summary: {
+        IMPRESSIONS: 53240000,
+        CLICKS: 604200,
+        CTR: 0.0113,
+        VIDEO_COMPLETIONS: 16180000,
+        VIDEO_COMPLETION_RATE: 0.3039,
+        BOOKED_UNITS: 100,
+        ACTUAL_DELIVERY: 104
+      },
+      channels: REPORT_CHANNELS.map((channel) => ({
+        PROPERTY_NAME: channel.name,
+        IMPRESSIONS: Number(channel.impressions.replace(/[MK]/g, "")) * (channel.impressions.includes("M") ? 1000000 : 1000),
+        CLICKS: Number(channel.clicks.replace(/[K]/g, "")) * (channel.clicks.includes("K") ? 1000 : 1),
+        CTR: Number(channel.ctr.replace(/[^0-9.]/g, "")) / 100,
+        VIDEO_COMPLETION_RATE: channel.ctr.includes("VCR") ? Number(channel.ctr.replace(/[^0-9.]/g, "")) / 100 : 0,
+        DELIVERY_TO_GOAL_RATIO: channel.delivery / 100,
+        LINE_ITEM_COUNT: 1
+      })),
+      trend: REPORT_POINTS.map((point) => ({
+        DATE: point.day,
+        IMPRESSIONS: point.impressions * 1000000,
+        CLICKS: point.clicks * 1000
+      })),
+      line_items: REPORT_LINES.map((line) => ({
+        OUR_REF: line.id,
+        LINE_ITEM_NAME: line.name,
+        PROPERTY_NAME: line.channel,
+        START_DATE: "2026-09-01",
+        END_DATE: "2026-09-19",
+        BOOKED_UNITS: 100000,
+        IMPRESSIONS: Number(line.clicks.replace(/,/g, "")) * 100,
+        CLICKS: Number(line.clicks.replace(/,/g, "")),
+        CTR: 0.0113,
+        VIDEO_COMPLETION_RATE: line.vcr === "-" ? 0 : Number(line.vcr.replace("%", "")) / 100,
+        TIME_PROGRESS_RATIO: 0.62,
+        DELIVERY_TO_GOAL_RATIO: line.delivery / 100,
+        DELIVERY_PACING_RATIO: line.delivery / 100,
+        STATUS: line.status
+      }))
+    }
+  };
+}
+
+function useReportPayload(reportToken: string, dateRange: ReportDateRange) {
+  const [payload, setPayload] = React.useState<ReportPayload>(() => fallbackReportPayload());
+  const [loading, setLoading] = React.useState(Boolean(reportToken));
+  const [error, setError] = React.useState("");
+
+  const refresh = React.useCallback(async () => {
+    if (!reportToken) {
+      setPayload(fallbackReportPayload());
+      setLoading(false);
+      setError("");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const params = new URLSearchParams();
+      if (dateRange.startDate) params.set("start_date", dateRange.startDate);
+      if (dateRange.endDate) params.set("end_date", dateRange.endDate);
+      const suffix = params.toString() ? `?${params.toString()}` : "";
+      const nextPayload = await apiFetch<ReportPayload>(`/api/reports/${encodeURIComponent(reportToken)}${suffix}`);
+      setPayload(nextPayload);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Report failed to load");
+    } finally {
+      setLoading(false);
+    }
+  }, [dateRange.endDate, dateRange.startDate, reportToken]);
+
+  React.useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  return { payload, loading, error, refresh };
+}
+
+function ReportingBetaPage() {
+  const [modalOpen, setModalOpen] = React.useState(false);
+  const [jobNumber, setJobNumber] = React.useState("9054");
+  const [reportLink, setReportLink] = React.useState<ReportCreateResponse | null>(null);
+  const [reportLoading, setReportLoading] = React.useState(false);
+  const [reportError, setReportError] = React.useState("");
+  const localReportUrl = reportLink ? `${window.location.origin}/reports/${reportLink.token}` : "";
+
+  async function generateReport(event?: React.FormEvent) {
+    event?.preventDefault();
+    setReportLoading(true);
+    setReportError("");
+    try {
+      const nextReportLink = await apiFetch<ReportCreateResponse>("/api/reports", {
+        method: "POST",
+        body: JSON.stringify({ job_number: jobNumber })
+      });
+      setReportLink(nextReportLink);
+      setJobNumber(nextReportLink.job_number);
+      setModalOpen(false);
+    } catch (err) {
+      setReportError(err instanceof Error ? err.message : "Report link failed to generate");
+    } finally {
+      setReportLoading(false);
+    }
+  }
+
+  return (
+    <section className="reporting-workspace">
+      <header className="reporting-head">
+        <div>
+          <div className="eyebrow">Reporting beta</div>
+          <h1>Client report generator</h1>
+          <p>Create client-facing campaign report links from the same data used by pacing and alerts.</p>
+        </div>
+        <div className="header-actions">
+          <button className="ghost-button" disabled={!localReportUrl} onClick={() => { if (localReportUrl) window.location.href = localReportUrl; }}>
+            <Eye size={16} />
+            Preview report
+          </button>
+          <button className="primary-button" onClick={() => setModalOpen(true)}>
+            <Plus size={16} />
+            New report
+          </button>
+        </div>
+      </header>
+
+      <section className="automation-beta-card">
+        <div className="automation-beta-copy">
+          <span className="beta-pill">Reporting beta</span>
+          <h2>Generate a client report from a job number</h2>
+          <p>Enter a job number, confirm the report shell, and publish a living dashboard link connected to the campaign reporting data.</p>
+          <div className="automation-beta-actions">
+            <button className="primary-button" onClick={() => setModalOpen(true)}>
+              <BarChart3 size={16} />
+              Create report
+            </button>
+            <button className="ghost-button" disabled={!localReportUrl} onClick={() => { if (localReportUrl) window.location.href = localReportUrl; }}>
+              <Share2 size={16} />
+              Open generated link
+            </button>
+          </div>
+        </div>
+
+        <div className="reporting-steps automation-steps" aria-label="Report creation flow">
+          {[
+            ["1", "Enter job number"],
+            ["2", "Generate report shell"],
+            ["3", "Share living link"]
+          ].map(([number, label]) => (
+            <div className="reporting-step" key={number}>
+              <span>{number}</span>
+              <strong>{label}</strong>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="automation-report-grid">
+        <article className="automation-report-panel">
+          <div>
+            <span className="eyebrow">Generated link</span>
+            <h2>{reportLink ? `${reportLink.job_number} report` : "No report generated"}</h2>
+            <p>{reportLink ? "Client-facing report link is ready to share. The report queries live data on page load." : "Create a report from a job number to generate a shareable link."}</p>
+          </div>
+          {reportError && <div className="error-line">{reportError}</div>}
+          {reportLink && (
+            <div className="share-link-box">
+              <code>{reportLink.share_url}</code>
+              <button className="ghost-button" onClick={() => navigator.clipboard?.writeText(reportLink.share_url)}>
+                <ClipboardCheck size={16} />
+                Copy
+              </button>
+            </div>
+          )}
+          <div className="automation-report-actions">
+            <button className="ghost-button" disabled={!localReportUrl} onClick={() => { if (localReportUrl) window.location.href = localReportUrl; }}>
+              <Eye size={16} />
+              View report
+            </button>
+            <button className="ghost-button" onClick={() => setModalOpen(true)}>
+              <Settings size={16} />
+              Edit setup
+            </button>
+          </div>
+        </article>
+
+        <article className="automation-report-panel">
+          <span className="eyebrow">Recent report links</span>
+          <div className="report-link-list">
+            {[
+              ["9054", "Test report", "Ready"],
+              ["33118", "Fiji Prospecting and Remarketing", "Ready"],
+              ["33269", "Programmatic Video", "Draft"]
+            ].map(([job, name, state]) => (
+              <button key={job} className="report-link-row" onClick={() => { setJobNumber(job); setModalOpen(true); }}>
+                <span>
+                  <strong>{job}</strong>
+                  {name}
+                </span>
+                <em>{state}</em>
+              </button>
+            ))}
+          </div>
+        </article>
+      </section>
+
+      {modalOpen && (
+        <div className="modal-backdrop" role="presentation" onClick={() => setModalOpen(false)}>
+          <form className="report-modal" onSubmit={(event) => void generateReport(event)} onClick={(event) => event.stopPropagation()}>
+            <button className="modal-close" type="button" aria-label="Close" onClick={() => setModalOpen(false)}>
+              <X size={18} />
+            </button>
+            <div className="eyebrow">Reporting beta</div>
+            <h2>Generate a living dashboard link</h2>
+            <label>
+              Job number
+              <input value={jobNumber} onChange={(event) => setJobNumber(event.target.value)} inputMode="numeric" />
+            </label>
+            <label>
+              Client logo
+              <input type="file" />
+            </label>
+            <label>
+              Report visibility
+              <select defaultValue="secure-link">
+                <option value="secure-link">Anyone with secure link</option>
+              </select>
+            </label>
+            {reportError && <div className="error-line">{reportError}</div>}
+            <button className="primary-button" type="submit" disabled={reportLoading}>
+              {reportLoading ? <Loader2 className="spin" size={16} /> : <Send size={16} />}
+              Generate report
+            </button>
+          </form>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ReportDateControl(props: {
+  campaignStart: string;
+  campaignEnd: string;
+  value: ReportDateRange;
+  onChange: (range: ReportDateRange) => void;
+}) {
+  const [preset, setPreset] = React.useState(props.value.startDate || props.value.endDate ? "custom" : "all");
+  const [draft, setDraft] = React.useState<ReportDateRange>(props.value);
+
+  React.useEffect(() => {
+    setDraft(props.value);
+    setPreset(props.value.startDate || props.value.endDate ? "custom" : "all");
+  }, [props.value.endDate, props.value.startDate]);
+
+  function presetRange(nextPreset: string): ReportDateRange {
+    const end = props.campaignEnd || todayInTimeZone("Pacific/Auckland");
+    if (nextPreset === "all") return { startDate: "", endDate: "" };
+    if (nextPreset === "last-7") return { startDate: addDays(end, -6), endDate: end };
+    if (nextPreset === "last-14") return { startDate: addDays(end, -13), endDate: end };
+    if (nextPreset === "last-30") return { startDate: addDays(end, -29), endDate: end };
+    if (nextPreset === "campaign-to-date") return { startDate: props.campaignStart, endDate: end };
+    return draft;
+  }
+
+  function changePreset(nextPreset: string) {
+    setPreset(nextPreset);
+    if (nextPreset === "custom") return;
+    const nextRange = presetRange(nextPreset);
+    setDraft(nextRange);
+    props.onChange(nextRange);
+  }
+
+  function applyCustom() {
+    setPreset("custom");
+    props.onChange(draft);
+  }
+
+  return (
+    <div className="report-date-control" aria-label="Report date range">
+      <div className="report-date-head">
+        <Clock3 size={15} />
+        <span>Date range</span>
+      </div>
+      <div className="report-date-row">
+        <select value={preset} onChange={(event) => changePreset(event.target.value)}>
+          <option value="all">All dates</option>
+          <option value="campaign-to-date">Campaign to date</option>
+          <option value="last-7">Last 7 days</option>
+          <option value="last-14">Last 14 days</option>
+          <option value="last-30">Last 30 days</option>
+          <option value="custom">Custom</option>
+        </select>
+      </div>
+      <div className="report-date-row">
+        <input
+          aria-label="Start date"
+          type="date"
+          value={draft.startDate}
+          min={props.campaignStart || undefined}
+          max={draft.endDate || props.campaignEnd || undefined}
+          onChange={(event) => {
+            setPreset("custom");
+            setDraft((current) => ({ ...current, startDate: event.target.value }));
+          }}
+        />
+        <input
+          aria-label="End date"
+          type="date"
+          value={draft.endDate}
+          min={draft.startDate || props.campaignStart || undefined}
+          max={props.campaignEnd || undefined}
+          onChange={(event) => {
+            setPreset("custom");
+            setDraft((current) => ({ ...current, endDate: event.target.value }));
+          }}
+        />
+        <button type="button" onClick={applyCustom}>Apply</button>
+      </div>
+    </div>
+  );
+}
+
+function CampaignReportPage({ embedded = false, publicView = false, reportToken = "" }: { embedded?: boolean; publicView?: boolean; reportToken?: string }) {
+  const [selectedDateRange, setSelectedDateRange] = React.useState<ReportDateRange>(() => readReportDateRange());
+  const { payload, loading, error, refresh } = useReportPayload(reportToken, selectedDateRange);
+  const report = payload.report || fallbackReportPayload().report!;
+  const campaign = report.campaign;
+  const summary = report.summary;
+  const hasVideo = Boolean(campaign.HAS_VIDEO);
+  const campaignTitle = String(campaign.CAMPAIGN_NAME || `${campaign.JOB_NUMBER} Campaign`);
+  const lineItems = report.line_items;
+  const channels = report.channels;
+  const trend = report.trend;
+  const visibleDateRange = [
+    selectedDateRange.startDate || campaign.START_DATE,
+    selectedDateRange.endDate || campaign.END_DATE
+  ].filter(Boolean).join(" to ");
+
+  function applyDateRange(nextRange: ReportDateRange) {
+    setSelectedDateRange(nextRange);
+    writeReportDateRange(nextRange);
+  }
+
+  return (
+    <main className={`campaign-report ${embedded ? "embedded" : ""} ${publicView ? "public" : ""}`}>
+      <header className="report-hero">
+        <div className="report-brand-lockup">
+          <img src={acquireSidebarLogoUrl} alt="Acquire" />
+          <div className="report-top-controls">
+            <ReportDateControl
+              campaignStart={String(campaign.START_DATE || "")}
+              campaignEnd={String(campaign.END_DATE || "")}
+              value={selectedDateRange}
+              onChange={applyDateRange}
+            />
+            <div className="client-logo"><Building2 size={24} /> Client logo</div>
+          </div>
+        </div>
+        <div className="report-hero-grid">
+          <div>
+            <div className="eyebrow">Campaign performance report</div>
+            <h1>{campaign.JOB_NUMBER ? `${campaign.JOB_NUMBER} ${campaignTitle}` : campaignTitle}</h1>
+            <p>{visibleDateRange || "Live date range"}. Live dashboard generated from {payload.meta.source_table || "master_overview"}.</p>
+          </div>
+          <div className="report-status-panel">
+            <span>Line items</span>
+            <strong>{num(lineItems.length)}</strong>
+            <p>{loading ? "Refreshing live data..." : error || "Queried live on page load."}</p>
+          </div>
+        </div>
+      </header>
+
+      <section className="report-summary-grid">
+        {[
+          ["Impressions", compactNum(summary.IMPRESSIONS), "Total delivered impressions"],
+          ["Clicks", compactNum(summary.CLICKS), "Total delivered clicks"],
+          ["CTR", pct(summary.CTR), "Clicks divided by impressions"],
+          ...(hasVideo ? [["Video completion", pct(summary.VIDEO_COMPLETION_RATE), "Completions divided by impressions"]] : [])
+        ].map(([label, value, note]) => (
+          <article className="report-kpi" key={label}>
+            <span>{label}</span>
+            <strong>{value}</strong>
+            <p>{note}</p>
+          </article>
+        ))}
+      </section>
+
+      <section className="report-main-grid report-main-grid-single">
+        <div className="report-panel report-chart-panel">
+          <div className="panel-title">
+            <div>
+              <span className="eyebrow">Daily trend</span>
+              <h2>Performance over time</h2>
+            </div>
+            <div className="chart-legend">
+              <span><i className="legend-dot impressions" /> Impressions</span>
+              <span><i className="legend-dot clicks" /> Clicks</span>
+            </div>
+          </div>
+          <ReportTrendChart points={trend} />
+        </div>
+      </section>
+
+      <section className="channel-section">
+        <div className="section-head">
+          <div>
+            <span className="eyebrow">Channel mix</span>
+            <h2>Performance by signal source</h2>
+          </div>
+          <button className="ghost-button"><SlidersHorizontal size={16} /> Customize modules</button>
+        </div>
+        <div className="channel-grid">
+          {channels.map((channel) => (
+            <article className="channel-card good" key={String(channel.PROPERTY_NAME)}>
+              <div>
+                <strong>{String(channel.PROPERTY_NAME || "Other")}</strong>
+                <span>{num(channel.LINE_ITEM_COUNT)} line items</span>
+              </div>
+              <div className="channel-metrics">
+                <span><b>{compactNum(channel.IMPRESSIONS)}</b> impressions</span>
+                <span><b>{compactNum(channel.CLICKS)}</b> clicks</span>
+                <span><b>{pct(channel.CTR)}</b> CTR</span>
+              </div>
+              <div className="delivery-meter" aria-label={`${channel.PROPERTY_NAME} delivery ${pct(channel.DELIVERY_TO_GOAL_RATIO)}`}>
+                <i style={{ width: `${Math.min(Number(channel.DELIVERY_TO_GOAL_RATIO || 0) * 100, 140)}%` }} />
+              </div>
+              <footer>
+                <span>{pct(channel.DELIVERY_TO_GOAL_RATIO)} delivery</span>
+                {hasVideo && <em>{pct(channel.VIDEO_COMPLETION_RATE)} VCR</em>}
+              </footer>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="report-panel line-table-panel">
+        <div className="section-head">
+          <div>
+            <span className="eyebrow">Line item summary</span>
+            <h2>All line items</h2>
+          </div>
+          <button className="ghost-button" onClick={refresh} disabled={loading}>
+            {loading ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
+            Refresh
+          </button>
+        </div>
+        <div className="report-table-wrap">
+          <table className="report-table">
+            <thead>
+              <tr>
+                <th>Line item</th>
+                <th>Property</th>
+                <th>Start</th>
+                <th>End</th>
+                <th>Booked units</th>
+                <th>Impressions</th>
+                <th>Clicks</th>
+                <th>CTR</th>
+                {hasVideo && <th>Video completion</th>}
+                <th>Goal delivery</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lineItems.map((line) => (
+                <tr key={String(line.OUR_REF)}>
+                  <td><strong>{String(line.OUR_REF || "")}</strong><span>{String(line.LINE_ITEM_NAME || "")}</span></td>
+                  <td>{String(line.PROPERTY_NAME || "")}</td>
+                  <td>{String(line.START_DATE || "")}</td>
+                  <td>{String(line.END_DATE || "")}</td>
+                  <td>{compactNum(line.BOOKED_UNITS)}</td>
+                  <td>{compactNum(line.IMPRESSIONS)}</td>
+                  <td>{compactNum(line.CLICKS)}</td>
+                  <td>{pct(line.CTR)}</td>
+                  {hasVideo && <td>{Number(line.VIDEO_COMPLETION_RATE || 0) > 0 ? pct(line.VIDEO_COMPLETION_RATE) : "-"}</td>}
+                  <td><ReportPacingCell timeProgress={Number(line.TIME_PROGRESS_RATIO || 0)} deliveryProgress={Number(line.DELIVERY_TO_GOAL_RATIO || 0)} /></td>
+                  <td><span className={`status-pill ${reportStatusClass(String(line.STATUS || "Watch"))}`}>{String(line.STATUS || "Watch")}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer className="report-footer">
+        <span>Generated by Acquire Ops Control Center</span>
+        <button className="ghost-button"><Share2 size={16} /> Share report</button>
+      </footer>
+    </main>
+  );
+}
+
+function reportStatusClass(status: string) {
+  return status.toLowerCase().replaceAll(" ", "-");
+}
+
+function ReportProgressCell({ value, cap = 160 }: { value: number; cap?: number }) {
+  return (
+    <div className="report-progress-cell">
+      <span>{value}%</span>
+      <i><b style={{ width: `${Math.min(100, (value / cap) * 100)}%` }} /></i>
+    </div>
+  );
+}
+
+function ReportPacingCell({ timeProgress, deliveryProgress }: { timeProgress: number; deliveryProgress: number }) {
+  return (
+    <div className="report-pacing-cell">
+      <ProgressBar label="Time" value={timeProgress} tone="time" />
+      <ProgressBar label="Delivery" value={deliveryProgress} tone="delivery" />
+    </div>
+  );
+}
+
+function ReportTrendChart({ points }: { points: AnyRow[] }) {
+  const chartPoints = points.length ? points : fallbackReportPayload().report!.trend;
+  const width = 920;
+  const height = 320;
+  const padding = { top: 20, right: 24, bottom: 42, left: 54 };
+  const xStep = (width - padding.left - padding.right) / Math.max(chartPoints.length - 1, 1);
+  const impressionValues = chartPoints.map((point) => Number(point.IMPRESSIONS || 0));
+  const clickValues = chartPoints.map((point) => Number(point.CLICKS || 0));
+  const impressionMax = Math.max(...impressionValues, 1);
+  const impressionMin = Math.max(0, Math.min(...impressionValues) * 0.85);
+  const clickMax = Math.max(...clickValues, 1);
+  const clickMin = Math.max(0, Math.min(...clickValues) * 0.85);
+  const impressionTicks = [0, 0.25, 0.5, 0.75, 1].map((step) => impressionMin + (impressionMax - impressionMin) * step);
+  const yFor = (value: number, min: number, max: number) => padding.top + ((max - value) / (max - min)) * (height - padding.top - padding.bottom);
+  const xFor = (index: number) => padding.left + index * xStep;
+  const pathFor = (key: "IMPRESSIONS" | "CLICKS", min: number, max: number) => chartPoints
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${xFor(index)} ${yFor(Number(point[key] || 0), min, max)}`)
+    .join(" ");
+
+  const impressionsPath = pathFor("IMPRESSIONS", impressionMin, impressionMax);
+  const clicksPath = pathFor("CLICKS", clickMin, clickMax);
+
+  return (
+    <svg className="report-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Daily impressions and clicks trend">
+      {impressionTicks.map((tick) => (
+        <g key={tick}>
+          <line x1={padding.left} x2={width - padding.right} y1={yFor(tick, impressionMin, impressionMax)} y2={yFor(tick, impressionMin, impressionMax)} />
+          <text x={padding.left - 10} y={yFor(tick, impressionMin, impressionMax) + 4} textAnchor="end">{compactNum(tick)}</text>
+        </g>
+      ))}
+      {chartPoints.map((point, index) => (
+        <text key={String(point.DATE || index)} x={xFor(index)} y={height - 14} textAnchor="middle">{index % 2 === 0 ? String(point.DATE || "").slice(-2).replace("-", "") : ""}</text>
+      ))}
+      <path className="chart-line impressions" d={impressionsPath} />
+      <path className="chart-line clicks" d={clicksPath} />
+      {chartPoints.map((point, index) => (
+        <React.Fragment key={String(point.DATE || index)}>
+          <circle className="chart-point impressions" cx={xFor(index)} cy={yFor(Number(point.IMPRESSIONS || 0), impressionMin, impressionMax)} r="4" />
+          <circle className="chart-point clicks" cx={xFor(index)} cy={yFor(Number(point.CLICKS || 0), clickMin, clickMax)} r="4" />
+        </React.Fragment>
+      ))}
+    </svg>
   );
 }
 
@@ -1310,14 +2018,16 @@ function PacingPage(props: {
   updateRows: (updater: RowUpdater) => void;
 }) {
   const isOverspending = props.pacingType === "OVERSPENDING";
+  const isUnderspending = props.pacingType === "UNDERSPENDING";
+  const isSpendPacing = isOverspending || isUnderspending;
   const [query, setQuery] = React.useState("");
   const [status, setStatus] = React.useState("ALL");
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [actionError, setActionError] = React.useState("");
   const [actionLoading, setActionLoading] = React.useState(false);
   const [sort, setSort] = React.useState<SortState>(
-    isOverspending
-      ? { key: "SPEND_PACING_RATIO", direction: "desc" }
+    isSpendPacing
+      ? { key: "SPEND_PACING_RATIO", direction: isOverspending ? "desc" : "asc" }
       : { key: "DELIVERY_PACING_RATIO", direction: "asc" }
   );
   const [showDiagnosis, setShowDiagnosis] = React.useState(false);
@@ -1374,7 +2084,13 @@ function PacingPage(props: {
     ["DELIVERY_DELTA", "Short fall"],
     ["DATASOURCE", "Datasource"]
   ];
-  const overspendingColumns: Array<[string, string]> = [
+  const spendThresholdColumn: [string, string] = isOverspending
+    ? ["OVERSPENDING_THRESHOLD_AMOUNT", "20% above threshold"]
+    : ["UNDERSPENDING_THRESHOLD_AMOUNT", "20% below threshold"];
+  const spendVarianceColumn: [string, string] = isOverspending
+    ? ["SPEND_DELTA", "Spend over expected"]
+    : ["UNDERSPEND_AMOUNT", "Spend below expected"];
+  const spendPacingColumns: Array<[string, string]> = [
     ["OUR_REF", "OUR REF"],
     ["ADVERTISER_NAME", "Advertiser"],
     ["CAMPAIGN_NAME", "Campaign"],
@@ -1382,9 +2098,9 @@ function PacingPage(props: {
     ["__PROGRESS", "Progress"],
     ["SPEND_PACING_RATIO", "Spend pacing"],
     ["EXPECTED_SPEND_TO_DATE", "Expected spend to date"],
-    ["OVERSPENDING_THRESHOLD_AMOUNT", "20% flag threshold"],
+    spendThresholdColumn,
     ["ACTUAL_COST", "Actual spend to date"],
-    ["SPEND_DELTA", "Spend over expected"],
+    spendVarianceColumn,
     ["BOOKED_NETT_COST", "Booked nett cost"],
     ["PROPERTY_NAME", "Property"],
     ["JOB_NUMBER", "Job number"],
@@ -1411,13 +2127,13 @@ function PacingPage(props: {
     ["CURRENT_DAILY_COST_PER_UNIT", "Current daily cost per unit"]
   ];
   const visibleColumns = [
-    ...(isOverspending ? overspendingColumns : pacingColumns),
+    ...(isSpendPacing ? spendPacingColumns : pacingColumns),
     ...(showDiagnosis ? diagnosisColumns : []),
     ...(status === "SNOOZED" ? snoozeColumns : [])
   ];
   const formatPacingValue = (key: string, value: unknown, row: AnyRow) => {
     if (["GOAL_DELIVERY", "EXPECTED_DELIVERY_TO_DATE", "ACTUAL_DELIVERY", "DELIVERY_DELTA", "REQUIRED_DAILY_DELIVERY", "CURRENT_DAILY_DELIVERY", "PROJECTED_END_DELIVERY"].includes(key)) return num(Math.round(Number(value || 0)));
-    if (["BOOKED_NETT_COST", "EXPECTED_SPEND_TO_DATE", "ACTUAL_COST", "SPEND_DELTA", "OVERSPENDING_THRESHOLD_AMOUNT", "REQUIRED_DAILY_SPEND", "CURRENT_DAILY_SPEND"].includes(key)) return currency(value);
+    if (["BOOKED_NETT_COST", "EXPECTED_SPEND_TO_DATE", "ACTUAL_COST", "SPEND_DELTA", "UNDERSPEND_AMOUNT", "OVERSPENDING_THRESHOLD_AMOUNT", "UNDERSPENDING_THRESHOLD_AMOUNT", "REQUIRED_DAILY_SPEND", "CURRENT_DAILY_SPEND"].includes(key)) return currency(value);
     if (["REQUIRED_COST_PER_UNIT", "CURRENT_DAILY_COST_PER_UNIT"].includes(key)) return costPerUnit(value, row.COST_UNIT);
     if (["TIME_PROGRESS_RATIO", "DELIVERY_PACING_RATIO", "SPEND_PACING_RATIO"].includes(key)) return value === null || value === "" ? "N/A" : pct(value);
     if (key === "SNOOZE_END_DATE" && !value && row.PACING_SNOOZE_STATE === "SNOOZED") return "Permanent";
@@ -1428,10 +2144,10 @@ function PacingPage(props: {
     setSelected(new Set());
     setActionError("");
     setActionLoading(false);
-    setSort(isOverspending
-      ? { key: "SPEND_PACING_RATIO", direction: "desc" }
+    setSort(isSpendPacing
+      ? { key: "SPEND_PACING_RATIO", direction: isOverspending ? "desc" : "asc" }
       : { key: "DELIVERY_PACING_RATIO", direction: "asc" });
-  }, [isOverspending, status, props.pacingType]);
+  }, [isOverspending, isSpendPacing, status, props.pacingType]);
 
   function applyOptimisticPacingSnooze(alerts: Array<Record<string, string>>, reason: string, endDate: string | null) {
     const selectedKeys = new Set(alerts.map((alert) => String(alert.alert_key)));
@@ -1489,19 +2205,21 @@ function PacingPage(props: {
     <>
       <PageHeader
         eyebrow={props.meta.source_table ? `${props.meta.project_id}.${props.meta.dataset}.${props.meta.source_table}` : "BigQuery pacing model"}
-        title={props.title || (isOverspending ? "Overspending" : "Underpacing")}
+        title={props.title || (isOverspending ? "Overspending" : isUnderspending ? "Underspending" : "Underpacing")}
         subtitle={props.subtitle || (isOverspending
           ? "Line items spending at least 20% above their linear expected spend to date."
-          : "OUR_REF-level pacing, rolled up across data sources with one row per reference.")}
+          : isUnderspending
+            ? "Line items spending at least 20% below their linear expected spend to date."
+            : "OUR_REF-level pacing, rolled up across data sources with one row per reference.")}
         loading={props.loading}
         onRefresh={props.refresh}
       />
-      <MetricStrip metrics={isOverspending ? [
-        { label: "Overspending refs", value: num(filtered.length), tone: "warn" },
+      <MetricStrip metrics={isSpendPacing ? [
+        { label: isOverspending ? "Overspending refs" : "Underspending refs", value: num(filtered.length), tone: "warn" },
         { label: "Expected spend to date", value: currency(totalExpectedSpend) },
         { label: "Actual spend to date", value: currency(totalActualSpend) },
         { label: "Spend vs expected", value: blendedSpendRatio === null ? "N/A" : pct(blendedSpendRatio), tone: "warn" },
-        { label: "Spend over expected", value: currency(totalActualSpend - totalExpectedSpend), tone: "warn" }
+        { label: isOverspending ? "Spend over expected" : "Spend below expected", value: currency(Math.abs(totalActualSpend - totalExpectedSpend)), tone: "warn" }
       ] : [
         { label: "Rows", value: num(filtered.length) },
         { label: "Expected delivery to date", value: num(Math.round(totalExpected)) },
@@ -1516,7 +2234,7 @@ function PacingPage(props: {
         setStatus={setStatus}
         statuses={["OPEN", "SNOOZED", "ALL"]}
         selectedCount={selectedAlerts.length}
-        onDownload={() => downloadCsv(props.downloadFilename || (isOverspending ? "overspending-dashboard.csv" : "pacing-dashboard.csv"), rowsForCsv(sortedRows, visibleColumns, formatPacingValue))}
+        onDownload={() => downloadCsv(props.downloadFilename || (isOverspending ? "overspending-dashboard.csv" : isUnderspending ? "underspending-dashboard.csv" : "pacing-dashboard.csv"), rowsForCsv(sortedRows, visibleColumns, formatPacingValue))}
         downloadDisabled={!sortedRows.length}
       />
       <DataState loading={props.loading && !props.hasLoaded} error={props.error} empty={!filtered.length}>
@@ -1533,14 +2251,14 @@ function PacingPage(props: {
             if (key !== "__PROGRESS") return null;
             return <ProgressCell
               timeProgress={Number(row.TIME_PROGRESS_RATIO || 0)}
-              outcomeLabel={isOverspending ? "Spend" : "Delivery"}
-              outcomeProgress={isOverspending
+              outcomeLabel={isSpendPacing ? "Spend" : "Delivery"}
+              outcomeProgress={isSpendPacing
                 ? Number(row.ACTUAL_COST || 0) / Math.max(Number(row.BOOKED_NETT_COST || 0), 1)
                 : Number(row.ACTUAL_DELIVERY || 0) / Math.max(Number(row.GOAL_DELIVERY || 0), 1)}
             />;
           }}
-          headerHelp={isOverspending
-            ? { SPEND_PACING_RATIO: SPEND_PACING_HELP, DELIVERY_PACING_RATIO: DELIVERY_PACING_HELP }
+          headerHelp={isSpendPacing
+            ? { SPEND_PACING_RATIO: isOverspending ? OVERSPENDING_PACING_HELP : UNDERSPENDING_PACING_HELP, DELIVERY_PACING_RATIO: DELIVERY_PACING_HELP }
             : { DELIVERY_PACING_RATIO: DELIVERY_PACING_HELP }}
           trailingControl={{
             expanded: showDiagnosis,
@@ -1584,6 +2302,97 @@ function RefCell(props: { value: unknown; snoozed: boolean }) {
         </span>
       )}
     </span>
+  );
+}
+
+function GoingLiveSoonPage(props: {
+  rows: AnyRow[];
+  meta: Record<string, string>;
+  loading: boolean;
+  hasLoaded: boolean;
+  error: string;
+  refresh: (options?: ApiRefreshOptions) => Promise<void>;
+  lastLoadedAt: string;
+}) {
+  const [query, setQuery] = React.useState("");
+  const [sort, setSort] = React.useState<SortState>({ key: "START_DATE", direction: "asc" });
+  const columns: Array<[string, string]> = [
+    ["OUR_REF", "OUR REF"],
+    ["DAYS_UNTIL_LIVE", "Goes live"],
+    ["START_DATE", "Start date"],
+    ["END_DATE", "End date"],
+    ["JOB_NUMBER", "Job number"],
+    ["ADVERTISER", "Advertiser"],
+    ["CAMPAIGN", "Campaign"],
+    ["LOCATIONTEXT", "Line item"],
+    ["PROPERTYNAME", "Property"],
+    ["ACCOUNT_MANAGER", "Account manager"],
+    ["BOOKINGSTATUS", "Booking status"]
+  ];
+  const filteredRows = React.useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return props.rows
+      .filter((row) => !normalizedQuery || [
+        row.OUR_REF,
+        row.JOB_NUMBER,
+        row.ADVERTISER,
+        row.CAMPAIGN,
+        row.LOCATIONTEXT,
+        row.PROPERTYNAME,
+        row.ACCOUNT_MANAGER
+      ].join(" ").toLowerCase().includes(normalizedQuery))
+      .map((row) => ({ ...row, __row_id: String(row.OUR_REF || "") }));
+  }, [props.rows, query]);
+  const sortedRows = React.useMemo(() => sortRows(filteredRows, sort), [filteredRows, sort]);
+  const startDates = props.rows.map((row) => String(row.START_DATE || "")).filter(Boolean).sort();
+  const startingToday = props.rows.filter((row) => Number(row.DAYS_UNTIL_LIVE || 0) === 0).length;
+
+  return (
+    <div className="qa-page going-live-page">
+      <PageHeader
+        eyebrow={props.meta.source_table ? `${props.meta.project_id}.${props.meta.dataset}.${props.meta.source_table}` : "Buy Data"}
+        title="Going live soon"
+        subtitle="Booked line items in Buy Data that start today or within the next seven days, with one row per OUR REF."
+        loading={props.loading}
+        onRefresh={() => props.refresh()}
+        onDownload={() => downloadCsv("going-live-soon.csv", sortedRows)}
+      />
+      <MetricStrip metrics={[
+        { label: "Line items", value: num(props.rows.length) },
+        { label: "Starting today", value: num(startingToday), tone: startingToday ? "warn" : "" },
+        { label: "Next start", value: startDates[0] || "N/A" },
+        { label: "Window", value: props.meta.window_start && props.meta.window_end ? `${props.meta.window_start} – ${props.meta.window_end}` : "Next 7 days" }
+      ]} />
+      <Toolbar
+        query={query}
+        setQuery={setQuery}
+        status="ALL"
+        setStatus={() => undefined}
+        statuses={[]}
+        selectedCount={0}
+        showSelection={false}
+        onDownload={() => downloadCsv("going-live-soon.csv", sortedRows)}
+        downloadDisabled={!sortedRows.length}
+      />
+      <DataState loading={props.loading && !props.hasLoaded} error={props.error} empty={!sortedRows.length}>
+        <DataTable
+          rows={sortedRows}
+          selected={new Set()}
+          setSelected={() => undefined}
+          idKey="__row_id"
+          sort={sort}
+          onSort={(key) => setSort((current) => nextSort(current, key))}
+          columns={columns}
+          selectable={false}
+          format={(_key, value) => String(value ?? "")}
+          renderCell={(key, value) => {
+            if (key !== "DAYS_UNTIL_LIVE") return null;
+            const days = Number(value || 0);
+            return <span className={`go-live-badge ${days === 0 ? "today" : ""}`}>{days === 0 ? "Today" : `In ${days} day${days === 1 ? "" : "s"}`}</span>;
+          }}
+        />
+      </DataState>
+    </div>
   );
 }
 
@@ -2377,6 +3186,7 @@ function Toolbar(props: {
   liveOnly?: boolean;
   setLiveOnly?: (value: boolean) => void;
   extraControls?: React.ReactNode;
+  showSelection?: boolean;
 }) {
   return (
     <section className="toolbar">
@@ -2390,11 +3200,13 @@ function Toolbar(props: {
           onChange={(event) => props.setQuery(event.target.value)}
         />
       </div>
-      <div className="segmented">
-        {props.statuses.map((status) => (
-          <button key={status} className={props.status === status ? "active" : ""} onClick={() => props.setStatus(status)}>{status}</button>
-        ))}
-      </div>
+      {props.statuses.length > 0 && (
+        <div className="segmented">
+          {props.statuses.map((status) => (
+            <button key={status} className={props.status === status ? "active" : ""} onClick={() => props.setStatus(status)}>{status}</button>
+          ))}
+        </div>
+      )}
       {props.setLiveOnly && (
         <label className="toolbar-check">
           <input type="checkbox" checked={Boolean(props.liveOnly)} onChange={(event) => props.setLiveOnly?.(event.target.checked)} />
@@ -2407,7 +3219,7 @@ function Toolbar(props: {
           <Download size={15} /> CSV
         </button>
       )}
-      <div className="selected-chip"><SlidersHorizontal size={15} /> {props.selectedCount} selected</div>
+      {props.showSelection !== false && <div className="selected-chip"><SlidersHorizontal size={15} /> {props.selectedCount} selected</div>}
     </section>
   );
 }
@@ -2429,6 +3241,7 @@ function DataTable(props: {
   columnFilterExclusions?: Record<string, Set<string>>;
   onColumnFilterToggle?: (key: string, value: string) => void;
   onColumnFilterClear?: (key: string) => void;
+  selectable?: boolean;
 }) {
   const [openFilterKey, setOpenFilterKey] = React.useState<string | null>(null);
 
@@ -2448,7 +3261,7 @@ function DataTable(props: {
       <table>
         <thead>
           <tr>
-            <th className="select-col"><ArrowDownUp size={14} /></th>
+            {props.selectable !== false && <th className="select-col"><ArrowDownUp size={14} /></th>}
             {props.columns.map(([key, label]) => {
               const active = props.sort?.key === key;
               const filterOptions = props.columnFilterOptions?.[key] || [];
@@ -2525,18 +3338,20 @@ function DataTable(props: {
             const rowClassName = [checked ? "selected" : "", props.rowClassName?.(row) || ""].filter(Boolean).join(" ");
             return (
               <tr key={id} className={rowClassName}>
-                <td className="select-col">
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={(event) => {
-                      const next = new Set(props.selected);
-                      if (event.target.checked) next.add(id);
-                      else next.delete(id);
-                      props.setSelected(next);
-                    }}
-                  />
-                </td>
+                {props.selectable !== false && (
+                  <td className="select-col">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(event) => {
+                        const next = new Set(props.selected);
+                        if (event.target.checked) next.add(id);
+                        else next.delete(id);
+                        props.setSelected(next);
+                      }}
+                    />
+                  </td>
+                )}
                 {props.columns.map(([key]) => {
                   const customCell = props.renderCell?.(key, row[key], row);
                   return (

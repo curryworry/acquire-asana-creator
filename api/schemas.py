@@ -47,3 +47,7 @@ class AutomationRunResponse(BaseModel):
     output: str
     started_at: str
     finished_at: str
+
+
+class ReportCreateRequest(BaseModel):
+    job_number: str

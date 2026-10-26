@@ -1,7 +1,10 @@
+import base64
+import hmac
 import json
 import hashlib
+import time
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -31,20 +34,26 @@ LIVE_ALERT_TYPES = (
 MARGIN_SNOOZE_TYPE = "MARGIN_DASHBOARD"
 PACING_TYPE_UNDER = "UNDERPACING"
 PACING_TYPE_OVERSPENDING = "OVERSPENDING"
+PACING_TYPE_UNDERSPENDING = "UNDERSPENDING"
 PACING_SNOOZE_TYPE = "PACING_UNDERPACING"
 PACING_OVERSPENDING_SNOOZE_TYPE = "PACING_OVERSPENDING"
+PACING_UNDERSPENDING_SNOOZE_TYPE = "PACING_UNDERSPENDING"
 OVERSPENDING_THRESHOLD = 1.2
-OVERSPENDING_MIN_DAYS = 3
-OVERSPENDING_MIN_PROGRESS = 0.2
+UNDERSPENDING_THRESHOLD = 0.8
+SPEND_PACING_MIN_DAYS = 3
+SPEND_PACING_MIN_PROGRESS = 0.2
+REPORT_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 365
 ASANA_COMMENT_ALERT_TYPES = (
     PACING_SNOOZE_TYPE,
     PACING_OVERSPENDING_SNOOZE_TYPE,
+    PACING_UNDERSPENDING_SNOOZE_TYPE,
     ALERT_TYPE_NOT_LIVE,
     ALERT_TYPE_STOPPED_IMPRESSIONS,
 )
 ALERT_LABELS = {
     PACING_SNOOZE_TYPE: "Underpacing",
     PACING_OVERSPENDING_SNOOZE_TYPE: "Overspending",
+    PACING_UNDERSPENDING_SNOOZE_TYPE: "Underspending",
     ALERT_TYPE_NOT_LIVE: "Not live",
     ALERT_TYPE_STOPPED_IMPRESSIONS: "Stopped impressions",
     ALERT_TYPE_MISSING_OUR_REF: "Missing OUR_REF",
@@ -147,6 +156,60 @@ def table_fqn(project_id: str, dataset: str, table: str) -> str:
     return f"`{project_id}.{dataset}.{table}`"
 
 
+def report_base_url() -> str:
+    return get_secret("REPORT_BASE_URL", "https://reports.acquire.agency").rstrip("/")
+
+
+def report_signing_secret() -> str:
+    return (
+        get_secret("REPORT_LINK_SIGNING_SECRET")
+        or get_secret("LINK_SIGNING_SECRET")
+        or get_secret("API_SESSION_SECRET")
+        or get_secret("ADMIN_PASS")
+        or "local-dev-report-secret"
+    )
+
+
+def create_report_token(job_number: str) -> str:
+    clean_job_number = str(job_number or "").strip()
+    if not clean_job_number:
+        raise ValueError("JOB_NUMBER is required.")
+    payload = {
+        "job_number": clean_job_number,
+        "exp": int(time.time()) + REPORT_TOKEN_TTL_SECONDS,
+        "v": 1,
+    }
+    payload_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    payload_b64 = base64.urlsafe_b64encode(payload_bytes).decode("utf-8").rstrip("=")
+    sig = hmac.new(report_signing_secret().encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{payload_b64}.{sig}"
+
+
+def decode_report_token(token: str) -> str:
+    try:
+        payload_b64, sig = token.split(".", 1)
+    except ValueError as exc:
+        raise ValueError("Invalid report token.") from exc
+    expected = hmac.new(report_signing_secret().encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, sig):
+        raise ValueError("Invalid report token.")
+    padded = payload_b64 + "=" * ((4 - len(payload_b64) % 4) % 4)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("utf-8")))
+    except Exception as exc:
+        raise ValueError("Invalid report token.") from exc
+    if int(payload.get("exp", 0)) < int(time.time()):
+        raise ValueError("Report token expired.")
+    job_number = str(payload.get("job_number", "") or "").strip()
+    if not job_number:
+        raise ValueError("Report token is missing JOB_NUMBER.")
+    return job_number
+
+
+def report_share_url(token: str) -> str:
+    return f"{report_base_url()}/reports/{token}"
+
+
 def margin_view_fqn(project_id: str, dataset: str) -> str:
     return table_fqn(project_id, dataset, MARGIN_VIEW_NAME)
 
@@ -157,6 +220,339 @@ def margin_view_sql(project_id: str, dataset: str) -> str:
     source = f"{DEFAULT_BQ_PROJECT_ID}.{DEFAULT_BQ_DATASET}"
     target = f"{project_id}.{dataset}"
     return template.replace(source, target)
+
+
+def report_status(delivery_pacing_ratio: float | None, delivery_to_goal_ratio: float, expected_delivery_to_date: float, actual_delivery: float) -> str:
+    if expected_delivery_to_date > 0 and actual_delivery <= 0:
+        return "Tracking issue"
+    if delivery_pacing_ratio is None:
+        return "Watch"
+    if delivery_pacing_ratio >= 1.1:
+        return "Ahead"
+    if delivery_pacing_ratio >= 0.9:
+        return "On track"
+    if delivery_pacing_ratio >= 0.7 or delivery_to_goal_ratio >= 0.9:
+        return "Watch"
+    return "Behind"
+
+
+def reporting_dashboard(job_number: str, start_date: str | None = None, end_date: str | None = None) -> dict[str, Any]:
+    clean_job_number = str(job_number or "").strip()
+    if not clean_job_number:
+        raise ValueError("JOB_NUMBER is required.")
+    clean_start_date = (start_date or "").strip() or None
+    clean_end_date = (end_date or "").strip() or None
+    for label, value in [("start_date", clean_start_date), ("end_date", clean_end_date)]:
+        if value:
+            try:
+                date.fromisoformat(value)
+            except ValueError as exc:
+                raise ValueError(f"{label} must be YYYY-MM-DD.") from exc
+
+    client, project_id, dataset = bq_context()
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("job_number", "STRING", clean_job_number),
+            bigquery.ScalarQueryParameter("start_date", "DATE", clean_start_date),
+            bigquery.ScalarQueryParameter("end_date", "DATE", clean_end_date),
+        ]
+    )
+    rows = list(
+        client.query(
+            f"""
+WITH latest_delivery AS (
+  SELECT MAX(DATE) AS latest_delivery_date
+  FROM {table_fqn(project_id, dataset, "master_overview")}
+  WHERE DATE IS NOT NULL
+    AND CAST(JOBNUMBER AS STRING) = @job_number
+    AND (@start_date IS NULL OR DATE >= @start_date)
+    AND (@end_date IS NULL OR DATE <= @end_date)
+),
+line_items AS (
+  SELECT
+    TRIM(CAST(OURREF AS STRING)) AS our_ref,
+    CAST(JOBNUMBER AS STRING) AS job_number,
+    MAX(NULLIF(TRIM(CAST(T_GOAL_TYPE_REPORTING_V2 AS STRING)), '')) AS goal_type,
+    STRING_AGG(DISTINCT NULLIF(TRIM(CAST(DATASOURCE AS STRING)), ''), ', ' ORDER BY NULLIF(TRIM(CAST(DATASOURCE AS STRING)), '')) AS datasource,
+    MAX(NULLIF(TRIM(CAST(CAMPAIGNNAME AS STRING)), '')) AS campaign_name,
+    MAX(NULLIF(TRIM(CAST(ADVERTISERNAME AS STRING)), '')) AS advertiser_name,
+    MAX(NULLIF(TRIM(CAST(PROPERTYNAME AS STRING)), '')) AS property_name,
+    MAX(NULLIF(TRIM(CAST(LOCATIONTEXT AS STRING)), '')) AS line_item_name,
+    MAX(COALESCE(SAFE_CAST(NUMUNITS AS FLOAT64), 0)) AS booked_units,
+    SUM(
+      CASE UPPER(TRIM(CAST(T_GOAL_TYPE_REPORTING_V2 AS STRING)))
+        WHEN 'IMPRESSIONS' THEN COALESCE(IMPRESSIONS, 0)
+        WHEN 'CLICKS' THEN COALESCE(LINK_CLICKS, 0)
+        WHEN 'VIEWS' THEN COALESCE(VIDEO_COMPLETIONS, 0)
+        ELSE COALESCE(IMPRESSIONS, 0)
+      END
+    ) AS actual_delivery,
+    SUM(COALESCE(IMPRESSIONS, 0)) AS impressions,
+    SUM(COALESCE(LINK_CLICKS, 0)) AS clicks,
+    SUM(COALESCE(VIDEO_COMPLETIONS, 0)) AS video_completions,
+    COALESCE(
+      MIN(SAFE_CAST(STARTDATE AS DATE)),
+      MIN(SAFE.PARSE_DATE('%Y-%m-%d', CAST(STARTDATE AS STRING))),
+      MIN(SAFE.PARSE_DATE('%d/%m/%Y', CAST(STARTDATE AS STRING))),
+      MIN(SAFE.PARSE_DATE('%m/%d/%Y', CAST(STARTDATE AS STRING)))
+    ) AS start_date,
+    COALESCE(
+      MAX(SAFE_CAST(ENDDATE AS DATE)),
+      MAX(SAFE.PARSE_DATE('%Y-%m-%d', CAST(ENDDATE AS STRING))),
+      MAX(SAFE.PARSE_DATE('%d/%m/%Y', CAST(ENDDATE AS STRING))),
+      MAX(SAFE.PARSE_DATE('%m/%d/%Y', CAST(ENDDATE AS STRING)))
+    ) AS end_date
+  FROM {table_fqn(project_id, dataset, "master_overview")}
+  WHERE CAST(JOBNUMBER AS STRING) = @job_number
+    AND OURREF IS NOT NULL
+    AND TRIM(CAST(OURREF AS STRING)) != ''
+    AND (@start_date IS NULL OR DATE >= @start_date)
+    AND (@end_date IS NULL OR DATE <= @end_date)
+  GROUP BY 1, 2
+),
+line_base AS (
+  SELECT
+    li.*,
+    ld.latest_delivery_date,
+    LEAST(COALESCE(ld.latest_delivery_date, CURRENT_DATE("Pacific/Auckland")), li.end_date) AS as_of_date,
+    DATE_DIFF(li.end_date, li.start_date, DAY) + 1 AS total_days,
+    GREATEST(
+      0,
+      LEAST(
+        DATE_DIFF(li.end_date, li.start_date, DAY) + 1,
+        DATE_DIFF(LEAST(COALESCE(ld.latest_delivery_date, CURRENT_DATE("Pacific/Auckland")), li.end_date), li.start_date, DAY) + 1
+      )
+    ) AS elapsed_days
+  FROM line_items li
+  CROSS JOIN latest_delivery ld
+  WHERE li.start_date IS NOT NULL
+    AND li.end_date IS NOT NULL
+    AND li.end_date >= li.start_date
+),
+trend AS (
+  SELECT
+    DATE AS delivery_date,
+    SUM(COALESCE(IMPRESSIONS, 0)) AS impressions,
+    SUM(COALESCE(LINK_CLICKS, 0)) AS clicks,
+    SUM(COALESCE(VIDEO_COMPLETIONS, 0)) AS video_completions
+  FROM {table_fqn(project_id, dataset, "master_overview")}
+  WHERE CAST(JOBNUMBER AS STRING) = @job_number
+    AND DATE IS NOT NULL
+    AND (@start_date IS NULL OR DATE >= @start_date)
+    AND (@end_date IS NULL OR DATE <= @end_date)
+  GROUP BY 1
+)
+SELECT
+  'line_item' AS row_type,
+  our_ref,
+  job_number,
+  goal_type,
+  datasource,
+  campaign_name,
+  advertiser_name,
+  property_name,
+  line_item_name,
+  booked_units,
+  actual_delivery,
+  impressions,
+  clicks,
+  video_completions,
+  start_date,
+  end_date,
+  latest_delivery_date,
+  as_of_date,
+  total_days,
+  elapsed_days,
+  GREATEST(total_days - elapsed_days, 0) AS days_left,
+  SAFE_DIVIDE(elapsed_days, total_days) AS time_progress_ratio,
+  SAFE_DIVIDE(actual_delivery, NULLIF(booked_units, 0)) AS delivery_to_goal_ratio,
+  SAFE_DIVIDE(actual_delivery, SAFE_MULTIPLY(booked_units, SAFE_DIVIDE(elapsed_days, total_days))) AS delivery_pacing_ratio,
+  SAFE_MULTIPLY(booked_units, SAFE_DIVIDE(elapsed_days, total_days)) AS expected_delivery_to_date,
+  SAFE_DIVIDE(clicks, NULLIF(impressions, 0)) AS ctr,
+  SAFE_DIVIDE(video_completions, NULLIF(impressions, 0)) AS video_completion_rate,
+  NULL AS delivery_date
+FROM line_base
+UNION ALL
+SELECT
+  'trend' AS row_type,
+  NULL AS our_ref,
+  @job_number AS job_number,
+  NULL AS goal_type,
+  NULL AS datasource,
+  NULL AS campaign_name,
+  NULL AS advertiser_name,
+  NULL AS property_name,
+  NULL AS line_item_name,
+  NULL AS booked_units,
+  NULL AS actual_delivery,
+  impressions,
+  clicks,
+  video_completions,
+  NULL AS start_date,
+  NULL AS end_date,
+  NULL AS latest_delivery_date,
+  NULL AS as_of_date,
+  NULL AS total_days,
+  NULL AS elapsed_days,
+  NULL AS days_left,
+  NULL AS time_progress_ratio,
+  NULL AS delivery_to_goal_ratio,
+  NULL AS delivery_pacing_ratio,
+  NULL AS expected_delivery_to_date,
+  SAFE_DIVIDE(clicks, NULLIF(impressions, 0)) AS ctr,
+  SAFE_DIVIDE(video_completions, NULLIF(impressions, 0)) AS video_completion_rate,
+  delivery_date
+FROM trend
+ORDER BY row_type, property_name, line_item_name, delivery_date
+""",
+            job_config=job_config,
+        ).result()
+    )
+
+    line_items: list[dict[str, Any]] = []
+    trend: list[dict[str, Any]] = []
+    for r in rows:
+        if r["row_type"] == "trend":
+            trend.append(
+                {
+                    "DATE": str(r["delivery_date"] or ""),
+                    "IMPRESSIONS": float(r["impressions"] or 0),
+                    "CLICKS": float(r["clicks"] or 0),
+                    "VIDEO_COMPLETIONS": float(r["video_completions"] or 0),
+                    "CTR": float(r["ctr"] or 0),
+                    "VIDEO_COMPLETION_RATE": float(r["video_completion_rate"] or 0),
+                }
+            )
+            continue
+
+        delivery_to_goal_ratio = float(r["delivery_to_goal_ratio"] or 0)
+        delivery_pacing_ratio = float(r["delivery_pacing_ratio"]) if r["delivery_pacing_ratio"] is not None else None
+        expected_delivery_to_date = float(r["expected_delivery_to_date"] or 0)
+        actual_delivery = float(r["actual_delivery"] or 0)
+        line_items.append(
+            {
+                "OUR_REF": str(r["our_ref"] or ""),
+                "JOB_NUMBER": str(r["job_number"] or ""),
+                "GOAL_TYPE": str(r["goal_type"] or ""),
+                "DATASOURCE": str(r["datasource"] or ""),
+                "CAMPAIGN_NAME": str(r["campaign_name"] or ""),
+                "ADVERTISER_NAME": str(r["advertiser_name"] or ""),
+                "PROPERTY_NAME": str(r["property_name"] or ""),
+                "LINE_ITEM_NAME": str(r["line_item_name"] or ""),
+                "START_DATE": str(r["start_date"] or ""),
+                "END_DATE": str(r["end_date"] or ""),
+                "BOOKED_UNITS": float(r["booked_units"] or 0),
+                "ACTUAL_DELIVERY": actual_delivery,
+                "IMPRESSIONS": float(r["impressions"] or 0),
+                "CLICKS": float(r["clicks"] or 0),
+                "CTR": float(r["ctr"] or 0),
+                "VIDEO_COMPLETIONS": float(r["video_completions"] or 0),
+                "VIDEO_COMPLETION_RATE": float(r["video_completion_rate"] or 0),
+                "TOTAL_DAYS": int(r["total_days"] or 0),
+                "ELAPSED_DAYS": int(r["elapsed_days"] or 0),
+                "DAYS_LEFT": int(r["days_left"] or 0),
+                "TIME_PROGRESS_RATIO": float(r["time_progress_ratio"] or 0),
+                "DELIVERY_TO_GOAL_RATIO": delivery_to_goal_ratio,
+                "DELIVERY_PACING_RATIO": delivery_pacing_ratio,
+                "EXPECTED_DELIVERY_TO_DATE": expected_delivery_to_date,
+                "STATUS": report_status(delivery_pacing_ratio, delivery_to_goal_ratio, expected_delivery_to_date, actual_delivery),
+            }
+        )
+
+    if not line_items:
+        return {
+            "rows": [],
+            "meta": {
+                "project_id": project_id,
+                "dataset": dataset,
+                "source_table": "master_overview",
+                "job_number": clean_job_number,
+                "count_total": "0",
+                "filter_start_date": clean_start_date or "",
+                "filter_end_date": clean_end_date or "",
+            },
+            "report": None,
+        }
+
+    total_impressions = sum(row["IMPRESSIONS"] for row in line_items)
+    total_clicks = sum(row["CLICKS"] for row in line_items)
+    total_video_completions = sum(row["VIDEO_COMPLETIONS"] for row in line_items)
+    has_video = total_video_completions > 0 or any(str(row["GOAL_TYPE"]).upper() == "VIEWS" for row in line_items)
+    total_booked_units = sum(row["BOOKED_UNITS"] for row in line_items)
+    total_actual_delivery = sum(row["ACTUAL_DELIVERY"] for row in line_items)
+    campaign_names = sorted({row["CAMPAIGN_NAME"] for row in line_items if row["CAMPAIGN_NAME"]})
+    advertiser_names = sorted({row["ADVERTISER_NAME"] for row in line_items if row["ADVERTISER_NAME"]})
+    start_dates = sorted(row["START_DATE"] for row in line_items if row["START_DATE"])
+    end_dates = sorted(row["END_DATE"] for row in line_items if row["END_DATE"])
+
+    channel_map: dict[str, dict[str, Any]] = {}
+    for row in line_items:
+        key = row["PROPERTY_NAME"] or row["DATASOURCE"] or "Other"
+        entry = channel_map.setdefault(
+            key,
+            {
+                "PROPERTY_NAME": key,
+                "IMPRESSIONS": 0.0,
+                "CLICKS": 0.0,
+                "VIDEO_COMPLETIONS": 0.0,
+                "BOOKED_UNITS": 0.0,
+                "ACTUAL_DELIVERY": 0.0,
+                "LINE_ITEM_COUNT": 0,
+            },
+        )
+        entry["IMPRESSIONS"] += row["IMPRESSIONS"]
+        entry["CLICKS"] += row["CLICKS"]
+        entry["VIDEO_COMPLETIONS"] += row["VIDEO_COMPLETIONS"]
+        entry["BOOKED_UNITS"] += row["BOOKED_UNITS"]
+        entry["ACTUAL_DELIVERY"] += row["ACTUAL_DELIVERY"]
+        entry["LINE_ITEM_COUNT"] += 1
+    channels = []
+    for entry in channel_map.values():
+        entry["CTR"] = entry["CLICKS"] / entry["IMPRESSIONS"] if entry["IMPRESSIONS"] else 0
+        entry["VIDEO_COMPLETION_RATE"] = entry["VIDEO_COMPLETIONS"] / entry["IMPRESSIONS"] if entry["IMPRESSIONS"] else 0
+        entry["DELIVERY_TO_GOAL_RATIO"] = entry["ACTUAL_DELIVERY"] / entry["BOOKED_UNITS"] if entry["BOOKED_UNITS"] else 0
+        channels.append(entry)
+    channels.sort(key=lambda row: row["IMPRESSIONS"], reverse=True)
+
+    report = {
+        "campaign": {
+            "JOB_NUMBER": clean_job_number,
+            "CAMPAIGN_NAME": " | ".join(campaign_names) or f"{clean_job_number} Campaign",
+            "ADVERTISER_NAME": ", ".join(advertiser_names),
+            "START_DATE": start_dates[0] if start_dates else "",
+            "END_DATE": end_dates[-1] if end_dates else "",
+            "HAS_VIDEO": has_video,
+            "FILTER_START_DATE": clean_start_date or "",
+            "FILTER_END_DATE": clean_end_date or "",
+        },
+        "summary": {
+            "IMPRESSIONS": total_impressions,
+            "CLICKS": total_clicks,
+            "CTR": total_clicks / total_impressions if total_impressions else 0,
+            "VIDEO_COMPLETIONS": total_video_completions,
+            "VIDEO_COMPLETION_RATE": total_video_completions / total_impressions if total_impressions else 0,
+            "BOOKED_UNITS": total_booked_units,
+            "ACTUAL_DELIVERY": total_actual_delivery,
+        },
+        "channels": channels,
+        "trend": sorted(trend, key=lambda row: row["DATE"]),
+        "line_items": sorted(line_items, key=lambda row: (row["PROPERTY_NAME"], row["LINE_ITEM_NAME"], row["OUR_REF"])),
+    }
+
+    return {
+        "rows": report["line_items"],
+        "meta": {
+            "project_id": project_id,
+            "dataset": dataset,
+            "source_table": "master_overview",
+            "job_number": clean_job_number,
+            "count_total": str(len(report["line_items"])),
+            "filter_start_date": clean_start_date or "",
+            "filter_end_date": clean_end_date or "",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        },
+        "report": report,
+    }
 
 
 def ensure_control_tables(client: bigquery.Client, project_id: str, dataset: str) -> None:
@@ -1052,14 +1448,20 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
         spend_pacing_ratio = actual_cost / expected_spend_to_date if expected_spend_to_date > 0 else None
         spend_delta = actual_cost - expected_spend_to_date
         overspending_threshold_amount = expected_spend_to_date * OVERSPENDING_THRESHOLD
-        overspending_eligible = (
-            elapsed_days >= OVERSPENDING_MIN_DAYS
-            or time_progress_ratio >= OVERSPENDING_MIN_PROGRESS
+        underspending_threshold_amount = expected_spend_to_date * UNDERSPENDING_THRESHOLD
+        spend_pacing_eligible = (
+            elapsed_days >= SPEND_PACING_MIN_DAYS
+            or time_progress_ratio >= SPEND_PACING_MIN_PROGRESS
         )
         is_overspending = (
-            overspending_eligible
+            spend_pacing_eligible
             and spend_pacing_ratio is not None
             and spend_pacing_ratio >= OVERSPENDING_THRESHOLD
+        )
+        is_underspending = (
+            spend_pacing_eligible
+            and spend_pacing_ratio is not None
+            and spend_pacing_ratio <= UNDERSPENDING_THRESHOLD
         )
         our_ref = str(r["our_ref"] or "")
         base_row = {
@@ -1092,8 +1494,11 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
             "ACTUAL_COST": actual_cost,
             "SPEND_PACING_RATIO": spend_pacing_ratio,
             "SPEND_DELTA": spend_delta,
+            "UNDERSPEND_AMOUNT": max(expected_spend_to_date - actual_cost, 0),
             "OVERSPENDING_THRESHOLD_AMOUNT": overspending_threshold_amount,
-            "OVERSPENDING_ELIGIBLE": overspending_eligible,
+            "UNDERSPENDING_THRESHOLD_AMOUNT": underspending_threshold_amount,
+            "OVERSPENDING_ELIGIBLE": spend_pacing_eligible,
+            "UNDERSPENDING_ELIGIBLE": spend_pacing_eligible,
             "CURRENT_DAILY_DELIVERY": float(r["current_daily_delivery"] or 0),
             "CURRENT_DAILY_COST": float(r["current_daily_cost"] or 0),
             "COST_UNIT": str(r["cost_unit"] or "CPU"),
@@ -1145,6 +1550,16 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
                     "PACING_BUCKET": PACING_TYPE_OVERSPENDING,
                 }
             )
+        if is_underspending:
+            data.append(
+                {
+                    **base_row,
+                    "ALERT_TYPE": PACING_UNDERSPENDING_SNOOZE_TYPE,
+                    "ALERT_KEY": make_alert_key(PACING_UNDERSPENDING_SNOOZE_TYPE, [our_ref]),
+                    "PACING_STATUS": "UNDERSPENDING",
+                    "PACING_BUCKET": PACING_TYPE_UNDERSPENDING,
+                }
+            )
 
     if data:
         df = pd.DataFrame(data)
@@ -1186,6 +1601,7 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
         if row.get("PACING_BUCKET") == PACING_TYPE_UNDER and row.get("PACING_STATUS") == "UNDER"
     )
     overspending_count = sum(1 for row in data if row.get("PACING_BUCKET") == PACING_TYPE_OVERSPENDING)
+    underspending_count = sum(1 for row in data if row.get("PACING_BUCKET") == PACING_TYPE_UNDERSPENDING)
 
     return {
         "rows": data,
@@ -1196,6 +1612,7 @@ ORDER BY delivery_pacing_ratio ASC, delivery_delta ASC, our_ref
             "mode": "overview" if include_all else "pacing_alerts",
             "count_underpacing": str(underpacing_count),
             "count_overspending": str(overspending_count),
+            "count_underspending": str(underspending_count),
             "count_total": str(len(data)),
             "open_count": str(open_count),
             "snoozed_count": str(snoozed_count),
@@ -1323,6 +1740,69 @@ ORDER BY s.run_timestamp_utc DESC, s.alert_type, s.our_ref
 def alerts_bootstrap() -> dict[str, Any]:
     visible_df, meta = alerts_dataset()
     return {"rows": records_from_rows(visible_df.fillna("").to_dict(orient="records")), "meta": meta}
+
+
+def going_live_soon_dashboard() -> dict[str, Any]:
+    """Return booked Buy Data line items starting within the next seven days.
+
+    The result is deliberately grouped at OUR REF grain so the dashboard never
+    shows duplicate line items if the source table contains repeated rows.
+    """
+    client, project_id, dataset = bq_context()
+    rows = list(
+        client.query(
+            f"""
+SELECT
+  TRIM(CAST(OURREF AS STRING)) AS our_ref,
+  MAX(CAST(JOBNUMBER AS STRING)) AS job_number,
+  MIN(STARTDATE) AS start_date,
+  MAX(ENDDATE) AS end_date,
+  MAX(COALESCE(ADVERTISERNAME, '')) AS advertiser,
+  MAX(COALESCE(CAMPAIGNNAME, '')) AS campaign,
+  MAX(COALESCE(ACCOUNTMANAGERNAME, '')) AS account_manager,
+  MAX(COALESCE(LOCATIONTEXT, '')) AS location_text,
+  MAX(COALESCE(PROPERTYNAME, '')) AS property_name,
+  MAX(COALESCE(BOOKINGSTATUS, '')) AS booking_status,
+  DATE_DIFF(MIN(STARTDATE), CURRENT_DATE('Pacific/Auckland'), DAY) AS days_until_live
+FROM {table_fqn(project_id, dataset, "B27F8_BUY_DATA")}
+WHERE OURREF IS NOT NULL
+  AND TRIM(CAST(OURREF AS STRING)) != ''
+  AND LOWER(TRIM(COALESCE(BOOKINGSTATUS, ''))) = 'booked'
+  AND STARTDATE BETWEEN CURRENT_DATE('Pacific/Auckland')
+                    AND DATE_ADD(CURRENT_DATE('Pacific/Auckland'), INTERVAL 7 DAY)
+GROUP BY 1
+ORDER BY start_date, our_ref
+"""
+        ).result()
+    )
+    data = [
+        {
+            "OUR_REF": str(row["our_ref"] or ""),
+            "JOB_NUMBER": str(row["job_number"] or ""),
+            "START_DATE": str(row["start_date"] or ""),
+            "END_DATE": str(row["end_date"] or ""),
+            "DAYS_UNTIL_LIVE": int(row["days_until_live"] or 0),
+            "ADVERTISER": str(row["advertiser"] or ""),
+            "CAMPAIGN": str(row["campaign"] or ""),
+            "ACCOUNT_MANAGER": str(row["account_manager"] or ""),
+            "LOCATIONTEXT": str(row["location_text"] or ""),
+            "PROPERTYNAME": str(row["property_name"] or ""),
+            "BOOKINGSTATUS": str(row["booking_status"] or ""),
+        }
+        for row in rows
+    ]
+    today = today_nz()
+    return {
+        "rows": data,
+        "meta": {
+            "project_id": project_id,
+            "dataset": dataset,
+            "source_table": "B27F8_BUY_DATA",
+            "window_start": today.isoformat(),
+            "window_end": (today + timedelta(days=7)).isoformat(),
+            "count_total": str(len(data)),
+        },
+    }
 
 
 def alerts_dashboard(

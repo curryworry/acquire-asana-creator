@@ -72,6 +72,15 @@ Notes:
   - Rows mapping to `master_overview.OURREF`: 19,387
   - Unmapped: 6,025
 
+## Table: `B27F8_BUY_DATA`
+Purpose: Booked line-item data used by the margin dashboard and the Alerts > Going live soon view.
+
+Going-live rules:
+- Grain: one row per non-empty `OURREF`
+- Only `BOOKINGSTATUS = 'Booked'` rows are included
+- `STARTDATE` is between the current New Zealand date and seven days from that date, inclusive
+- Rows are ordered by `STARTDATE`, then `OURREF`
+
 ## Alert Types (campaign_not_live_alert.py)
 
 ### 1) `NOT_LIVE`
