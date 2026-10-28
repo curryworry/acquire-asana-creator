@@ -153,13 +153,35 @@ Required app TOML / Secret Manager values:
 
 ## Required Trafficking Columns
 
-- `CampaignName`
-- `JobNumber`
 - `OurRef`
+- `JobNumber`
+- `Status`
+- `CreativeReceived`
+- `CreativeTrafficked`
+- `CampaignComplete`
 - `PropertyName`
 - `LocationText`
 - `SpecificationText`
+- `SpecialRequirements`
+- `AdServing`
 - `StartDate`
+- `EndDate`
+- `AdvertiserName`
+- `CampaignName`
+- `SalesChannel`
+- `ClientContact`
+- `ClientEmail`
+- `NumUnits`
+- `RatingMethod`
+- `OurCost`
+- `TraffickingInstructions`
+- `AccountManagerName`
+- `TraffickerName`
+
+Each successful report run upserts the latest values by `OurRef` into
+`supermetrics_data.TRAFFICKING_REPORT`. References outside the report's rolling
+date window are retained. `BUY_DATA_ENHANCED` joins those latest-known details
+to Buy Data, and `MASTER_ENHANCED` adds delivery data.
 
 ## Asana Naming Rules
 

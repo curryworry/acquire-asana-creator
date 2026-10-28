@@ -73,13 +73,44 @@ Notes:
   - Unmapped: 6,025
 
 ## Table: `B27F8_BUY_DATA`
-Purpose: Booked line-item data used by the margin dashboard and the Alerts > Going live soon view.
+Purpose: Raw booked line-item data supplied by Supermetrics.
 
-Going-live rules:
-- Grain: one row per non-empty `OURREF`
+The Alerts > Going live soon view now reads from `BUY_DATA_ENHANCED`.
+
+Going-live rules applied to the enhanced view:
+- Grain: one row per distinct reference and booking period
 - Only `BOOKINGSTATUS = 'Booked'` rows are included
 - `STARTDATE` is between the current New Zealand date and seven days from that date, inclusive
 - Rows are ordered by `STARTDATE`, then `OURREF`
+
+## Table: `TRAFFICKING_REPORT`
+Purpose: Latest known trafficking details loaded from the emailed trafficking report.
+
+Behavior:
+- Grain: one row per normalized `OUR_REF`
+- Existing references are updated by BigQuery `MERGE`
+- New references are inserted
+- References absent from a later date-window report are retained unchanged
+- No history or current/inactive flag is maintained
+
+## View: `BUY_DATA_ENHANCED`
+Purpose: Buy Data enriched with the latest known trafficking requirements.
+
+Behavior:
+- Grain: `OUR_REF + JOB_NUMBER + START_DATE + END_DATE`
+- Booked rows take precedence over cancelled duplicates at the same grain
+- Legitimate repeated `OUR_REF` booking periods are preserved
+- Buy Data remains authoritative for shared booking fields
+- Trafficking supplies operational fields such as special requirements,
+  trafficking instructions, specification, and creative status
+
+## View: `MASTER_ENHANCED`
+Purpose: `BUY_DATA_ENHANCED` joined to rolled-up delivery data.
+
+Behavior:
+- Delivery is aggregated to `OUR_REF + DELIVERY_DATE + DELIVERY_DATASOURCE`
+  before the join to prevent raw delivery duplicates multiplying rows
+- All enhanced buy and trafficking fields remain available alongside delivery metrics
 
 ## Alert Types (campaign_not_live_alert.py)
 

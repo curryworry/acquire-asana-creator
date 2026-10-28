@@ -127,11 +127,17 @@ def run_daily_trafficking(force_dry_run: bool) -> dict[str, str | int | bool]:
             "GMAIL_PROCESSED_LABEL",
             "DEFAULT_ASSIGNEE_GID",
             "DASH_ASSIGNEE_GID",
+            "BQ_SERVICE_ACCOUNT_JSON",
         ]),
         "GMAIL_USER": get_secret("GMAIL_USER", "me"),
         "TRAFFICKING_SKIP_TOP_ROWS": get_secret("TRAFFICKING_SKIP_TOP_ROWS", "0"),
         "REPORT_EMAIL_TO": get_secret("REPORT_EMAIL_TO", "ashwin@acquirenz.com"),
         "DRY_RUN_MODE": "true" if force_dry_run else get_secret("DRY_RUN_MODE", "true"),
+        "BQ_PROJECT_ID": get_secret("BQ_PROJECT_ID", "sm-test-391201"),
+        "BQ_DATASET": get_secret("BQ_DATASET", "supermetrics_data"),
+        "BQ_TRAFFICKING_TABLE": get_secret("BQ_TRAFFICKING_TABLE", "TRAFFICKING_REPORT"),
+        "BQ_BUY_ENHANCED_VIEW": get_secret("BQ_BUY_ENHANCED_VIEW", "BUY_DATA_ENHANCED"),
+        "BQ_MASTER_ENHANCED_VIEW": get_secret("BQ_MASTER_ENHANCED_VIEW", "MASTER_ENHANCED"),
     }
     return run_script("scripts/daily_trafficking_dry_run.py", env)
 

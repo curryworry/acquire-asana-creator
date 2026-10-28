@@ -35,6 +35,13 @@ Step-by-step process
   CampaignName, JobNumber, OurRef, PropertyName, LocationText, SpecificationText,
   SpecialRequirements, TraffickingInstructions, OurCost, StartDate
 
+5a) Upsert BigQuery trafficking data
+- Validate that every OurRef is nonblank and unique in the incoming report.
+- MERGE rows into TRAFFICKING_REPORT using OurRef.
+- Existing references are updated, new references are inserted, and references absent
+  from the current date-window report are retained unchanged.
+- Recreate BUY_DATA_ENHANCED and MASTER_ENHANCED views.
+
 6) Build parent candidates
 - Unique key per parent: CampaignName + JobNumber
 - Parent task title format:

@@ -1743,40 +1743,45 @@ def alerts_bootstrap() -> dict[str, Any]:
 
 
 def going_live_soon_dashboard() -> dict[str, Any]:
-    """Return booked Buy Data line items starting within the next seven days.
+    """Return booked enhanced Buy Data line items starting within the next seven days.
 
-    The result is deliberately grouped at OUR REF grain so the dashboard never
-    shows duplicate line items if the source table contains repeated rows.
+    BUY_DATA_ENHANCED resolves conflicting source duplicates while preserving
+    legitimate repeated OUR_REF booking periods with different date ranges.
     """
     client, project_id, dataset = bq_context()
     rows = list(
         client.query(
             f"""
 SELECT
-  TRIM(CAST(OURREF AS STRING)) AS our_ref,
-  MAX(CAST(JOBNUMBER AS STRING)) AS job_number,
-  MIN(STARTDATE) AS start_date,
-  MAX(ENDDATE) AS end_date,
-  MAX(COALESCE(ADVERTISERNAME, '')) AS advertiser,
-  MAX(COALESCE(CAMPAIGNNAME, '')) AS campaign,
-  MAX(COALESCE(ACCOUNTMANAGERNAME, '')) AS account_manager,
-  MAX(COALESCE(LOCATIONTEXT, '')) AS location_text,
-  MAX(COALESCE(PROPERTYNAME, '')) AS property_name,
-  MAX(COALESCE(BOOKINGSTATUS, '')) AS booking_status,
-  DATE_DIFF(MIN(STARTDATE), CURRENT_DATE('Pacific/Auckland'), DAY) AS days_until_live
-FROM {table_fqn(project_id, dataset, "B27F8_BUY_DATA")}
-WHERE OURREF IS NOT NULL
-  AND TRIM(CAST(OURREF AS STRING)) != ''
-  AND LOWER(TRIM(COALESCE(BOOKINGSTATUS, ''))) = 'booked'
-  AND STARTDATE BETWEEN CURRENT_DATE('Pacific/Auckland')
-                    AND DATE_ADD(CURRENT_DATE('Pacific/Auckland'), INTERVAL 7 DAY)
-GROUP BY 1
+  BUY_ROW_KEY AS row_key,
+  OUR_REF AS our_ref,
+  JOB_NUMBER AS job_number,
+  START_DATE AS start_date,
+  END_DATE AS end_date,
+  COALESCE(ADVERTISER_NAME, '') AS advertiser,
+  COALESCE(CAMPAIGN_NAME, '') AS campaign,
+  COALESCE(ACCOUNT_MANAGER_NAME, '') AS account_manager,
+  COALESCE(LOCATION_TEXT, '') AS location_text,
+  COALESCE(PROPERTY_NAME, '') AS property_name,
+  COALESCE(BOOKING_STATUS, '') AS booking_status,
+  COALESCE(SPECIFICATION_TEXT, '') AS specification_text,
+  COALESCE(SPECIAL_REQUIREMENTS, '') AS special_requirements,
+  COALESCE(TRAFFICKING_INSTRUCTIONS, '') AS trafficking_instructions,
+  OUR_COST AS our_cost,
+  TRAFFICKING_MATCHED AS trafficking_matched,
+  BUY_SOURCE_CONFLICT AS buy_source_conflict,
+  DATE_DIFF(START_DATE, CURRENT_DATE('Pacific/Auckland'), DAY) AS days_until_live
+FROM {table_fqn(project_id, dataset, "BUY_DATA_ENHANCED")}
+WHERE LOWER(TRIM(COALESCE(BOOKING_STATUS, ''))) = 'booked'
+  AND START_DATE BETWEEN CURRENT_DATE('Pacific/Auckland')
+                     AND DATE_ADD(CURRENT_DATE('Pacific/Auckland'), INTERVAL 7 DAY)
 ORDER BY start_date, our_ref
 """
         ).result()
     )
     data = [
         {
+            "ROW_KEY": str(row["row_key"] or ""),
             "OUR_REF": str(row["our_ref"] or ""),
             "JOB_NUMBER": str(row["job_number"] or ""),
             "START_DATE": str(row["start_date"] or ""),
@@ -1788,6 +1793,12 @@ ORDER BY start_date, our_ref
             "LOCATIONTEXT": str(row["location_text"] or ""),
             "PROPERTYNAME": str(row["property_name"] or ""),
             "BOOKINGSTATUS": str(row["booking_status"] or ""),
+            "SPECIFICATION_TEXT": str(row["specification_text"] or ""),
+            "SPECIAL_REQUIREMENTS": str(row["special_requirements"] or ""),
+            "TRAFFICKING_INSTRUCTIONS": str(row["trafficking_instructions"] or ""),
+            "OUR_COST": float(row["our_cost"]) if row["our_cost"] is not None else None,
+            "TRAFFICKING_MATCHED": bool(row["trafficking_matched"]),
+            "BUY_SOURCE_CONFLICT": bool(row["buy_source_conflict"]),
         }
         for row in rows
     ]
@@ -1797,7 +1808,7 @@ ORDER BY start_date, our_ref
         "meta": {
             "project_id": project_id,
             "dataset": dataset,
-            "source_table": "B27F8_BUY_DATA",
+            "source_table": "BUY_DATA_ENHANCED",
             "window_start": today.isoformat(),
             "window_end": (today + timedelta(days=7)).isoformat(),
             "count_total": str(len(data)),

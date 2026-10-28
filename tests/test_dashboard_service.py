@@ -24,10 +24,11 @@ class _Client:
 
 
 class GoingLiveSoonDashboardTests(unittest.TestCase):
-    def test_returns_one_our_ref_grain_buy_data_rows_and_window_metadata(self) -> None:
+    def test_returns_enhanced_booking_period_rows_and_window_metadata(self) -> None:
         client = _Client(
             [
                 {
+                    "row_key": "12345|9001|2026-10-28|2026-11-30",
                     "our_ref": "12345",
                     "job_number": "9001",
                     "start_date": date(2026, 10, 28),
@@ -39,6 +40,12 @@ class GoingLiveSoonDashboardTests(unittest.TestCase):
                     "location_text": "Example line item",
                     "property_name": "Programmatic - Display",
                     "booking_status": "Booked",
+                    "specification_text": "300x250",
+                    "special_requirements": "Target finance decision makers",
+                    "trafficking_instructions": "Use supplied click tracker",
+                    "our_cost": 1250.0,
+                    "trafficking_matched": True,
+                    "buy_source_conflict": False,
                 }
             ]
         )
@@ -49,12 +56,15 @@ class GoingLiveSoonDashboardTests(unittest.TestCase):
             payload = going_live_soon_dashboard()
 
         self.assertEqual(payload["rows"][0]["OUR_REF"], "12345")
+        self.assertEqual(payload["rows"][0]["SPECIAL_REQUIREMENTS"], "Target finance decision makers")
+        self.assertEqual(payload["rows"][0]["OUR_COST"], 1250.0)
         self.assertEqual(payload["rows"][0]["DAYS_UNTIL_LIVE"], 1)
-        self.assertEqual(payload["meta"]["source_table"], "B27F8_BUY_DATA")
+        self.assertEqual(payload["meta"]["source_table"], "BUY_DATA_ENHANCED")
         self.assertEqual(payload["meta"]["window_start"], "2026-10-27")
         self.assertEqual(payload["meta"]["window_end"], "2026-11-03")
-        self.assertIn("GROUP BY 1", client.query_text)
-        self.assertIn("BOOKINGSTATUS", client.query_text)
+        self.assertIn("BUY_DATA_ENHANCED", client.query_text)
+        self.assertIn("SPECIAL_REQUIREMENTS", client.query_text)
+        self.assertIn("BOOKING_STATUS", client.query_text)
         self.assertIn("INTERVAL 7 DAY", client.query_text)
 
 

@@ -13,6 +13,18 @@ if str(REPO_ROOT) not in sys.path:
 
 from asana_client import AsanaClient, AsanaError
 from gmail_client import GmailAttachment, GmailError, GmailInboxClient
+from trafficking_bigquery import (
+    DEFAULT_BUY_ENHANCED_VIEW,
+    DEFAULT_DATASET,
+    DEFAULT_MASTER_ENHANCED_VIEW,
+    DEFAULT_PROJECT_ID,
+    DEFAULT_TRAFFICKING_TABLE,
+    REQUIRED_TRAFFICKING_BQ_COLUMNS,
+    build_bigquery_client,
+    ensure_enhanced_views,
+    prepare_trafficking_records,
+    upsert_trafficking_records,
+)
 from trafficking_logic import (
     REQUIRED_TRAFFICKING_COLUMNS,
     build_candidate_rows,
@@ -95,6 +107,12 @@ def main() -> int:
     report_email_to = require_env("REPORT_EMAIL_TO")
     skip_top_rows = int(env("TRAFFICKING_SKIP_TOP_ROWS", "0") or "0")
     dry_run_mode = as_bool(env("DRY_RUN_MODE", "true"), default=True)
+    bq_project_id = env("BQ_PROJECT_ID", DEFAULT_PROJECT_ID)
+    bq_dataset = env("BQ_DATASET", DEFAULT_DATASET)
+    bq_service_account_json = env("BQ_SERVICE_ACCOUNT_JSON", "")
+    bq_trafficking_table = env("BQ_TRAFFICKING_TABLE", DEFAULT_TRAFFICKING_TABLE)
+    bq_buy_enhanced_view = env("BQ_BUY_ENHANCED_VIEW", DEFAULT_BUY_ENHANCED_VIEW)
+    bq_master_enhanced_view = env("BQ_MASTER_ENHANCED_VIEW", DEFAULT_MASTER_ENHANCED_VIEW)
     default_assignee_gid = env("DEFAULT_ASSIGNEE_GID", "")
     if default_assignee_gid:
         validate_gid_list("DEFAULT_ASSIGNEE_GID", [default_assignee_gid])
@@ -121,6 +139,30 @@ def main() -> int:
     missing_cols = [c for c in REQUIRED_TRAFFICKING_COLUMNS if c not in df.columns]
     if missing_cols:
         raise RuntimeError("Trafficking file missing required columns: " + ", ".join(missing_cols))
+    missing_bq_cols = [c for c in REQUIRED_TRAFFICKING_BQ_COLUMNS if c not in df.columns]
+    if missing_bq_cols:
+        raise RuntimeError(
+            "Trafficking file missing columns required for the BigQuery table: "
+            + ", ".join(missing_bq_cols)
+        )
+
+    bq_client = build_bigquery_client(bq_project_id, bq_service_account_json)
+    trafficking_records = prepare_trafficking_records(df, attachment)
+    bq_rows_loaded = upsert_trafficking_records(
+        bq_client,
+        trafficking_records,
+        project_id=bq_project_id,
+        dataset=bq_dataset,
+        table_name=bq_trafficking_table,
+    )
+    ensure_enhanced_views(
+        bq_client,
+        project_id=bq_project_id,
+        dataset=bq_dataset,
+        trafficking_table=bq_trafficking_table,
+        buy_view=bq_buy_enhanced_view,
+        master_view=bq_master_enhanced_view,
+    )
 
     candidates, unmatched = build_candidate_rows(df)
     blueprint_map = build_subtask_blueprints(df)
@@ -303,6 +345,9 @@ def main() -> int:
         f"Source attachment: {attachment.filename}\n"
         f"Mode: {'DRY_RUN' if dry_run_mode else 'LIVE_CREATE'}\n"
         f"Rows parsed: {len(df)}\n"
+        f"BigQuery trafficking rows upserted: {bq_rows_loaded}\n"
+        f"BigQuery trafficking table: {bq_project_id}.{bq_dataset}.{bq_trafficking_table}\n"
+        f"BigQuery enhanced views: {bq_buy_enhanced_view}, {bq_master_enhanced_view}\n"
         f"Parent candidates: {len(parent_df)}\n"
         f"Parent would create: {parent_would_create}\n"
         f"Parent existing: {parent_existing}\n"

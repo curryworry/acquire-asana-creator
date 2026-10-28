@@ -2326,6 +2326,10 @@ function GoingLiveSoonPage(props: {
     ["CAMPAIGN", "Campaign"],
     ["LOCATIONTEXT", "Line item"],
     ["PROPERTYNAME", "Property"],
+    ["SPECIFICATION_TEXT", "Specification"],
+    ["SPECIAL_REQUIREMENTS", "Special requirements"],
+    ["TRAFFICKING_INSTRUCTIONS", "Trafficking instructions"],
+    ["OUR_COST", "Net cost"],
     ["ACCOUNT_MANAGER", "Account manager"],
     ["BOOKINGSTATUS", "Booking status"]
   ];
@@ -2339,9 +2343,12 @@ function GoingLiveSoonPage(props: {
         row.CAMPAIGN,
         row.LOCATIONTEXT,
         row.PROPERTYNAME,
+        row.SPECIFICATION_TEXT,
+        row.SPECIAL_REQUIREMENTS,
+        row.TRAFFICKING_INSTRUCTIONS,
         row.ACCOUNT_MANAGER
       ].join(" ").toLowerCase().includes(normalizedQuery))
-      .map((row) => ({ ...row, __row_id: String(row.OUR_REF || "") }));
+      .map((row) => ({ ...row, __row_id: String(row.ROW_KEY || row.OUR_REF || "") }));
   }, [props.rows, query]);
   const sortedRows = React.useMemo(() => sortRows(filteredRows, sort), [filteredRows, sort]);
   const startDates = props.rows.map((row) => String(row.START_DATE || "")).filter(Boolean).sort();
@@ -2352,7 +2359,7 @@ function GoingLiveSoonPage(props: {
       <PageHeader
         eyebrow={props.meta.source_table ? `${props.meta.project_id}.${props.meta.dataset}.${props.meta.source_table}` : "Buy Data"}
         title="Going live soon"
-        subtitle="Booked line items in Buy Data that start today or within the next seven days, with one row per OUR REF."
+        subtitle="Booked line items starting today or within the next seven days, enriched with the latest trafficking requirements."
         loading={props.loading}
         onRefresh={() => props.refresh()}
         onDownload={() => downloadCsv("going-live-soon.csv", sortedRows)}
