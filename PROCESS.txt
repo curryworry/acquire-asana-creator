@@ -32,7 +32,8 @@ Step-by-step process
 - Reads the file into a table.
 - Normalizes headers and drops blank unnamed columns.
 - Validates required columns exist:
-  CampaignName, JobNumber, OurRef, PropertyName, LocationText, SpecificationText, StartDate
+  CampaignName, JobNumber, OurRef, PropertyName, LocationText, SpecificationText,
+  SpecialRequirements, TraffickingInstructions, OurCost, StartDate
 
 6) Build parent candidates
 - Unique key per parent: CampaignName + JobNumber
@@ -46,6 +47,8 @@ Step-by-step process
   (OurRef) PropertyName - LocationText: SpecificationText
 - Source subtask due date:
   StartDate (converted to YYYY-MM-DD)
+- Source subtask description:
+  Special requirements, trafficking instructions, and net cost from OurCost
 
 8) Build control subtasks (new business rules)
 - For each parent, find earliest source subtask due date.

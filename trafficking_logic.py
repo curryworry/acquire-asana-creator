@@ -13,6 +13,9 @@ REQUIRED_TRAFFICKING_COLUMNS = [
     "PropertyName",
     "LocationText",
     "SpecificationText",
+    "SpecialRequirements",
+    "TraffickingInstructions",
+    "OurCost",
     "StartDate",
 ]
 
@@ -181,13 +184,22 @@ def build_subtask_blueprints(trafficking_df: pd.DataFrame) -> Dict[Tuple[str, st
         property_value = str(row.get("PropertyName", "")).strip()
         location_value = str(row.get("LocationText", "")).strip()
         ad_unit_value = str(row.get("SpecificationText", "")).strip()
+        special_requirements = str(row.get("SpecialRequirements", "")).strip()
+        trafficking_instructions = str(row.get("TraffickingInstructions", "")).strip()
+        our_cost = str(row.get("OurCost", "")).strip()
         start_date_raw = str(row.get("StartDate", "")).strip()
 
         subtask_name = f"({our_ref}) {property_value} - {location_value}: {ad_unit_value}".strip()
+        subtask_notes = (
+            f"Special requirements:\n{special_requirements}\n\n"
+            f"Trafficking instructions:\n{trafficking_instructions}\n\n"
+            f"Net cost: {our_cost}"
+        )
         by_campaign_job.setdefault((campaign_name, job_number), []).append(
             {
                 "our_ref": our_ref,
                 "subtask_name": subtask_name,
+                "subtask_notes": subtask_notes,
                 "start_date_raw": start_date_raw,
                 "subtask_due_on": as_due_on(start_date_raw),
                 "subtask_kind": "source",
@@ -206,6 +218,7 @@ def build_subtask_blueprints(trafficking_df: pd.DataFrame) -> Dict[Tuple[str, st
                 {
                     "our_ref": "",
                     "subtask_name": "chase creative",
+                    "subtask_notes": "",
                     "start_date_raw": earliest.isoformat(),
                     "subtask_due_on": subtract_weekdays(earliest, 4).isoformat(),
                     "subtask_kind": "control",
@@ -213,6 +226,7 @@ def build_subtask_blueprints(trafficking_df: pd.DataFrame) -> Dict[Tuple[str, st
                 {
                     "our_ref": "",
                     "subtask_name": "Check live status",
+                    "subtask_notes": "",
                     "start_date_raw": earliest.isoformat(),
                     "subtask_due_on": (earliest + timedelta(days=2)).isoformat(),
                     "subtask_kind": "control",
@@ -220,6 +234,7 @@ def build_subtask_blueprints(trafficking_df: pd.DataFrame) -> Dict[Tuple[str, st
                 {
                     "our_ref": "",
                     "subtask_name": "Create and send Dash",
+                    "subtask_notes": "",
                     "start_date_raw": earliest.isoformat(),
                     "subtask_due_on": add_weekdays(earliest, 3).isoformat(),
                     "subtask_kind": "control_dash",
@@ -261,6 +276,7 @@ def build_subtask_rows(
                     "parent_status": parent_status,
                     "our_ref": sub["our_ref"],
                     "subtask_name": sub["subtask_name"],
+                    "subtask_notes": sub.get("subtask_notes", ""),
                     "subtask_due_on": sub["subtask_due_on"],
                     "start_date_raw": sub["start_date_raw"],
                     "subtask_kind": sub.get("subtask_kind", "source"),

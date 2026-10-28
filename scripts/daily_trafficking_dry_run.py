@@ -187,6 +187,7 @@ def main() -> int:
                 "parent_status": parent["status"],
                 "our_ref": sub["our_ref"],
                 "subtask_name": sub["subtask_name"],
+                "subtask_notes": sub.get("subtask_notes", ""),
                 "subtask_due_on": sub["subtask_due_on"],
                 "start_date_raw": sub["start_date_raw"],
                 "subtask_kind": sub.get("subtask_kind", "source"),
@@ -227,6 +228,8 @@ def main() -> int:
                 continue
 
             payload = {"name": sub["subtask_name"]}
+            if sub.get("subtask_kind") == "source":
+                payload["notes"] = sub.get("subtask_notes", "")
             if sub["subtask_due_on"]:
                 payload["due_on"] = sub["subtask_due_on"]
             if sub.get("subtask_kind") == "control_dash" and dash_assignee_gid:

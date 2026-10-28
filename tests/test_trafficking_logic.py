@@ -54,6 +54,9 @@ class TraffickingLogicTests(unittest.TestCase):
                     "PropertyName": "Site A",
                     "LocationText": "Homepage",
                     "SpecificationText": "Billboard",
+                    "SpecialRequirements": "Target adults in Canterbury",
+                    "TraffickingInstructions": "Use the supplied tracking tags",
+                    "OurCost": "$1,250.00",
                     "StartDate": "2026-06-15",
                 },
                 {
@@ -63,6 +66,9 @@ class TraffickingLogicTests(unittest.TestCase):
                     "PropertyName": "Site B",
                     "LocationText": "Sports",
                     "SpecificationText": "MPU",
+                    "SpecialRequirements": "",
+                    "TraffickingInstructions": "",
+                    "OurCost": "800",
                     "StartDate": "2026-06-18",
                 },
             ]
@@ -77,6 +83,23 @@ class TraffickingLogicTests(unittest.TestCase):
         self.assertIn("Check live status", [row["subtask_name"] for row in rows])
         self.assertIn("Create and send Dash", [row["subtask_name"] for row in rows])
 
+        source_rows = [row for row in rows if row["subtask_kind"] == "source"]
+        self.assertEqual(
+            source_rows[0]["subtask_notes"],
+            "Special requirements:\nTarget adults in Canterbury\n\n"
+            "Trafficking instructions:\nUse the supplied tracking tags\n\n"
+            "Net cost: $1,250.00",
+        )
+        self.assertEqual(
+            source_rows[1]["subtask_notes"],
+            "Special requirements:\n\n\n"
+            "Trafficking instructions:\n\n\n"
+            "Net cost: 800",
+        )
+        self.assertTrue(
+            all(row["subtask_notes"] == "" for row in rows if row["subtask_kind"] != "source")
+        )
+
     def test_build_subtask_rows_preserves_subtask_kinds(self) -> None:
         candidates = [{"campaign_name": "Campaign A", "job_number": "200", "task_name": "Campaign A (200)"}]
         blueprint_map = {
@@ -84,6 +107,7 @@ class TraffickingLogicTests(unittest.TestCase):
                 {
                     "our_ref": "REF-1",
                     "subtask_name": "(REF-1) Site A - Homepage: Billboard",
+                    "subtask_notes": "Special requirements:\nTarget adults",
                     "subtask_due_on": "2026-06-15",
                     "start_date_raw": "2026-06-15",
                     "subtask_kind": "source",
@@ -91,6 +115,7 @@ class TraffickingLogicTests(unittest.TestCase):
                 {
                     "our_ref": "",
                     "subtask_name": "Create and send Dash",
+                    "subtask_notes": "",
                     "subtask_due_on": "2026-06-18",
                     "start_date_raw": "2026-06-15",
                     "subtask_kind": "control_dash",
@@ -101,6 +126,7 @@ class TraffickingLogicTests(unittest.TestCase):
         subtask_rows = build_subtask_rows(candidates, blueprint_map, {"200": "would_create"})
 
         self.assertEqual([row["subtask_kind"] for row in subtask_rows], ["source", "control_dash"])
+        self.assertEqual(subtask_rows[0]["subtask_notes"], "Special requirements:\nTarget adults")
         self.assertTrue(all(row["subtask_status"] == "would_create" for row in subtask_rows))
 
     def test_extract_five_digit_number(self) -> None:
