@@ -76,6 +76,12 @@ type AutomationDefaults = {
     dry_run_mode: string;
     script: string;
   };
+  trafficking_bigquery_sync: {
+    table: string;
+    buy_view: string;
+    master_view: string;
+    script: string;
+  };
   qa_video_on_trademe: {
     subject_contains: string;
     table: string;
@@ -3499,10 +3505,11 @@ function AdminPage({ isAdmin }: { isAdmin: boolean }) {
   const [forceAlert, setForceAlert] = React.useState(true);
   const [forceDryRun, setForceDryRun] = React.useState(true);
   const [campaignResult, setCampaignResult] = React.useState<AutomationResult | null>(null);
+  const [trafficSyncResult, setTrafficSyncResult] = React.useState<AutomationResult | null>(null);
   const [dailyResult, setDailyResult] = React.useState<AutomationResult | null>(null);
   const [qaResult, setQaResult] = React.useState<AutomationResult | null>(null);
   const [missingQaResult, setMissingQaResult] = React.useState<AutomationResult | null>(null);
-  const [loading, setLoading] = React.useState<"campaign" | "daily" | "qa" | "missingQa" | "defaults" | "">("defaults");
+  const [loading, setLoading] = React.useState<"campaign" | "trafficSync" | "daily" | "qa" | "missingQa" | "defaults" | "">("defaults");
   const [error, setError] = React.useState("");
 
   React.useEffect(() => {
@@ -3548,6 +3555,25 @@ function AdminPage({ isAdmin }: { isAdmin: boolean }) {
       setDailyResult(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Daily trafficking run failed.");
+    } finally {
+      setLoading("");
+    }
+  }
+
+  async function runTraffickingBigQuerySync() {
+    setLoading("trafficSync");
+    setError("");
+    setTrafficSyncResult(null);
+    try {
+      const result = await apiFetch<AutomationResult>("/api/admin/automations/trafficking-bigquery-sync", {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+      invalidateApiCache("/api/alerts/going-live-soon");
+      invalidateApiCache("/api/dashboard/bootstrap");
+      setTrafficSyncResult(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Trafficking BigQuery sync failed.");
     } finally {
       setLoading("");
     }
@@ -3633,6 +3659,22 @@ function AdminPage({ isAdmin }: { isAdmin: boolean }) {
           </button>
           <AutomationOutput result={campaignResult} />
           {defaults?.campaign_alert.script && <p className="admin-note">Script: {defaults.campaign_alert.script}</p>}
+        </article>
+
+        <article className="admin-card">
+          <div>
+            <span className="eyebrow">Trafficking data</span>
+            <h2>Sync Trafficking Report</h2>
+            <p>Fetches the latest report even if it is already processed, upserts BigQuery, and refreshes both enhanced views. It does not run Asana or modify Gmail.</p>
+          </div>
+          <button className="primary-button" disabled={loading === "trafficSync"} onClick={() => void runTraffickingBigQuerySync()}>
+            {loading === "trafficSync" ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
+            Sync Latest Trafficking Report
+          </button>
+          <AutomationOutput result={trafficSyncResult} />
+          {defaults?.trafficking_bigquery_sync.table && <p className="admin-note">Table: {defaults.trafficking_bigquery_sync.table}</p>}
+          {defaults?.trafficking_bigquery_sync.buy_view && <p className="admin-note">Views: {defaults.trafficking_bigquery_sync.buy_view}, {defaults.trafficking_bigquery_sync.master_view}</p>}
+          {defaults?.trafficking_bigquery_sync.script && <p className="admin-note">Script: {defaults.trafficking_bigquery_sync.script}</p>}
         </article>
 
         <article className="admin-card">

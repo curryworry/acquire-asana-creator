@@ -12,10 +12,12 @@ from api.automation_service import (
     is_admin_user,
     qa_missing_inclusion_defaults,
     qa_video_on_trademe_defaults,
+    trafficking_bigquery_sync_defaults,
     run_campaign_alert,
     run_daily_trafficking,
     run_qa_missing_inclusion,
     run_qa_video_on_trademe,
+    run_trafficking_bigquery_sync,
 )
 from api.config import REPO_ROOT, get_auth_users, get_secret
 from api.dashboard_service import (
@@ -327,6 +329,7 @@ def admin_automations(user: dict[str, str] = Depends(current_user)) -> dict:
         "admin": user.get("username"),
         "campaign_alert": campaign_alert_defaults(),
         "daily_trafficking": daily_trafficking_defaults(),
+        "trafficking_bigquery_sync": trafficking_bigquery_sync_defaults(),
         "qa_video_on_trademe": qa_video_on_trademe_defaults(),
         "qa_missing_inclusion": qa_missing_inclusion_defaults(),
     }
@@ -371,6 +374,14 @@ def admin_daily_trafficking(
 ) -> AutomationRunResponse:
     require_admin(user)
     return AutomationRunResponse(**run_daily_trafficking(force_dry_run=payload.force_dry_run))
+
+
+@app.post("/api/admin/automations/trafficking-bigquery-sync", response_model=AutomationRunResponse)
+def admin_trafficking_bigquery_sync(
+    user: dict[str, str] = Depends(current_user),
+) -> AutomationRunResponse:
+    require_admin(user)
+    return AutomationRunResponse(**run_trafficking_bigquery_sync())
 
 
 @app.post("/api/admin/automations/qa-video-on-trademe", response_model=AutomationRunResponse)

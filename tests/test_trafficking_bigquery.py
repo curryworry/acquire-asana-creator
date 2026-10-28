@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -10,6 +11,7 @@ from trafficking_bigquery import (
     prepare_trafficking_records,
     trafficking_merge_sql,
 )
+from scripts.sync_trafficking_bigquery import latest_report_query
 
 
 class TraffickingBigQueryTests(unittest.TestCase):
@@ -98,6 +100,16 @@ class TraffickingBigQueryTests(unittest.TestCase):
         self.assertIn("TRAFFICKING_MATCHED", buy_sql)
         self.assertIn("GROUP BY 1, 2, 3", master_sql)
         self.assertIn("LEFT JOIN delivery_rollup", master_sql)
+
+    def test_manual_sync_query_includes_already_processed_reports(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            query = latest_report_query("Trafficking Report - acquirenz")
+
+        self.assertEqual(
+            query,
+            'in:anywhere subject:"Trafficking Report - acquirenz" has:attachment',
+        )
+        self.assertNotIn("-label:processed", query)
 
 
 if __name__ == "__main__":

@@ -101,7 +101,7 @@ def main() -> int:
     gmail_client_secret = require_env("GMAIL_CLIENT_SECRET")
     gmail_refresh_token = require_env("GMAIL_REFRESH_TOKEN")
     gmail_user = env("GMAIL_USER", "me")
-    subject_contains = env("GMAIL_SUBJECT_CONTAINS", "Trafficking Report - acquirenz")
+    subject_contains = env("GMAIL_SUBJECT_CONTAINS") or "Trafficking Report - acquirenz"
     search_query = env("GMAIL_SEARCH_QUERY", "") or None
     processed_label_name = env("GMAIL_PROCESSED_LABEL", "processed")
     report_email_to = require_env("REPORT_EMAIL_TO")

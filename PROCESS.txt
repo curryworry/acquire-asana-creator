@@ -41,6 +41,9 @@ Step-by-step process
 - Existing references are updated, new references are inserted, and references absent
   from the current date-window report are retained unchanged.
 - Recreate BUY_DATA_ENHANCED and MASTER_ENHANCED views.
+- The Admin > Sync Trafficking Report action can repeat this BigQuery-only sync
+  from the latest email even when Gmail already marks that message processed.
+  It does not run Asana actions or modify the email.
 
 6) Build parent candidates
 - Unique key per parent: CampaignName + JobNumber

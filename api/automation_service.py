@@ -75,6 +75,15 @@ def daily_trafficking_defaults() -> dict[str, str]:
     }
 
 
+def trafficking_bigquery_sync_defaults() -> dict[str, str]:
+    return {
+        "table": get_secret("BQ_TRAFFICKING_TABLE", "TRAFFICKING_REPORT"),
+        "buy_view": get_secret("BQ_BUY_ENHANCED_VIEW", "BUY_DATA_ENHANCED"),
+        "master_view": get_secret("BQ_MASTER_ENHANCED_VIEW", "MASTER_ENHANCED"),
+        "script": str(Path("scripts") / "sync_trafficking_bigquery.py"),
+    }
+
+
 def qa_video_on_trademe_defaults() -> dict[str, str]:
     return {
         "subject_contains": get_secret("QA_TRADEME_VIDEO_SUBJECT_CONTAINS", "TradeMe On Video - Last 7 Days"),
@@ -140,6 +149,27 @@ def run_daily_trafficking(force_dry_run: bool) -> dict[str, str | int | bool]:
         "BQ_MASTER_ENHANCED_VIEW": get_secret("BQ_MASTER_ENHANCED_VIEW", "MASTER_ENHANCED"),
     }
     return run_script("scripts/daily_trafficking_dry_run.py", env)
+
+
+def run_trafficking_bigquery_sync() -> dict[str, str | int | bool]:
+    env = {
+        **_secret_env([
+            "BQ_SERVICE_ACCOUNT_JSON",
+            "GMAIL_CLIENT_ID",
+            "GMAIL_CLIENT_SECRET",
+            "GMAIL_REFRESH_TOKEN",
+            "GMAIL_SUBJECT_CONTAINS",
+            "GMAIL_TRAFFICKING_FORCE_QUERY",
+        ]),
+        "GMAIL_USER": get_secret("GMAIL_USER", "me"),
+        "TRAFFICKING_SKIP_TOP_ROWS": get_secret("TRAFFICKING_SKIP_TOP_ROWS", "0"),
+        "BQ_PROJECT_ID": get_secret("BQ_PROJECT_ID", "sm-test-391201"),
+        "BQ_DATASET": get_secret("BQ_DATASET", "supermetrics_data"),
+        "BQ_TRAFFICKING_TABLE": get_secret("BQ_TRAFFICKING_TABLE", "TRAFFICKING_REPORT"),
+        "BQ_BUY_ENHANCED_VIEW": get_secret("BQ_BUY_ENHANCED_VIEW", "BUY_DATA_ENHANCED"),
+        "BQ_MASTER_ENHANCED_VIEW": get_secret("BQ_MASTER_ENHANCED_VIEW", "MASTER_ENHANCED"),
+    }
+    return run_script("scripts/sync_trafficking_bigquery.py", env)
 
 
 def run_qa_video_on_trademe() -> dict[str, str | int | bool]:
