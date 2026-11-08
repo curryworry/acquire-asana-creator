@@ -29,6 +29,7 @@ from api.dashboard_service import (
     enqueue_snooze_actions,
     ensure_control_tables,
     going_live_soon_dashboard,
+    job_details_dashboard,
     margin_dashboard,
     pacing_dashboard,
     process_asana_comment_action_queue,
@@ -151,6 +152,20 @@ def alerts_bootstrap_route(_: dict[str, str] = Depends(current_user)) -> dict:
 @app.get("/api/alerts/going-live-soon")
 def going_live_soon(_: dict[str, str] = Depends(current_user)) -> dict:
     return going_live_soon_dashboard()
+
+
+@app.get("/api/automation/job-details")
+def automation_job_details(
+    lookup_type: str = Query(...),
+    value: str = Query(...),
+    _: dict[str, str] = Depends(current_user),
+) -> dict:
+    try:
+        return job_details_dashboard(lookup_type, value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/api/qa/video-on-trademe")

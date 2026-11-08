@@ -41,8 +41,8 @@ import "./styles.css";
 
 type AlertSection = "GOING_LIVE_SOON" | "NOT_LIVE" | "STOPPED_IMPRESSIONS" | "MISSING_OUR_REF" | "ENDED_BUT_IMPRESSIONS";
 type PacingSection = "UNDERPACING" | "OVERSPENDING" | "UNDERSPENDING";
-type Page = "margin" | "pacing:underpacing" | "pacing:overspending" | "pacing:underspending" | "alerts:going_live_soon" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "qa:pacing_overview" | "qa:video_on_trademe" | "qa:missing_inclusion_list" | "trafficking" | "automation" | "reporting" | "admin";
-type AnyRow = Record<string, string | number | null>;
+type Page = "margin" | "pacing:underpacing" | "pacing:overspending" | "pacing:underspending" | "alerts:going_live_soon" | "alerts:not_live" | "alerts:stopped_impressions" | "alerts:missing_our_ref" | "alerts:ended_but_impressions" | "qa:pacing_overview" | "qa:video_on_trademe" | "qa:missing_inclusion_list" | "trafficking" | "automation:runs" | "automation:job_details" | "reporting" | "admin";
+type AnyRow = Record<string, string | number | boolean | null>;
 type ApiEnvelope<T> = { rows: T[]; meta: Record<string, string> };
 type OpsBootstrapEnvelope = { alerts: ApiEnvelope<AnyRow>; going_live_soon: ApiEnvelope<AnyRow>; margin: ApiEnvelope<AnyRow>; pacing: ApiEnvelope<AnyRow> };
 type ReportPayload = {
@@ -101,6 +101,7 @@ type AutomationResult = {
   started_at: string;
   finished_at: string;
 };
+type JobLookupType = "job_number" | "our_ref";
 
 const TOKEN_KEY = "acquire_ops_token";
 const ADMIN_USERNAME = "ashwin@acquirenz.com";
@@ -677,9 +678,11 @@ function App() {
   const [alertsExpanded, setAlertsExpanded] = React.useState(true);
   const [pacingExpanded, setPacingExpanded] = React.useState(true);
   const [qaExpanded, setQaExpanded] = React.useState(true);
+  const [automationExpanded, setAutomationExpanded] = React.useState(true);
   const alertsActive = page.startsWith("alerts:");
   const pacingActive = page.startsWith("pacing:");
   const qaActive = page.startsWith("qa:");
+  const automationActive = page.startsWith("automation:");
   const activeAlertType = pageToAlertType(page);
   const activePacingType = pageToPacingType(page);
   const [alertQuery, setAlertQuery] = React.useState("");
@@ -860,7 +863,29 @@ function App() {
             )}
           </div>
           <NavButton active={page === "trafficking"} icon={<Table2 size={18} />} label="Trafficking" onClick={() => setPage("trafficking")} />
-          <NavButton active={page === "automation"} icon={<Activity size={18} />} label="Automation" onClick={() => setPage("automation")} />
+          <div className={`nav-section ${automationActive ? "active" : ""}`}>
+            <button
+              className={`nav-button nav-section-trigger ${automationActive ? "active" : ""}`}
+              onClick={() => {
+                setAutomationExpanded((current) => !current);
+                if (!automationActive) setPage("automation:job_details");
+              }}
+            >
+              <Activity size={18} />
+              <span>Automation</span>
+              <ChevronDown className={`nav-chevron ${automationExpanded ? "open" : ""}`} size={16} />
+            </button>
+            {automationExpanded && (
+              <div className="nav-subsection">
+                <button className={`nav-subbutton ${page === "automation:job_details" ? "active" : ""}`} onClick={() => setPage("automation:job_details")}>
+                  <span>Job details</span>
+                </button>
+                <button className={`nav-subbutton ${page === "automation:runs" ? "active" : ""}`} onClick={() => setPage("automation:runs")}>
+                  <span>Runs</span>
+                </button>
+              </div>
+            )}
+          </div>
           <NavButton active={page === "reporting"} icon={<BarChart3 size={18} />} label="Reporting beta" onClick={() => setPage("reporting")} />
           {isAdmin && <NavButton active={page === "admin"} icon={<Settings size={18} />} label="Admin" onClick={() => setPage("admin")} />}
         </nav>
@@ -893,7 +918,8 @@ function App() {
         {page === "qa:video_on_trademe" && <QaVideoOnTrademePage {...qaVideoTrademeData} />}
         {page === "qa:missing_inclusion_list" && <QaMissingInclusionListPage {...qaMissingInclusionData} />}
         {page === "trafficking" && <PlaceholderPage title="Trafficking to Asana" body="The next migration slice will bring the Gmail fetch, parse preview, Asana dedupe check, and dry-run downloads into this interface." />}
-        {page === "automation" && <PlaceholderPage title="Automation Runs" body="Manual automation triggers should run as background jobs with live status and logs, instead of blocking the interface." />}
+        {page === "automation:job_details" && <JobDetailsPage />}
+        {page === "automation:runs" && <PlaceholderPage title="Automation Runs" body="Manual automation triggers should run as background jobs with live status and logs, instead of blocking the interface." />}
         {page === "reporting" && <ReportingBetaPage />}
         {page === "admin" && <AdminPage isAdmin={isAdmin} />}
           </>
@@ -3496,6 +3522,258 @@ function ActionDock(props: { selectedCount: number; onClear: () => void; childre
       {props.children}
       <button className="icon-button" title="Clear selection" onClick={props.onClear}><X size={15} /></button>
     </div>
+  );
+}
+
+type JobDetailFormat = "text" | "number" | "currency" | "percent" | "boolean";
+type JobDetailField = [key: string, label: string, format?: JobDetailFormat];
+
+function JobDetailValue({ row, field }: { row: AnyRow; field: JobDetailField }) {
+  const [key, label, format = "text"] = field;
+  const value = row[key];
+  let display = "—";
+  if (value !== null && value !== undefined && value !== "") {
+    if (format === "number") display = num(value);
+    else if (format === "currency") display = currency(value);
+    else if (format === "percent") display = pct(value);
+    else if (format === "boolean") display = Boolean(value) ? "Yes" : "No";
+    else display = String(value);
+  }
+  return <div className="job-detail-field"><dt>{label}</dt><dd>{display}</dd></div>;
+}
+
+function jobNarrativeText(value: string | number | boolean | null) {
+  const text = String(value || "—");
+  return text
+    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code: string) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replaceAll("&amp;", "&")
+    .replaceAll("&quot;", "\"")
+    .replaceAll("&#39;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">");
+}
+
+function JobDetailsPage() {
+  const [lookupType, setLookupType] = React.useState<JobLookupType>("job_number");
+  const [lookupValue, setLookupValue] = React.useState("");
+  const [payload, setPayload] = React.useState<ApiEnvelope<AnyRow> | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const [hasSearched, setHasSearched] = React.useState(false);
+
+  const overviewFields: JobDetailField[] = [
+    ["JOB_NUMBER", "Job number"],
+    ["ADVERTISER_NAME", "Advertiser"],
+    ["ADVERTISER_CATEGORY", "Advertiser category"],
+    ["CAMPAIGN_NAME", "Campaign"],
+    ["LOCATION_TEXT", "Line item description"],
+    ["PROPERTY_NAME", "Property"],
+    ["DATASOURCE_NAME", "Data source"],
+    ["GOAL_TYPE_REPORTING", "Goal type"],
+    ["SALES_CHANNEL", "Sales channel"],
+    ["STRATEGY", "Strategy"]
+  ];
+  const ownerFields: JobDetailField[] = [
+    ["START_DATE", "Start date"],
+    ["END_DATE", "End date"],
+    ["ACCOUNT_MANAGER_NAME", "Account manager"],
+    ["CAMPAIGN_LEAD", "Campaign lead"],
+    ["TRAFFICKER_NAME", "Trafficker"],
+    ["CLIENT_CONTACT", "Client contact"],
+    ["CLIENT_EMAIL", "Client email"]
+  ];
+  const commercialFields: JobDetailField[] = [
+    ["NUM_UNITS", "Booked units", "number"],
+    ["RATING_METHOD", "Rating method"],
+    ["ACTUAL_PRICE", "Actual price", "currency"],
+    ["NET_BILLABLE_AMOUNT", "Net billable", "currency"],
+    ["NET_SPEND", "Net spend", "currency"],
+    ["OUR_COST", "Our cost / net cost", "currency"],
+    ["IO_MARGIN_RATE", "IO margin rate", "percent"]
+  ];
+  const traffickingFields: JobDetailField[] = [
+    ["TRAFFICKING_STATUS", "Trafficking status"],
+    ["CREATIVE_RECEIVED", "Creative received"],
+    ["CREATIVE_TRAFFICKED", "Creative trafficked"],
+    ["CAMPAIGN_COMPLETE", "Campaign complete"],
+    ["AD_SERVING", "Ad serving"]
+  ];
+  const deliveryFields: JobDetailField[] = [
+    ["DELIVERY_FIRST_DATE", "First delivery date"],
+    ["DELIVERY_LAST_DATE", "Latest delivery date"],
+    ["DELIVERY_DATASOURCES", "Delivery sources"],
+    ["TOTAL_IMPRESSIONS", "Impressions", "number"],
+    ["TOTAL_CLICKS", "Clicks", "number"],
+    ["TOTAL_LINK_CLICKS", "Link clicks", "number"],
+    ["TOTAL_DELIVERY_COST", "Delivery cost", "currency"],
+    ["TOTAL_VIDEO_PLAYS", "Video plays", "number"],
+    ["TOTAL_VIDEO_COMPLETIONS", "Video completions", "number"],
+    ["TOTAL_SPOTS", "Spots", "number"],
+    ["TOTAL_MEASURABLE_IMPRESSIONS", "Measurable impressions", "number"],
+    ["TOTAL_VIEWABLE_IMPRESSIONS", "Viewable impressions", "number"]
+  ];
+  const provenanceFields: JobDetailField[] = [
+    ["TRAFFICKING_MATCHED", "Matched to trafficking report", "boolean"],
+    ["BUY_SOURCE_CONFLICT", "Buy source conflict", "boolean"],
+    ["BUY_SOURCE_ROW_COUNT", "Buy source rows", "number"],
+    ["TRAFFICKING_SOURCE_FILENAME", "Trafficking source file"],
+    ["TRAFFICKING_REPORT_RECEIVED_AT", "Report received"],
+    ["TRAFFICKING_LAST_UPDATED_AT", "Trafficking last updated"],
+    ["TRAFFICKING_LAST_SEEN_AT", "Trafficking last seen"]
+  ];
+
+  async function search(event: React.FormEvent) {
+    event.preventDefault();
+    const value = lookupValue.trim();
+    if (!value) {
+      setError(lookupType === "job_number" ? "Enter a job number." : "Enter a line item ID (OUR_REF)." );
+      return;
+    }
+    setLoading(true);
+    setError("");
+    setHasSearched(true);
+    try {
+      const params = new URLSearchParams({ lookup_type: lookupType, value });
+      const result = await apiFetch<ApiEnvelope<AnyRow>>(`/api/automation/job-details?${params.toString()}`);
+      setPayload(result);
+    } catch (err) {
+      setPayload(null);
+      setError(err instanceof Error ? err.message : "Job details lookup failed.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function changeLookupType(nextType: JobLookupType) {
+    setLookupType(nextType);
+    setLookupValue("");
+    setPayload(null);
+    setError("");
+    setHasSearched(false);
+  }
+
+  const rows = payload?.rows || [];
+  const uniqueJobs = Array.from(new Set(rows.map((row) => String(row.JOB_NUMBER || "")).filter(Boolean)));
+  const advertisers = Array.from(new Set(rows.map((row) => String(row.ADVERTISER_NAME || "")).filter(Boolean)));
+  const campaigns = Array.from(new Set(rows.map((row) => String(row.CAMPAIGN_NAME || "")).filter(Boolean)));
+
+  return (
+    <section className="job-details-page">
+      <header className="page-header">
+        <div>
+          <div className="eyebrow">Automation · Booking intelligence</div>
+          <h1>Job details</h1>
+          <p>Look up a complete booking by job number, or inspect one exact line item using its OUR_REF.</p>
+        </div>
+        {rows.length > 0 && (
+          <button className="ghost-button" onClick={() => downloadCsv(`job-details-${lookupValue.trim()}.csv`, rows)}>
+            <Download size={16} /> Export all fields
+          </button>
+        )}
+      </header>
+
+      <form className="job-lookup-panel" onSubmit={(event) => void search(event)}>
+        <div className="segmented" aria-label="Lookup type">
+          <button type="button" className={lookupType === "job_number" ? "active" : ""} onClick={() => changeLookupType("job_number")}>Job number</button>
+          <button type="button" className={lookupType === "our_ref" ? "active" : ""} onClick={() => changeLookupType("our_ref")}>Line item ID</button>
+        </div>
+        <div className="searchbox job-lookup-input">
+          <Search size={18} />
+          <input
+            value={lookupValue}
+            onChange={(event) => setLookupValue(event.target.value)}
+            placeholder={lookupType === "job_number" ? "Enter job number, e.g. 9054" : "Enter OUR_REF, e.g. 33316"}
+            aria-label={lookupType === "job_number" ? "Job number" : "Line item ID"}
+            autoFocus
+          />
+        </div>
+        <button className="primary-button" type="submit" disabled={loading || !lookupValue.trim()}>
+          {loading ? <Loader2 className="spin" size={17} /> : <Search size={17} />}
+          {loading ? "Searching" : "Find booking"}
+        </button>
+      </form>
+
+      {error && <div className="state-box error"><AlertTriangle size={18} /> {error}</div>}
+      {!error && !hasSearched && (
+        <div className="job-details-intro">
+          <Search size={30} />
+          <div><strong>Search live booking data</strong><span>Results include Buy Data, AdTeamPro trafficking descriptions, commercial fields, owners, dates, and delivery totals.</span></div>
+        </div>
+      )}
+      {!error && hasSearched && !loading && rows.length === 0 && (
+        <div className="state-box"><Clock3 size={18} /> No booking matched {lookupType === "job_number" ? "job number" : "OUR_REF"} {lookupValue.trim()}.</div>
+      )}
+
+      {rows.length > 0 && (
+        <>
+          <div className="job-result-summary">
+            <article><span>Line items</span><strong>{payload?.meta.count_line_items || rows.length}</strong></article>
+            <article><span>Booking periods</span><strong>{rows.length}</strong></article>
+            <article><span>Job</span><strong>{uniqueJobs.join(", ") || "—"}</strong></article>
+            <article><span>Advertiser</span><strong>{advertisers.join(", ") || "—"}</strong></article>
+          </div>
+          <div className="job-result-context">
+            <div><span className="eyebrow">Campaign</span><strong>{campaigns.join(" · ") || "Campaign name unavailable"}</strong></div>
+            <span>Live data from {payload?.meta.source_table || "BUY_DATA_ENHANCED"}</span>
+          </div>
+
+          <div className="job-detail-list">
+            {rows.map((row, index) => (
+              <article className="job-detail-card" key={String(row.BUY_ROW_KEY || `${row.OUR_REF}-${index}`)}>
+                <header className="job-detail-card-head">
+                  <div>
+                    <span className="eyebrow">Line item · OUR_REF {String(row.OUR_REF || "—")}</span>
+                    <h2>{String(row.LOCATION_TEXT || row.PROPERTY_NAME || "Line item details")}</h2>
+                    <p>{String(row.PROPERTY_NAME || "Property unavailable")} · {String(row.START_DATE || "—")} to {String(row.END_DATE || "—")}</p>
+                  </div>
+                  <span className={`job-booking-status ${String(row.BOOKING_STATUS || "").toLowerCase()}`}>{String(row.BOOKING_STATUS || "Unknown status")}</span>
+                </header>
+
+                <div className="job-detail-columns">
+                  <section className="job-detail-section">
+                    <h3>Booking overview</h3>
+                    <dl>{overviewFields.map((field) => <JobDetailValue key={field[0]} row={row} field={field} />)}</dl>
+                  </section>
+                  <section className="job-detail-section">
+                    <h3>Schedule &amp; ownership</h3>
+                    <dl>{ownerFields.map((field) => <JobDetailValue key={field[0]} row={row} field={field} />)}</dl>
+                  </section>
+                  <section className="job-detail-section">
+                    <h3>Commercial</h3>
+                    <dl>{commercialFields.map((field) => <JobDetailValue key={field[0]} row={row} field={field} />)}</dl>
+                  </section>
+                </div>
+
+                <section className="job-detail-section job-detail-narratives">
+                  <h3>AdTeamPro descriptions &amp; instructions</h3>
+                  <div className="job-narrative-grid">
+                    <div><span>Specification</span><p>{jobNarrativeText(row.SPECIFICATION_TEXT)}</p></div>
+                    <div><span>Special requirements</span><p>{jobNarrativeText(row.SPECIAL_REQUIREMENTS)}</p></div>
+                    <div><span>Trafficking instructions</span><p>{jobNarrativeText(row.TRAFFICKING_INSTRUCTIONS)}</p></div>
+                  </div>
+                </section>
+
+                <div className="job-detail-columns job-detail-columns-wide">
+                  <section className="job-detail-section">
+                    <h3>Trafficking status</h3>
+                    <dl>{traffickingFields.map((field) => <JobDetailValue key={field[0]} row={row} field={field} />)}</dl>
+                  </section>
+                  <section className="job-detail-section">
+                    <h3>Delivery snapshot</h3>
+                    <dl>{deliveryFields.map((field) => <JobDetailValue key={field[0]} row={row} field={field} />)}</dl>
+                  </section>
+                  <section className="job-detail-section">
+                    <h3>Data provenance</h3>
+                    <dl>{provenanceFields.map((field) => <JobDetailValue key={field[0]} row={row} field={field} />)}</dl>
+                  </section>
+                </div>
+              </article>
+            ))}
+          </div>
+        </>
+      )}
+    </section>
   );
 }
 

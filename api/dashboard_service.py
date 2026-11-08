@@ -1816,6 +1816,110 @@ ORDER BY start_date, our_ref
     }
 
 
+def job_details_dashboard(lookup_type: str, lookup_value: str) -> dict[str, Any]:
+    """Return enhanced booking details for a job number or exact OUR_REF.
+
+    BUY_DATA_ENHANCED supplies the booking and latest AdTeamPro trafficking
+    fields. Delivery is rolled up separately by OUR_REF so daily rows do not
+    multiply booking-period rows in the response.
+    """
+    clean_type = str(lookup_type or "").strip().lower()
+    clean_value = str(lookup_value or "").strip()
+    lookup_columns = {
+        "job_number": "JOB_NUMBER",
+        "our_ref": "OUR_REF",
+    }
+    if clean_type not in lookup_columns:
+        raise ValueError("lookup_type must be job_number or our_ref.")
+    if not clean_value:
+        label = "Job number" if clean_type == "job_number" else "Line item ID"
+        raise ValueError(f"{label} is required.")
+
+    client, project_id, dataset = bq_context()
+    lookup_column = lookup_columns[clean_type]
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("lookup_value", "STRING", clean_value),
+        ]
+    )
+    rows = list(
+        client.query(
+            f"""
+WITH matching_buy AS (
+  SELECT *
+  FROM {table_fqn(project_id, dataset, "BUY_DATA_ENHANCED")}
+  WHERE TRIM(CAST({lookup_column} AS STRING)) = @lookup_value
+),
+matching_refs AS (
+  SELECT DISTINCT OUR_REF
+  FROM matching_buy
+  WHERE NULLIF(TRIM(CAST(OUR_REF AS STRING)), '') IS NOT NULL
+),
+delivery_summary AS (
+  SELECT
+    TRIM(CAST(d.OUR_REF AS STRING)) AS OUR_REF,
+    MIN(d.DATE) AS DELIVERY_FIRST_DATE,
+    MAX(d.DATE) AS DELIVERY_LAST_DATE,
+    STRING_AGG(
+      DISTINCT NULLIF(TRIM(CAST(d.DATASOURCENAME AS STRING)), ''),
+      ', ' ORDER BY NULLIF(TRIM(CAST(d.DATASOURCENAME AS STRING)), '')
+    ) AS DELIVERY_DATASOURCES,
+    SUM(COALESCE(d.CLICKS, 0)) AS TOTAL_CLICKS,
+    SUM(COALESCE(d.IMPRESSIONS, 0)) AS TOTAL_IMPRESSIONS,
+    SUM(COALESCE(d.COST, 0)) AS TOTAL_DELIVERY_COST,
+    SUM(COALESCE(d.VIDEO_PLAYS, 0)) AS TOTAL_VIDEO_PLAYS,
+    SUM(COALESCE(d.VIDEO_COMPLETIONS, 0)) AS TOTAL_VIDEO_COMPLETIONS,
+    SUM(COALESCE(d.SPOTS, 0)) AS TOTAL_SPOTS,
+    SUM(COALESCE(d.LINK_CLICKS, 0)) AS TOTAL_LINK_CLICKS,
+    SUM(COALESCE(d.MEASURABLE_IMPRESSIONS_ACTIVE_VIEW, 0)) AS TOTAL_MEASURABLE_IMPRESSIONS,
+    SUM(COALESCE(d.VIEWABLE_IMPRESSIONS_ACTIVE_VIEW, 0)) AS TOTAL_VIEWABLE_IMPRESSIONS
+  FROM {table_fqn(project_id, dataset, "BLEND_BLEND_5_1_2")} AS d
+  JOIN matching_refs AS r
+    ON TRIM(CAST(d.OUR_REF AS STRING)) = r.OUR_REF
+  GROUP BY 1
+)
+SELECT
+  b.*,
+  d.DELIVERY_FIRST_DATE,
+  d.DELIVERY_LAST_DATE,
+  COALESCE(d.DELIVERY_DATASOURCES, '') AS DELIVERY_DATASOURCES,
+  COALESCE(d.TOTAL_CLICKS, 0) AS TOTAL_CLICKS,
+  COALESCE(d.TOTAL_IMPRESSIONS, 0) AS TOTAL_IMPRESSIONS,
+  COALESCE(d.TOTAL_DELIVERY_COST, 0) AS TOTAL_DELIVERY_COST,
+  COALESCE(d.TOTAL_VIDEO_PLAYS, 0) AS TOTAL_VIDEO_PLAYS,
+  COALESCE(d.TOTAL_VIDEO_COMPLETIONS, 0) AS TOTAL_VIDEO_COMPLETIONS,
+  COALESCE(d.TOTAL_SPOTS, 0) AS TOTAL_SPOTS,
+  COALESCE(d.TOTAL_LINK_CLICKS, 0) AS TOTAL_LINK_CLICKS,
+  COALESCE(d.TOTAL_MEASURABLE_IMPRESSIONS, 0) AS TOTAL_MEASURABLE_IMPRESSIONS,
+  COALESCE(d.TOTAL_VIEWABLE_IMPRESSIONS, 0) AS TOTAL_VIEWABLE_IMPRESSIONS
+FROM matching_buy AS b
+LEFT JOIN delivery_summary AS d
+  ON b.OUR_REF = d.OUR_REF
+ORDER BY b.START_DATE, b.END_DATE, b.OUR_REF
+""",
+            job_config=job_config,
+        ).result()
+    )
+    data = records_from_rows([dict(row.items()) for row in rows])
+    unique_refs = {str(row.get("OUR_REF") or "") for row in data if row.get("OUR_REF")}
+    unique_jobs = {str(row.get("JOB_NUMBER") or "") for row in data if row.get("JOB_NUMBER")}
+    return {
+        "rows": data,
+        "meta": {
+            "project_id": project_id,
+            "dataset": dataset,
+            "source_table": "BUY_DATA_ENHANCED",
+            "delivery_source_table": "BLEND_BLEND_5_1_2",
+            "lookup_type": clean_type,
+            "lookup_value": clean_value,
+            "count_total": str(len(data)),
+            "count_line_items": str(len(unique_refs)),
+            "count_jobs": str(len(unique_jobs)),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+
+
 def alerts_dashboard(
     alert_type: str | None = None,
     state: str = "OPEN",
