@@ -76,3 +76,10 @@ jobs:
             --set-env-vars BQ_PROJECT_ID=sm-test-391201,BQ_DATASET=supermetrics_data,BQ_SYNC_BILLING_PROJECT=sm-test-391201,BQ_SYNC_SOURCE_PROJECT=sm-storage-628074,BQ_SYNC_SOURCE_DATASET=Supermetrics,BQ_SYNC_SOURCE_LOCATION=europe-west1,BQ_SYNC_DESTINATION_LOCATION=US \
             --set-secrets STREAMLIT_SECRETS_TOML=streamlit-secrets-toml:latest \
             --quiet
+
+          gcloud run jobs add-iam-policy-binding supermetrics-bigquery-sync \
+            --project ops-control-center-503319 \
+            --region australia-southeast1 \
+            --member serviceAccount:acquire-ops-runner@ops-control-center-503319.iam.gserviceaccount.com \
+            --role roles/run.invoker \
+            --quiet
