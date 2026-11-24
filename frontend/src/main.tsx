@@ -93,6 +93,12 @@ type AutomationDefaults = {
     table: string;
     script: string;
   };
+  supermetrics_sync: {
+    source: string;
+    destination: string;
+    script: string;
+    job: string;
+  };
 };
 type AutomationResult = {
   status: string;
@@ -3787,7 +3793,8 @@ function AdminPage({ isAdmin }: { isAdmin: boolean }) {
   const [dailyResult, setDailyResult] = React.useState<AutomationResult | null>(null);
   const [qaResult, setQaResult] = React.useState<AutomationResult | null>(null);
   const [missingQaResult, setMissingQaResult] = React.useState<AutomationResult | null>(null);
-  const [loading, setLoading] = React.useState<"campaign" | "trafficSync" | "daily" | "qa" | "missingQa" | "defaults" | "">("defaults");
+  const [supermetricsResult, setSupermetricsResult] = React.useState<AutomationResult | null>(null);
+  const [loading, setLoading] = React.useState<"campaign" | "trafficSync" | "daily" | "qa" | "missingQa" | "supermetrics" | "defaults" | "">("defaults");
   const [error, setError] = React.useState("");
 
   React.useEffect(() => {
@@ -3893,6 +3900,25 @@ function AdminPage({ isAdmin }: { isAdmin: boolean }) {
     }
   }
 
+  async function runSupermetricsSync() {
+    setLoading("supermetrics");
+    setError("");
+    setSupermetricsResult(null);
+    try {
+      const result = await apiFetch<AutomationResult>("/api/admin/automations/supermetrics-bigquery-sync", {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+      invalidateApiCache("/api/dashboard/bootstrap");
+      invalidateApiCache("/api/alerts");
+      setSupermetricsResult(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Supermetrics BigQuery sync failed.");
+    } finally {
+      setLoading("");
+    }
+  }
+
   if (!isAdmin) {
     return <PlaceholderPage title="Admin" body="Admin access is restricted." />;
   }
@@ -3911,6 +3937,22 @@ function AdminPage({ isAdmin }: { isAdmin: boolean }) {
       />
       {error && <div className="state-box error compact"><AlertTriangle /> {error}</div>}
       <section className="admin-grid">
+        <article className="admin-card">
+          <div>
+            <span className="eyebrow">Data pipeline</span>
+            <h2>Sync Supermetrics BigQuery</h2>
+            <p>Queues the cross-region sync of changed delivery partitions and Buy Data into Acquire BigQuery.</p>
+          </div>
+          <button className="primary-button" disabled={loading === "supermetrics"} onClick={() => void runSupermetricsSync()}>
+            {loading === "supermetrics" ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
+            Sync Supermetrics Data Now
+          </button>
+          <AutomationOutput result={supermetricsResult} />
+          {defaults?.supermetrics_sync.source && <p className="admin-note">Source: {defaults.supermetrics_sync.source}</p>}
+          {defaults?.supermetrics_sync.destination && <p className="admin-note">Destination: {defaults.supermetrics_sync.destination}</p>}
+          {defaults?.supermetrics_sync.job && <p className="admin-note">Cloud Run job: {defaults.supermetrics_sync.job}</p>}
+        </article>
+
         <article className="admin-card">
           <div>
             <span className="eyebrow">Email alert</span>

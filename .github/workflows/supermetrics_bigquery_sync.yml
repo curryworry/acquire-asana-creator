@@ -1,0 +1,35 @@
+name: Sync Supermetrics BigQuery
+
+on:
+  schedule:
+    # 7:30 AM NZST / 8:30 AM NZDT, after the observed Supermetrics refresh window.
+    - cron: "30 19 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: supermetrics-bigquery-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/679417827301/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: github-actions-deployer@ops-control-center-503319.iam.gserviceaccount.com
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Run Supermetrics BigQuery sync
+        run: |
+          gcloud run jobs execute supermetrics-bigquery-sync \
+            --project ops-control-center-503319 \
+            --region australia-southeast1 \
+            --wait

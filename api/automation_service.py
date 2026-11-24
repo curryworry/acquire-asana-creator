@@ -15,6 +15,7 @@ SCRIPT_TIMEOUT_SECONDS = 1800
 DEFAULT_CLOUD_RUN_PROJECT_ID = "ops-control-center-503319"
 DEFAULT_CLOUD_RUN_REGION = "australia-southeast1"
 DEFAULT_QA_MISSING_INCLUSION_JOB = "qa-missing-inclusion-list"
+DEFAULT_SUPERMETRICS_SYNC_JOB = "supermetrics-bigquery-sync"
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 
 
@@ -99,6 +100,15 @@ def qa_missing_inclusion_defaults() -> dict[str, str]:
         "table": "qa_missing_inclusion_list",
         "script": str(Path("scripts") / "load_qa_missing_inclusion_list.py"),
         "job": get_secret("QA_MISSING_INCLUSION_JOB_NAME", DEFAULT_QA_MISSING_INCLUSION_JOB),
+    }
+
+
+def supermetrics_sync_defaults() -> dict[str, str]:
+    return {
+        "source": get_secret("BQ_SYNC_SOURCE_PROJECT", "sm-storage-628074"),
+        "destination": get_secret("BQ_PROJECT_ID", "sm-test-391201"),
+        "script": str(Path("scripts") / "sync_supermetrics_bigquery.py"),
+        "job": get_secret("BQ_SYNC_JOB_NAME", DEFAULT_SUPERMETRICS_SYNC_JOB),
     }
 
 
@@ -191,11 +201,10 @@ def run_qa_video_on_trademe() -> dict[str, str | int | bool]:
     return run_script("scripts/load_qa_video_on_trademe.py", env)
 
 
-def run_qa_missing_inclusion() -> dict[str, str | int | bool]:
+def _run_cloud_run_job(job_name: str) -> dict[str, str | int | bool]:
     started_at = datetime.now(timezone.utc)
     project_id = get_secret("CLOUD_RUN_PROJECT_ID", DEFAULT_CLOUD_RUN_PROJECT_ID)
     region = get_secret("CLOUD_RUN_REGION", DEFAULT_CLOUD_RUN_REGION)
-    job_name = get_secret("QA_MISSING_INCLUSION_JOB_NAME", DEFAULT_QA_MISSING_INCLUSION_JOB)
     try:
         credentials, _ = google_auth_default(scopes=[CLOUD_PLATFORM_SCOPE])
         session = AuthorizedSession(credentials)
@@ -226,3 +235,13 @@ def run_qa_missing_inclusion() -> dict[str, str | int | bool]:
             "started_at": started_at.isoformat(),
             "finished_at": datetime.now(timezone.utc).isoformat(),
         }
+
+
+def run_qa_missing_inclusion() -> dict[str, str | int | bool]:
+    job_name = get_secret("QA_MISSING_INCLUSION_JOB_NAME", DEFAULT_QA_MISSING_INCLUSION_JOB)
+    return _run_cloud_run_job(job_name)
+
+
+def run_supermetrics_sync() -> dict[str, str | int | bool]:
+    job_name = get_secret("BQ_SYNC_JOB_NAME", DEFAULT_SUPERMETRICS_SYNC_JOB)
+    return _run_cloud_run_job(job_name)

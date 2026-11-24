@@ -40,6 +40,33 @@ The Vite dev server proxies `/api/*` requests to `http://127.0.0.1:8000`.
 Cloud Run deployment is handled by:
 - `.github/workflows/deploy_cloud_run.yml`
 
+## Supermetrics BigQuery Sync
+
+`scripts/sync_supermetrics_bigquery.py` synchronizes data from the Supermetrics-owned
+`sm-storage-628074.Supermetrics` dataset into
+`sm-test-391201.supermetrics_data`. It uses an offline OAuth refresh token for the
+source-authorized user, while query and load jobs are billed to `sm-test-391201`.
+
+The delivery table is compared by partition fingerprint. Each changed source
+partition is queried with partition pruning, streamed through the job container,
+and loaded into the matching US destination partition. `B27F8_BUY_DATA` is replaced
+only when its full-table fingerprint changes. The source dataset is read-only
+throughout.
+
+Deployment creates the `supermetrics-bigquery-sync` Cloud Run job. It can be queued
+from Admin in Ops Center or run from `.github/workflows/supermetrics_bigquery_sync.yml`.
+The workflow runs daily at `19:30 UTC` (`07:30 NZST` / `08:30 NZDT`).
+
+Required secret values in `streamlit-secrets-toml`:
+
+- `BQ_USER_CLIENT_ID`
+- `BQ_USER_CLIENT_SECRET`
+- `BQ_USER_REFRESH_TOKEN`
+
+Useful optional settings include `BQ_SYNC_SOURCE_PROJECT`,
+`BQ_SYNC_SOURCE_DATASET`, `BQ_SYNC_SOURCE_LOCATION`,
+`BQ_SYNC_DESTINATION_LOCATION`, and `BQ_SYNC_MAX_PARTITIONS`.
+
 The container builds the React app, installs the FastAPI runtime, and serves `api.main:app` through `uvicorn`.
 
 Production secrets are loaded from Google Secret Manager into `STREAMLIT_SECRETS_TOML` for compatibility with the existing secret. The application no longer runs Streamlit.
