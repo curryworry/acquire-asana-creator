@@ -54,8 +54,13 @@ only when its full-table fingerprint changes. The source dataset is read-only
 throughout.
 
 Deployment creates the `supermetrics-bigquery-sync` Cloud Run job. It can be queued
-from Admin in Ops Center or run from `.github/workflows/supermetrics_bigquery_sync.yml`.
-The workflow runs daily at `19:30 UTC` (`07:30 NZST` / `08:30 NZDT`).
+from Admin in Ops Center or run manually from
+`.github/workflows/supermetrics_bigquery_sync.yml`.
+
+The scheduled `.github/workflows/campaign_not_live_alert.yml` workflow runs at
+`19:30 UTC` (`07:30 NZST` / `08:30 NZDT`) on New Zealand weekdays. It waits for the
+Supermetrics sync job to finish successfully before generating and sending the alert
+digest, so the alert always reads the newly synchronized destination tables.
 
 Required secret values in `streamlit-secrets-toml`:
 

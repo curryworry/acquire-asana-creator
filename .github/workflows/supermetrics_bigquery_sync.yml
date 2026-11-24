@@ -1,9 +1,6 @@
 name: Sync Supermetrics BigQuery
 
 on:
-  schedule:
-    # 7:30 AM NZST / 8:30 AM NZDT, after the observed Supermetrics refresh window.
-    - cron: "30 19 * * *"
   workflow_dispatch:
 
 permissions:
