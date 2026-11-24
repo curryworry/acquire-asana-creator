@@ -99,9 +99,11 @@ Step-by-step process
 - Sends summary email (with attachments) to REPORT_EMAIL_TO.
 
 13) Mark processed
-- Ensures Gmail label "processed" exists.
-- Marks source message as read.
-- Applies "processed" label to source message.
+- Only live runs mark the source message as read and apply the processed label.
+- Dry runs leave source email labels and read status unchanged, allowing a later live run.
+- A missing or blank label setting defaults to "processed".
+- In Ops Center, the dry-run checkbox directly controls the manual run's mode:
+  checked = dry run, unchecked = live. Scheduled runs use their configured DRY_RUN_MODE.
 
 How to change rules safely
 

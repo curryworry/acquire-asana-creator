@@ -3958,16 +3958,16 @@ function AdminPage({ isAdmin }: { isAdmin: boolean }) {
         <article className="admin-card">
           <div>
             <span className="eyebrow">Trafficking</span>
-            <h2>Daily Trafficking Dry Run</h2>
-            <p>Runs the Gmail-to-Asana dry-run script and emails the parent/subtask CSV outputs.</p>
+            <h2>Daily Trafficking Run</h2>
+            <p>Runs the Gmail-to-Asana script and emails the parent/subtask CSV outputs.</p>
           </div>
           <label className="admin-check">
             <input type="checkbox" checked={forceDryRun} onChange={(event) => setForceDryRun(event.target.checked)} />
-            Force DRY_RUN_MODE=true
+            Dry run (preview only)
           </label>
           {!forceDryRun && (
             <div className="warning-box">
-              If the backend secret `DRY_RUN_MODE` is false, this can create Asana tasks.
+              Live mode: this run will create missing Asana tasks and subtasks.
             </div>
           )}
           <button className="primary-button" disabled={loading === "daily"} onClick={() => void runDailyTrafficking()}>

@@ -103,7 +103,7 @@ def main() -> int:
     gmail_user = env("GMAIL_USER", "me")
     subject_contains = env("GMAIL_SUBJECT_CONTAINS") or "Trafficking Report - acquirenz"
     search_query = env("GMAIL_SEARCH_QUERY", "") or None
-    processed_label_name = env("GMAIL_PROCESSED_LABEL", "processed")
+    processed_label_name = env("GMAIL_PROCESSED_LABEL", "processed") or "processed"
     report_email_to = require_env("REPORT_EMAIL_TO")
     skip_top_rows = int(env("TRAFFICKING_SKIP_TOP_ROWS", "0") or "0")
     dry_run_mode = as_bool(env("DRY_RUN_MODE", "true"), default=True)
@@ -377,8 +377,9 @@ def main() -> int:
         },
     )
 
-    label_id = inbox.ensure_label(processed_label_name)
-    inbox.mark_read_and_label(message_id=attachment.message_id, label_id=label_id)
+    if not dry_run_mode:
+        label_id = inbox.ensure_label(processed_label_name)
+        inbox.mark_read_and_label(message_id=attachment.message_id, label_id=label_id)
 
     print(summary)
     return 0

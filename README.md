@@ -94,7 +94,9 @@ Flow:
 3. Build parent/subtask dry-run outputs.
 4. Check dedupe in Asana projects using `JobNumber`.
 5. Email summary and CSV attachments to `REPORT_EMAIL_TO`.
-6. Mark source email as read and add Gmail label `processed`.
+6. In live mode only, mark source email as read and add Gmail label `processed` (also used if the configured label is blank).
+
+In the Ops Center, checking `Dry run (preview only)` runs a dry run; unchecking it runs live. This selection overrides the backend `DRY_RUN_MODE` setting for that manual run. Scheduled runs continue to use their configured setting. Dry runs send the report and sync BigQuery, but leave the source email's read status and labels unchanged.
 
 Required secrets:
 - `ASANA_ACCESS_TOKEN`
